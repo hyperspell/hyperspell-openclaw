@@ -1,5 +1,7 @@
 # OpenClaw Hyperspell Plugin
 
+![Hyperspell x OpenClaw](https://github.com/user-attachments/assets/5ac86aab-0f0f-4f14-bde5-0652e625aa86)
+
 OpenClaw plugin for [Hyperspell](https://hyperspell.com) - Context and memory for your AI agents.
 
 ## Installation
