@@ -1,0 +1,25 @@
+{
+  "name": "@hyperspell/openclaw-hyperspell",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "OpenClaw Hyperspell memory plugin",
+  "license": "MIT",
+  "dependencies": {
+    "hyperspell": "^0.30.0",
+    "@sinclair/typebox": "^0.34.0"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.1.29"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "lint": "bunx @biomejs/biome ci .",
+    "lint:fix": "bunx @biomejs/biome check --write ."
+  },
+  "openclaw": {
+    "extensions": ["./index.ts"]
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

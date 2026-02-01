@@ -1,0 +1,52 @@
+{
+  "id": "openclaw-hyperspell",
+  "kind": "memory",
+  "uiHints": {
+    "apiKey": {
+      "label": "Hyperspell API Key",
+      "sensitive": true,
+      "placeholder": "hs_...",
+      "help": "Your API key from app.hyperspell.com (or use ${HYPERSPELL_API_KEY})"
+    },
+    "userId": {
+      "label": "User ID",
+      "placeholder": "user_123",
+      "help": "Optional user ID to scope searches. Required for non-JWT API keys.",
+      "advanced": true
+    },
+    "autoContext": {
+      "label": "Auto-Context",
+      "help": "Inject relevant memories before every AI turn"
+    },
+    "sources": {
+      "label": "Sources",
+      "placeholder": "notion,slack,google_drive",
+      "help": "Comma-separated list of sources to search. Leave empty for all sources.",
+      "advanced": true
+    },
+    "maxResults": {
+      "label": "Max Results",
+      "placeholder": "10",
+      "help": "Maximum memories injected into context per turn",
+      "advanced": true
+    },
+    "debug": {
+      "label": "Debug Logging",
+      "help": "Enable verbose debug logs for API calls and responses",
+      "advanced": true
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiKey": { "type": "string" },
+      "userId": { "type": "string" },
+      "autoContext": { "type": "boolean" },
+      "sources": { "type": "string" },
+      "maxResults": { "type": "number", "minimum": 1, "maximum": 20 },
+      "debug": { "type": "boolean" }
+    },
+    "required": []
+  }
+}
