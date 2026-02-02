@@ -17,12 +17,18 @@ Add to your `openclaw.json`:
 ```json
 {
   "plugins": {
-    "openclaw-hyperspell": {
-      "apiKey": "${HYPERSPELL_API_KEY}",
-      "autoContext": true
+    "entries": {
+      "openclaw-hyperspell": {
+        "enabled": true,
+        "config": {
+          "apiKey": "${HYPERSPELL_API_KEY}",
+          "autoContext": true
+        }
+      }
     }
   }
 }
+
 ```
 
 Or set the environment variable:
