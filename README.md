@@ -50,12 +50,12 @@ export HYPERSPELL_API_KEY=hs_...
 
 ## Slash Commands
 
-### `/context <query>`
+### `/getcontext <query>`
 
 Search your memories for relevant context.
 
 ```
-/context Q1 budget planning
+/getcontext Q1 budget planning
 ```
 
 ### `/connect <source>`

@@ -1,9 +1,32 @@
 {
   "name": "@hyperspell/openclaw-hyperspell",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "OpenClaw Hyperspell memory plugin",
   "license": "MIT",
+  "main": "./index.ts",
+  "files": [
+    "*.ts",
+    "commands/",
+    "hooks/",
+    "tools/",
+    "lib/",
+    "types/",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hyperspell/openclaw-hyperspell.git"
+  },
+  "keywords": [
+    "openclaw",
+    "hyperspell",
+    "memory",
+    "rag",
+    "ai",
+    "plugin"
+  ],
   "dependencies": {
     "hyperspell": "^0.30.0",
     "@sinclair/typebox": "^0.34.0"

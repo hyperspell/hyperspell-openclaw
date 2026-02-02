@@ -19,19 +19,19 @@ export function registerCommands(
   client: HyperspellClient,
   _cfg: HyperspellConfig,
 ): void {
-  // /context <query> - Search memories and show summaries
+  // /getcontext <query> - Search memories and show summaries
   api.registerCommand({
-    name: "context",
+    name: "getcontext",
     description: "Search your memories for relevant context",
     acceptsArgs: true,
     requireAuth: true,
     handler: async (ctx: { args?: string }) => {
       const query = ctx.args?.trim()
       if (!query) {
-        return { text: "Usage: /context <search query>" }
+        return { text: "Usage: /getcontext <search query>" }
       }
 
-      log.debug(`/context command: "${query}"`)
+      log.debug(`/getcontext command: "${query}"`)
 
       try {
         const results = await client.search(query, { limit: 5 })
@@ -50,7 +50,7 @@ export function registerCommands(
           text: `Found ${results.length} memories:\n\n${lines.join("\n")}`,
         }
       } catch (err) {
-        log.error("/context failed", err)
+        log.error("/getcontext failed", err)
         return { text: "Failed to search memories. Check logs for details." }
       }
     },
