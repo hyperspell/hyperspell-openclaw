@@ -1,7 +1,9 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk"
 import type { HyperspellClient } from "../client.ts"
 import type { HyperspellConfig } from "../config.ts"
+import { getWorkspaceDir } from "../config.ts"
 import { log } from "../logger.ts"
+import { syncAllMemoryFiles } from "../sync/markdown.ts"
 
 function truncate(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text
@@ -79,6 +81,38 @@ export function registerCommands(
       } catch (err) {
         log.error("/remember failed", err)
         return { text: "Failed to save memory. Check logs for details." }
+      }
+    },
+  })
+
+  // /sync - Manually sync memory files
+  api.registerCommand({
+    name: "sync",
+    description: "Sync memory/*.md files with Hyperspell",
+    acceptsArgs: false,
+    requireAuth: true,
+    handler: async () => {
+      log.debug("/sync command")
+
+      try {
+        const workspaceDir = getWorkspaceDir()
+        const result = await syncAllMemoryFiles(client, workspaceDir)
+
+        if (result.synced === 0 && result.failed === 0) {
+          return { text: "No memory files found in memory/ directory." }
+        }
+
+        if (result.failed > 0) {
+          const errors = result.errors.map((e) => `  • ${e}`).join("\n")
+          return {
+            text: `Synced ${result.synced} files, ${result.failed} failed:\n${errors}`,
+          }
+        }
+
+        return { text: `Synced ${result.synced} memory file(s) to Hyperspell.` }
+      } catch (err) {
+        log.error("/sync failed", err)
+        return { text: "Failed to sync memory files. Check logs for details." }
       }
     },
   })

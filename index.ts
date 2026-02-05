@@ -2,8 +2,9 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk"
 import { HyperspellClient } from "./client.ts"
 import { registerCommands } from "./commands/slash.ts"
 import { registerCliCommands } from "./commands/setup.ts"
-import { parseConfig, hyperspellConfigSchema } from "./config.ts"
+import { parseConfig, hyperspellConfigSchema, getWorkspaceDir } from "./config.ts"
 import { buildAutoContextHandler } from "./hooks/auto-context.ts"
+import { buildFileSyncHandler, syncMemoriesOnStartup } from "./hooks/memory-sync.ts"
 import { initLogger } from "./logger.ts"
 import { registerRememberTool } from "./tools/remember.ts"
 import { registerSearchTool } from "./tools/search.ts"
@@ -49,6 +50,15 @@ export default {
           return { text: "Hyperspell not configured. Run 'openclaw openclaw-hyperspell setup' first." }
         },
       })
+      api.registerCommand({
+        name: "sync",
+        description: "Sync memory/*.md files with Hyperspell",
+        acceptsArgs: false,
+        requireAuth: false,
+        handler: async () => {
+          return { text: "Hyperspell not configured. Run 'openclaw openclaw-hyperspell setup' first." }
+        },
+      })
       return
     }
 
@@ -68,14 +78,26 @@ export default {
       api.on("before_agent_start", autoContextHandler)
     }
 
+    // Register memory sync hook
+    if (cfg.syncMemories) {
+      const fileSyncHandler = buildFileSyncHandler(client, cfg)
+      api.on("file_changed", fileSyncHandler)
+    }
+
     // Register slash commands
     registerCommands(api, client, cfg)
 
     // Register service for lifecycle management
     api.registerService({
       id: "openclaw-hyperspell",
-      start: () => {
+      start: async () => {
         api.logger.info("hyperspell: connected")
+
+        // Sync memories on startup if enabled
+        if (cfg.syncMemories) {
+          const workspaceDir = getWorkspaceDir()
+          await syncMemoriesOnStartup(client, workspaceDir)
+        }
       },
       stop: () => {
         api.logger.info("hyperspell: stopped")

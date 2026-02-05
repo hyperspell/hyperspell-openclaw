@@ -5,6 +5,9 @@ import { homedir, platform, userInfo } from "node:os"
 import * as p from "@clack/prompts"
 import type { Command } from "commander"
 import Hyperspell from "hyperspell"
+import { syncAllMemoryFiles, getMemoryFiles } from "../sync/markdown.ts"
+import { HyperspellClient } from "../client.ts"
+import { getWorkspaceDir } from "../config.ts"
 
 /**
  * Resolve OpenClaw state directory, matching OpenClaw's logic.
@@ -241,6 +244,26 @@ async function runSetup(): Promise<void> {
   const sources = await fetchConnectionSources(client, userId)
   s1.stop(`Found ${sources.length} sources: ${sources.join(", ")}`)
 
+  // Step 5: Ask about memory sync
+  p.note(
+    "OpenClaw can automatically sync markdown files in your workspace's\n" +
+      "memory/ directory with Hyperspell. This allows you to:\n\n" +
+      "• Store notes and context that persist across sessions\n" +
+      "• Have the AI reference your local documentation\n" +
+      "• Keep local files in sync with Hyperspell's search",
+    "Memory Sync",
+  )
+
+  const syncMemories = await p.confirm({
+    message: "Enable automatic memory sync for markdown files?",
+    initialValue: true,
+  })
+
+  if (p.isCancel(syncMemories)) {
+    p.cancel("Setup cancelled")
+    return
+  }
+
   // Step 5: Save configuration
   const s2 = p.spinner()
   s2.start("Saving configuration")
@@ -278,6 +301,7 @@ async function runSetup(): Promise<void> {
         userId,
         sources: sources.join(","),
         autoContext: true,
+        syncMemories,
       },
     }
 
@@ -322,6 +346,7 @@ async function runSetup(): Promise<void> {
                 userId,
                 sources: sources.join(","),
                 autoContext: true,
+                syncMemories,
               },
             },
           },
@@ -338,12 +363,52 @@ async function runSetup(): Promise<void> {
     )
   }
 
+  // Step 7: Sync existing memories if enabled
+  if (syncMemories) {
+    const workspaceDir = getWorkspaceDir()
+    const memoryFiles = getMemoryFiles(workspaceDir)
+
+    if (memoryFiles.length > 0) {
+      const s3 = p.spinner()
+      s3.start(`Syncing ${memoryFiles.length} memory file(s)`)
+
+      const hyperspellClient = new HyperspellClient({
+        apiKey,
+        userId,
+        autoContext: true,
+        syncMemories: true,
+        sources: [],
+        maxResults: 10,
+        debug: false,
+      })
+
+      const result = await syncAllMemoryFiles(hyperspellClient, workspaceDir)
+
+      if (result.failed > 0) {
+        s3.stop(`Synced ${result.synced} files, ${result.failed} failed`)
+        for (const error of result.errors) {
+          p.log.error(`  ${error}`)
+        }
+      } else {
+        s3.stop(`Synced ${result.synced} memory files`)
+      }
+    } else {
+      p.log.info("No memory files found in memory/ directory")
+    }
+  }
+
+  const syncNote = syncMemories
+    ? "\n\nMemory sync is enabled — markdown files in memory/ will be\n" +
+      "automatically synced to Hyperspell when they change."
+    : ""
+
   p.note(
     "/getcontext <query>  Search your memories for relevant context\n" +
       "/remember <text>     Save something directly to your vault\n\n" +
       "To connect more apps, run: openclaw openclaw-hyperspell connect\n\n" +
       "Auto-context is enabled by default — relevant memories are\n" +
-      "automatically injected before each AI response.",
+      "automatically injected before each AI response." +
+      syncNote,
     "How to use Hyperspell",
   )
 
@@ -417,6 +482,7 @@ async function runStatus(pluginConfig: unknown): Promise<void> {
   p.log.success("Configured")
   p.log.info(`User ID: ${config.userId || "(not set)"}`)
   p.log.info(`Auto-Context: ${config.autoContext !== false ? "Enabled" : "Disabled"}`)
+  p.log.info(`Memory Sync: ${config.syncMemories ? "Enabled" : "Disabled"}`)
   p.log.info(`Sources Filter: ${config.sources || "(all sources)"}`)
   p.log.info(`Max Results: ${config.maxResults || 10}`)
 

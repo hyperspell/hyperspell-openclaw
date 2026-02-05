@@ -17,6 +17,7 @@ declare module "openclaw/plugin-sdk" {
 
   export interface OpenClawPluginApi {
     pluginConfig: unknown
+    workspaceDir?: string
     logger: {
       info: (message: string, ...args: unknown[]) => void
       warn: (message: string, ...args: unknown[]) => void

@@ -138,16 +138,25 @@ export class HyperspellClient {
 
   async addMemory(
     text: string,
-    options?: { title?: string; metadata?: Record<string, string | number | boolean> },
+    options?: {
+      title?: string
+      resourceId?: string
+      collection?: string
+      metadata?: Record<string, string | number | boolean>
+    },
   ): Promise<{ resourceId: string }> {
     log.debugRequest("memories.add", {
       textLength: text.length,
       title: options?.title,
+      resourceId: options?.resourceId,
+      collection: options?.collection,
     })
 
     const result = await this.client.memories.add({
       text,
       title: options?.title,
+      resource_id: options?.resourceId,
+      collection: options?.collection,
       metadata: {
         ...options?.metadata,
         openclaw_source: "command",

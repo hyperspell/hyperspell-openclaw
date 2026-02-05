@@ -14,6 +14,7 @@ export type HyperspellConfig = {
   apiKey: string
   userId?: string
   autoContext: boolean
+  syncMemories: boolean
   sources: HyperspellSource[]
   maxResults: number
   debug: boolean
@@ -23,6 +24,7 @@ const ALLOWED_KEYS = [
   "apiKey",
   "userId",
   "autoContext",
+  "syncMemories",
   "sources",
   "maxResults",
   "debug",
@@ -130,6 +132,7 @@ export function parseConfig(raw: unknown): HyperspellConfig {
     apiKey,
     userId: cfg.userId as string | undefined,
     autoContext: (cfg.autoContext as boolean) ?? true,
+    syncMemories: (cfg.syncMemories as boolean) ?? false,
     sources: parseSources(cfg.sources as string | string[] | undefined),
     maxResults: (cfg.maxResults as number) ?? 10,
     debug: (cfg.debug as boolean) ?? false,
@@ -138,4 +141,51 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 
 export const hyperspellConfigSchema = {
   parse: parseConfig,
+}
+
+/**
+ * Get the workspace directory from OpenClaw config
+ */
+export function getWorkspaceDir(): string {
+  const { homedir } = require("node:os")
+  const fs = require("node:fs")
+  const path = require("node:path")
+
+  // Resolve config path
+  const override = process.env.OPENCLAW_CONFIG_PATH?.trim() || process.env.CLAWDBOT_CONFIG_PATH?.trim()
+  let configPath: string
+  if (override) {
+    configPath = override.startsWith("~")
+      ? override.replace(/^~(?=$|[\\/])/, homedir())
+      : path.resolve(override)
+  } else {
+    const stateDir = process.env.OPENCLAW_STATE_DIR?.trim() || process.env.CLAWDBOT_STATE_DIR?.trim()
+    const resolvedStateDir = stateDir
+      ? (stateDir.startsWith("~") ? stateDir.replace(/^~(?=$|[\\/])/, homedir()) : path.resolve(stateDir))
+      : path.join(homedir(), ".openclaw")
+    configPath = path.join(resolvedStateDir, "openclaw.json")
+  }
+
+  // Read workspace from config
+  if (fs.existsSync(configPath)) {
+    try {
+      const content = fs.readFileSync(configPath, "utf-8")
+      const config = JSON.parse(content)
+      const workspace = config?.agents?.defaults?.workspace
+      if (workspace) {
+        return workspace.startsWith("~")
+          ? workspace.replace(/^~(?=$|[\\/])/, homedir())
+          : workspace
+      }
+    } catch (_e) {
+      // Fall back to default
+    }
+  }
+
+  // Default workspace
+  const stateDir = process.env.OPENCLAW_STATE_DIR?.trim() || process.env.CLAWDBOT_STATE_DIR?.trim()
+  const resolvedStateDir = stateDir
+    ? (stateDir.startsWith("~") ? stateDir.replace(/^~(?=$|[\\/])/, homedir()) : path.resolve(stateDir))
+    : path.join(homedir(), ".openclaw")
+  return path.join(resolvedStateDir, "workspace")
 }
