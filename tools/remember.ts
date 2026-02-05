@@ -26,16 +26,28 @@ export function registerRememberTool(
       ) {
         log.debug(`remember tool: "${params.text.slice(0, 50)}..."`)
 
-        await client.addMemory(params.text, {
-          title: params.title,
-          metadata: { source: "openclaw_tool" },
-        })
+        try {
+          await client.addMemory(params.text, {
+            title: params.title,
+            metadata: { source: "openclaw_tool" },
+          })
 
-        const preview =
-          params.text.length > 80 ? `${params.text.slice(0, 80)}…` : params.text
+          const preview =
+            params.text.length > 80 ? `${params.text.slice(0, 80)}…` : params.text
 
-        return {
-          content: [{ type: "text" as const, text: `Stored: "${preview}"` }],
+          return {
+            content: [{ type: "text" as const, text: `Stored: "${preview}"` }],
+          }
+        } catch (err) {
+          log.error("remember tool failed", err)
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Failed to store memory: ${err instanceof Error ? err.message : String(err)}`,
+              },
+            ],
+          }
         }
       },
     },

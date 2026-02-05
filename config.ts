@@ -62,8 +62,30 @@ function resolveEnvVars(value: string): string {
   })
 }
 
-function parseSources(raw: string | undefined): HyperspellSource[] {
-  if (!raw || raw.trim() === "") {
+function parseSources(raw: string | string[] | undefined): HyperspellSource[] {
+  if (!raw) {
+    return []
+  }
+
+  // Handle array input
+  if (Array.isArray(raw)) {
+    const sources = raw
+      .map((s) => String(s).trim().toLowerCase())
+      .filter((s) => s.length > 0) as HyperspellSource[]
+
+    for (const source of sources) {
+      if (!VALID_SOURCES.includes(source)) {
+        throw new Error(
+          `Invalid source "${source}". Valid sources: ${VALID_SOURCES.join(", ")}`,
+        )
+      }
+    }
+
+    return sources
+  }
+
+  // Handle string input (comma-separated)
+  if (typeof raw === "string" && raw.trim() === "") {
     return []
   }
 
@@ -108,7 +130,7 @@ export function parseConfig(raw: unknown): HyperspellConfig {
     apiKey,
     userId: cfg.userId as string | undefined,
     autoContext: (cfg.autoContext as boolean) ?? true,
-    sources: parseSources(cfg.sources as string | undefined),
+    sources: parseSources(cfg.sources as string | string[] | undefined),
     maxResults: (cfg.maxResults as number) ?? 10,
     debug: (cfg.debug as boolean) ?? false,
   }

@@ -34,6 +34,35 @@ function resolveConfigPath(): string {
   return path.join(resolveStateDir(), "openclaw.json")
 }
 
+async function fetchConnectionSources(client: Hyperspell, userId: string): Promise<string[]> {
+  try {
+    const userClient = new Hyperspell({
+      apiKey: client.apiKey,
+      userID: userId,
+    })
+    const response = await userClient.connections.list()
+    const providers = response.connections.map((conn) => conn.provider)
+    // Add vault and deduplicate
+    const sources = [...new Set(["vault", ...providers])]
+    return sources
+  } catch (_error) {
+    return ["vault"]
+  }
+}
+
+function updateConfigSources(configPath: string, sources: string[]): void {
+  if (!fs.existsSync(configPath)) return
+
+  const content = fs.readFileSync(configPath, "utf-8")
+  const config = JSON.parse(content)
+
+  const pluginConfig = config?.plugins?.entries?.["openclaw-hyperspell"]?.config
+  if (pluginConfig) {
+    pluginConfig.sources = sources.join(",")
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n")
+  }
+}
+
 function openUrl(url: string): Promise<void> {
   return new Promise((resolve, reject) => {
     let command: string
@@ -206,6 +235,12 @@ async function runSetup(): Promise<void> {
     }
   }
 
+  // Fetch connected sources
+  const s1 = p.spinner()
+  s1.start("Fetching connected sources")
+  const sources = await fetchConnectionSources(client, userId)
+  s1.stop(`Found ${sources.length} sources: ${sources.join(", ")}`)
+
   // Step 5: Save configuration
   const s2 = p.spinner()
   s2.start("Saving configuration")
@@ -241,6 +276,7 @@ async function runSetup(): Promise<void> {
       config: {
         apiKey: "${HYPERSPELL_API_KEY}",
         userId,
+        sources: sources.join(","),
         autoContext: true,
       },
     }
@@ -284,6 +320,7 @@ async function runSetup(): Promise<void> {
               config: {
                 apiKey: "${HYPERSPELL_API_KEY}",
                 userId,
+                sources: sources.join(","),
                 autoContext: true,
               },
             },
@@ -316,8 +353,9 @@ async function runSetup(): Promise<void> {
 async function runConnect(pluginConfig: unknown): Promise<void> {
   const config = pluginConfig as Record<string, unknown> | undefined
 
+  p.intro("Hyperspell Connect")
+
   if (!config?.apiKey) {
-    p.intro("Hyperspell Connect")
     p.log.error("Not configured")
     p.note("Run 'openclaw openclaw-hyperspell setup' to configure Hyperspell first.")
     p.outro("")
@@ -327,9 +365,11 @@ async function runConnect(pluginConfig: unknown): Promise<void> {
   const s = p.spinner()
   s.start("Generating connect URL")
 
+  let client: Hyperspell
+  let userId: string
   try {
-    const client = new Hyperspell({ apiKey: config.apiKey as string })
-    const userId = (config.userId as string) || userInfo().username || "user"
+    client = new Hyperspell({ apiKey: config.apiKey as string })
+    userId = (config.userId as string) || userInfo().username || "user"
     const tokenResponse = await client.auth.userToken({ user_id: userId })
     const connectUrl = `https://connect.hyperspell.com?token=${tokenResponse.token}`
 
@@ -337,10 +377,28 @@ async function runConnect(pluginConfig: unknown): Promise<void> {
 
     await openUrl(connectUrl)
     p.log.success("Browser opened to connect.hyperspell.com")
-    p.note("Connect your accounts and close this when done.", "Connect Your Apps")
+
+    await p.confirm({
+      message: "Finished connecting accounts?",
+      active: "Yes",
+      inactive: "Not yet",
+    })
+
+    // Fetch and update sources
+    const s2 = p.spinner()
+    s2.start("Updating sources configuration")
+
+    const sources = await fetchConnectionSources(client, userId)
+    const configPath = resolveConfigPath()
+    updateConfigSources(configPath, sources)
+
+    s2.stop(`Sources updated: ${sources.join(", ")}`)
+
+    p.outro("Done! Restart OpenClaw to apply changes.")
   } catch (_error) {
     s.stop("Failed to generate connect URL")
     p.log.error("Check your API key and try again.")
+    p.outro("")
   }
 }
 

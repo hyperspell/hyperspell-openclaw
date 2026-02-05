@@ -11,7 +11,7 @@ import { registerSearchTool } from "./tools/search.ts"
 export default {
   id: "openclaw-hyperspell",
   name: "Hyperspell",
-  description: "OpenClaw powered by Hyperspell - RAG-as-a-service for your connected sources",
+  description: "Hyperspell gives your Molty context and memory from all your existing data",
   kind: "memory" as const,
   configSchema: hyperspellConfigSchema,
 

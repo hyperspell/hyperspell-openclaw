@@ -28,42 +28,62 @@ export function registerSearchTool(
         const limit = params.limit ?? 5
         log.debug(`search tool: query="${params.query}" limit=${limit}`)
 
-        const results = await client.search(params.query, { limit })
+        try {
+          const response = await client.searchRaw(params.query, { limit })
+          const documents = (response.documents ?? []) as Array<{
+            source: string
+            resource_id: string
+            score?: number
+            summary?: string
+            title?: string
+            metadata?: Record<string, unknown>
+            highlights?: Array<{ text: string }>
+            data?: Array<{ text: string }>
+          }>
 
-        if (results.length === 0) {
+          if (documents.length === 0) {
+            return {
+              content: [
+                { type: "text" as const, text: "No relevant memories found." },
+              ],
+            }
+          }
+
+          const formattedDocs = documents
+            .map((doc, i) => {
+              const relevance = doc.score
+                ? `${Math.round(doc.score * 100)}%`
+                : "N/A"
+              const title = doc.title || "(untitled)"
+              const summary = doc.summary || "(no summary)"
+              return `${i + 1}. Source: ${doc.source}\n   Title: ${title}\n   Summary: ${summary}\n   Relevance: ${relevance}`
+            })
+            .join("\n\n")
+
+          const text = `Found ${documents.length} memories:\n\n${formattedDocs}`
+
           return {
             content: [
-              { type: "text" as const, text: "No relevant memories found." },
+              {
+                type: "text" as const,
+                text,
+              },
+            ],
+            details: {
+              count: documents.length,
+              documents,
+            },
+          }
+        } catch (err) {
+          log.error("search tool failed", err)
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Search failed: ${err instanceof Error ? err.message : String(err)}`,
+              },
             ],
           }
-        }
-
-        const text = results
-          .map((r, i) => {
-            const title = r.title ?? `[${r.source}]`
-            const score = r.score
-              ? ` (${Math.round(r.score * 100)}%)`
-              : ""
-            return `${i + 1}. ${title}${score}`
-          })
-          .join("\n")
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Found ${results.length} memories:\n\n${text}`,
-            },
-          ],
-          details: {
-            count: results.length,
-            memories: results.map((r) => ({
-              resourceId: r.resourceId,
-              title: r.title,
-              source: r.source,
-              score: r.score,
-            })),
-          },
         }
       },
     },
