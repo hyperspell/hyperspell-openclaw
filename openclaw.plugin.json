@@ -11,12 +11,13 @@
     "userId": {
       "label": "User ID",
       "placeholder": "user_123",
-      "help": "Optional user ID to scope searches. Required for non-JWT API keys.",
-      "advanced": true
+      "help": "User ID (can be your email)",
+      "advanced": false
     },
     "autoContext": {
       "label": "Auto-Context",
-      "help": "Inject relevant memories before every AI turn"
+      "help": "Inject relevant memories before every AI turn",
+      "advanced": true
     },
     "sources": {
       "label": "Sources",
@@ -40,12 +41,26 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "apiKey": { "type": "string" },
-      "userId": { "type": "string" },
-      "autoContext": { "type": "boolean" },
-      "sources": { "type": "string" },
-      "maxResults": { "type": "number", "minimum": 1, "maximum": 20 },
-      "debug": { "type": "boolean" }
+      "apiKey": {
+        "type": "string"
+      },
+      "userId": {
+        "type": "string"
+      },
+      "autoContext": {
+        "type": "boolean"
+      },
+      "sources": {
+        "type": "string"
+      },
+      "maxResults": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 20
+      },
+      "debug": {
+        "type": "boolean"
+      }
     },
     "required": []
   }

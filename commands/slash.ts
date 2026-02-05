@@ -1,7 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk"
 import type { HyperspellClient } from "../client.ts"
 import type { HyperspellConfig } from "../config.ts"
-import { openInBrowser } from "../lib/browser.ts"
 import { log } from "../logger.ts"
 
 function truncate(text: string, maxLength: number): string {
@@ -52,59 +51,6 @@ export function registerCommands(
       } catch (err) {
         log.error("/getcontext failed", err)
         return { text: "Failed to search memories. Check logs for details." }
-      }
-    },
-  })
-
-  // /connect <source> - Open connection URL for an integration
-  api.registerCommand({
-    name: "connect",
-    description: "Connect an account to Hyperspell",
-    acceptsArgs: true,
-    requireAuth: true,
-    handler: async (ctx: { args?: string }) => {
-      const source = ctx.args?.trim().toLowerCase()
-      if (!source) {
-        return { text: "Usage: /connect <source>\n\nExamples: /connect notion, /connect slack" }
-      }
-
-      log.debug(`/connect command: "${source}"`)
-
-      try {
-        const integrations = await client.listIntegrations()
-
-        // Find matching integration by provider or name
-        const integration = integrations.find(
-          (int) =>
-            int.provider.toLowerCase() === source ||
-            int.name.toLowerCase() === source ||
-            int.id.toLowerCase() === source,
-        )
-
-        if (!integration) {
-          const available = integrations.map((i) => i.provider).join(", ")
-          return {
-            text: `Integration "${source}" not found.\n\nAvailable: ${available}`,
-          }
-        }
-
-        const { url } = await client.getConnectUrl(integration.id)
-
-        // Auto-open in browser
-        try {
-          await openInBrowser(url)
-          return {
-            text: `Opening ${integration.name} connection in your browser...`,
-          }
-        } catch {
-          // Fall back to showing the URL if browser open fails
-          return {
-            text: `Connect your ${integration.name} account:\n${url}`,
-          }
-        }
-      } catch (err) {
-        log.error("/connect failed", err)
-        return { text: "Failed to get connect URL. Check logs for details." }
       }
     },
   })

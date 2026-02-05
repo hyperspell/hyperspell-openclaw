@@ -10,9 +10,23 @@ OpenClaw plugin for [Hyperspell](https://hyperspell.com) - Context and memory fo
 openclaw plugins install @hyperspell/openclaw-hyperspell
 ```
 
-## Configuration
+## Quick Start
 
-Add to your `openclaw.json`:
+Run the interactive setup wizard:
+
+```bash
+openclaw openclaw-hyperspell setup
+```
+
+The setup wizard will guide you through:
+1. Creating a Hyperspell account (if you don't have one)
+2. Configuring your API key
+3. Setting up your User ID for multi-tenant memory
+4. Connecting your apps (Notion, Slack, Google Drive, etc.)
+
+## Manual Configuration
+
+Alternatively, add to your `openclaw.json`:
 
 ```json
 {
@@ -22,6 +36,7 @@ Add to your `openclaw.json`:
         "enabled": true,
         "config": {
           "apiKey": "${HYPERSPELL_API_KEY}",
+          "userId": "your-email",
           "autoContext": true
         }
       }
@@ -37,12 +52,26 @@ Or set the environment variable:
 export HYPERSPELL_API_KEY=hs_...
 ```
 
+## CLI Commands
+
+### `openclaw openclaw-hyperspell setup`
+
+Interactive setup wizard that walks you through configuration.
+
+### `openclaw openclaw-hyperspell status`
+
+Check your current configuration and connection status.
+
+### `openclaw openclaw-hyperspell connect`
+
+Open the Hyperspell connect page to link your accounts (Notion, Slack, Google Drive, etc.)
+
 ### Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `apiKey` | string | `${HYPERSPELL_API_KEY}` | Hyperspell API key |
-| `userId` | string | - | User ID to scope searches (for non-JWT API keys) |
+| `userId` | string | - | User ID (can be your email) |
 | `autoContext` | boolean | `true` | Auto-inject relevant memories before each AI turn |
 | `sources` | string | - | Comma-separated sources to search (e.g., `notion,slack`) |
 | `maxResults` | number | `10` | Maximum memories per context injection |
@@ -56,16 +85,6 @@ Search your memories for relevant context.
 
 ```
 /getcontext Q1 budget planning
-```
-
-### `/connect <source>`
-
-Connect an account to Hyperspell. Opens the OAuth flow in your browser.
-
-```
-/connect notion
-/connect slack
-/connect google_drive
 ```
 
 ### `/remember <text>`
@@ -95,12 +114,11 @@ This ensures the AI always has access to relevant information from your connecte
 
 ## Available Sources
 
-- `collections` - User-created collections
+- `vault` - User-created memories
 - `notion` - Notion pages and databases
 - `slack` - Slack messages
 - `google_calendar` - Google Calendar events
 - `google_mail` - Gmail messages
 - `google_drive` - Google Drive files
 - `box` - Box files
-- `vault` - Vault documents
 - `web_crawler` - Crawled web pages
