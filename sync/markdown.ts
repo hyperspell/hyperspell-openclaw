@@ -86,7 +86,7 @@ function updateFrontmatterId(filePath: string, hyperspellId: string): void {
 }
 
 /**
- * Get all markdown files from the memory directory
+ * Get all markdown files from the memory directory, including subdirectories
  */
 export function getMemoryFiles(workspaceDir: string): string[] {
   const memoryDir = path.join(workspaceDir, "memory")
@@ -95,15 +95,25 @@ export function getMemoryFiles(workspaceDir: string): string[] {
     return []
   }
 
-  try {
-    const files = fs.readdirSync(memoryDir)
-    return files
-      .filter((file) => file.endsWith(".md"))
-      .map((file) => path.join(memoryDir, file))
-  } catch (err) {
-    log.error("Failed to read memory directory", err)
-    return []
+  const results: string[] = []
+
+  function walk(dir: string): void {
+    try {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const fullPath = path.join(dir, entry.name)
+        if (entry.isDirectory()) {
+          walk(fullPath)
+        } else if (entry.name.endsWith(".md")) {
+          results.push(fullPath)
+        }
+      }
+    } catch (err) {
+      log.error(`Failed to read directory: ${dir}`, err)
+    }
   }
+
+  walk(memoryDir)
+  return results
 }
 
 /**

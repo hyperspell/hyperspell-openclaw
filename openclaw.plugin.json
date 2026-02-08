@@ -35,6 +35,11 @@
       "label": "Debug Logging",
       "help": "Enable verbose debug logs for API calls and responses",
       "advanced": true
+    },
+    "syncMemories": {
+      "label": "Sync Memory Files",
+      "help": "Automatically sync markdown files in workspace/memory/ to Hyperspell",
+      "advanced": true
     }
   },
   "configSchema": {
@@ -59,6 +64,9 @@
         "maximum": 20
       },
       "debug": {
+        "type": "boolean"
+      },
+      "syncMemories": {
         "type": "boolean"
       }
     },
