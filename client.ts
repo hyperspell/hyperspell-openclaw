@@ -195,6 +195,45 @@ export class HyperspellClient {
     }
   }
 
+  async *listMemories(
+    options?: { source?: HyperspellSource; collection?: string; pageSize?: number },
+  ): AsyncGenerator<{
+    resourceId: string
+    source: HyperspellSource
+    title: string | null
+    metadata: Record<string, unknown>
+  }> {
+    log.debugRequest("memories.list", { source: options?.source, collection: options?.collection })
+
+    const params: Record<string, unknown> = {
+      size: options?.pageSize ?? 100,
+    }
+    if (options?.source) params.source = options.source
+    if (options?.collection) params.collection = options.collection
+
+    for await (const memory of this.client.memories.list(params as any)) {
+      yield {
+        resourceId: memory.resource_id,
+        source: memory.source as HyperspellSource,
+        title: memory.title ?? null,
+        metadata: (memory.metadata ?? {}) as Record<string, unknown>,
+      }
+    }
+  }
+
+  async getMemory(
+    resourceId: string,
+    source: HyperspellSource,
+  ): Promise<Record<string, unknown>> {
+    log.debugRequest("memories.get", { resourceId, source })
+
+    const response = await this.client.memories.get(resourceId, { source })
+    const raw = response as unknown as Record<string, unknown>
+
+    log.debugResponse("memories.get", { resourceId, hasData: "data" in raw })
+    return raw
+  }
+
   async listConnections(): Promise<Connection[]> {
     log.debugRequest("connections.list", {})
 

@@ -40,6 +40,11 @@
       "label": "Sync Memory Files",
       "help": "Automatically sync markdown files in workspace/memory/ to Hyperspell",
       "advanced": true
+    },
+    "knowledgeGraph": {
+      "label": "Memory Network",
+      "help": "Extract entities (people, projects, orgs, topics) from memories into structured markdown files. Requires a cron job for periodic scanning.",
+      "advanced": true
     }
   },
   "configSchema": {
@@ -68,6 +73,14 @@
       },
       "syncMemories": {
         "type": "boolean"
+      },
+      "knowledgeGraph": {
+        "type": "object",
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "scanIntervalMinutes": { "type": "number", "minimum": 5, "maximum": 1440 },
+          "batchSize": { "type": "number", "minimum": 5, "maximum": 100 }
+        }
       }
     },
     "required": []

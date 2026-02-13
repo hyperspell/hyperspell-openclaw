@@ -8,6 +8,7 @@ import { buildFileSyncHandler, syncMemoriesOnStartup } from "./hooks/memory-sync
 import { initLogger } from "./logger.ts"
 import { registerRememberTool } from "./tools/remember.ts"
 import { registerSearchTool } from "./tools/search.ts"
+import { registerNetworkTools } from "./graph/index.ts"
 
 export default {
   id: "openclaw-hyperspell",
@@ -82,6 +83,11 @@ export default {
     if (cfg.syncMemories) {
       const fileSyncHandler = buildFileSyncHandler(client, cfg)
       api.on("file_changed", fileSyncHandler)
+    }
+
+    // Register memory network tools
+    if (cfg.knowledgeGraph.enabled) {
+      registerNetworkTools(api, client, cfg)
     }
 
     // Register slash commands

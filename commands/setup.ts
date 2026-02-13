@@ -1,4 +1,4 @@
-import { exec } from "node:child_process"
+import { exec, execFileSync } from "node:child_process"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { homedir, platform, userInfo } from "node:os"
@@ -7,7 +7,10 @@ import type { Command } from "commander"
 import Hyperspell from "hyperspell"
 import { syncAllMemoryFiles, getMemoryFiles } from "../sync/markdown.ts"
 import { HyperspellClient } from "../client.ts"
-import { getWorkspaceDir } from "../config.ts"
+import { getWorkspaceDir, parseConfig } from "../config.ts"
+import { buildExtractionPrompt, CRON_JOB_NAME } from "../graph/cron.ts"
+import { NetworkStateManager } from "../graph/state.ts"
+import { scanMemories, formatScanResults, completeMemories } from "../graph/ops.ts"
 
 /**
  * Resolve OpenClaw state directory, matching OpenClaw's logic.
@@ -380,6 +383,7 @@ async function runSetup(): Promise<void> {
         sources: [],
         maxResults: 10,
         debug: false,
+        knowledgeGraph: { enabled: false, scanIntervalMinutes: 60, batchSize: 20 },
       })
 
       const result = await syncAllMemoryFiles(hyperspellClient, workspaceDir)
@@ -397,9 +401,119 @@ async function runSetup(): Promise<void> {
     }
   }
 
+  // Step 8: Memory Network setup
+  p.note(
+    "The Memory Network automatically extracts entities (people, projects,\n" +
+      "organizations, topics) from your memories into structured markdown\n" +
+      "files. This runs as a periodic cron job in the main session.",
+    "Memory Network",
+  )
+
+  const enableNetwork = await p.confirm({
+    message: "Enable the Memory Network?",
+    initialValue: false,
+  })
+
+  if (!p.isCancel(enableNetwork) && enableNetwork) {
+    // Update config to enable knowledgeGraph
+    try {
+      const configPath = resolveConfigPath()
+      if (fs.existsSync(configPath)) {
+        const configContent = fs.readFileSync(configPath, "utf-8")
+        const config = JSON.parse(configContent)
+        const pluginEntry = config?.plugins?.entries?.["openclaw-hyperspell"]?.config
+        if (pluginEntry) {
+          pluginEntry.knowledgeGraph = { enabled: true }
+          fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n")
+        }
+      }
+      p.log.success("Memory Network enabled in config")
+    } catch {
+      p.log.warn("Could not update config — add knowledgeGraph.enabled: true manually")
+    }
+
+    // Write the extraction prompt to a file and create the cron job
+    const networkWorkspaceDir = getWorkspaceDir()
+    const promptPath = path.join(networkWorkspaceDir, "HYPERSPELL-MEMORY-NETWORK.md")
+    const prompt = buildExtractionPrompt(networkWorkspaceDir)
+    fs.mkdirSync(path.dirname(promptPath), { recursive: true })
+    fs.writeFileSync(promptPath, prompt)
+
+    const s4 = p.spinner()
+    s4.start("Creating Memory Network cron job")
+
+    let cronJobId: string | null = null
+    try {
+      const output = execFileSync("openclaw", [
+        "cron", "add",
+        "--name", CRON_JOB_NAME,
+        "--every", "1h",
+        "--session", "isolated",
+        "--message", `Read the file at ${promptPath} and follow the instructions inside it.`,
+      ], { stdio: ["pipe", "pipe", "pipe"], timeout: 10_000 })
+
+      // Extract job ID from the JSON output
+      const text = output.toString().trim()
+      // Find the JSON object in the output (skip any non-JSON prefix lines)
+      const jsonStart = text.indexOf("{")
+      if (jsonStart >= 0) {
+        try {
+          const job = JSON.parse(text.slice(jsonStart))
+          cronJobId = job?.id || null
+        } catch {}
+      }
+
+      s4.stop("Cron job created — Memory Network will scan every hour")
+    } catch (cronErr) {
+      s4.stop("Could not create cron job automatically")
+
+      p.log.warn(`Cron creation failed. Create it manually:`)
+
+      p.note(
+        `openclaw cron add \\\n` +
+          `  --name "${CRON_JOB_NAME}" \\\n` +
+          `  --every 1h \\\n` +
+          `  --session isolated \\\n` +
+          `  --message "Read the file at ${promptPath} and follow the instructions inside it."`,
+        "Manual cron setup",
+      )
+    }
+
+    // Ask if they want to run the first extraction now
+    const runNow = await p.confirm({
+      message: "Run the Memory Network now? (If not, it will run automatically on the next cron cycle)",
+      initialValue: true,
+    })
+
+    if (!p.isCancel(runNow) && runNow) {
+      if (cronJobId) {
+        const s5 = p.spinner()
+        s5.start("Triggering Memory Network extraction")
+
+        try {
+          execFileSync("openclaw", [
+            "cron", "run", cronJobId,
+          ], { stdio: "pipe", timeout: 10_000 })
+
+          s5.stop("Memory Network extraction triggered — running in the background")
+        } catch {
+          s5.stop("Could not trigger automatically")
+          p.log.info(`You can trigger it manually with: openclaw cron run ${cronJobId}`)
+        }
+      } else {
+        p.log.info("Create the cron job first, then run it with: openclaw cron run <job-id>")
+      }
+    }
+  }
+
   const syncNote = syncMemories
     ? "\n\nMemory sync is enabled — markdown files in memory/ will be\n" +
       "automatically synced to Hyperspell when they change."
+    : ""
+
+  const networkNote = !p.isCancel(enableNetwork) && enableNetwork
+    ? "\n\nMemory Network is enabled — entities will be extracted into\n" +
+      "memory/people/, memory/projects/, memory/organizations/, memory/topics/"
     : ""
 
   p.note(
@@ -408,7 +522,8 @@ async function runSetup(): Promise<void> {
       "To connect more apps, run: openclaw openclaw-hyperspell connect\n\n" +
       "Auto-context is enabled by default — relevant memories are\n" +
       "automatically injected before each AI response." +
-      syncNote,
+      syncNote +
+      networkNote,
     "How to use Hyperspell",
   )
 
@@ -532,5 +647,71 @@ export function registerCliCommands(program: Command, pluginConfig: unknown): vo
     .description("Open the Hyperspell connect page to link your accounts")
     .action(async () => {
       await runConnect(pluginConfig)
+    })
+
+  // Memory Network CLI commands (used by isolated cron sessions via exec)
+  const networkCmd = hyperspellCmd
+    .command("network")
+    .description("Memory Network operations")
+
+  networkCmd
+    .command("scan")
+    .description("Scan for unprocessed memories and output summaries")
+    .option("--batch-size <n>", "Max memories to return", "20")
+    .action(async (opts) => {
+      try {
+        const cfg = parseConfig(pluginConfig)
+        const client = new HyperspellClient(cfg)
+        const workspaceDir = getWorkspaceDir()
+        const stateManager = new NetworkStateManager(workspaceDir)
+        const batchSize = Number.parseInt(opts.batchSize, 10) || 20
+
+        const memories = await scanMemories(client, stateManager, batchSize)
+        const text = formatScanResults(memories, stateManager.getProcessedCount(), stateManager.getLastScanAt())
+        process.stdout.write(text + "\n")
+      } catch (err) {
+        process.stderr.write(`Scan failed: ${err instanceof Error ? err.message : String(err)}\n`)
+        process.exit(1)
+      }
+    })
+
+  networkCmd
+    .command("complete")
+    .description("Mark memory IDs as processed")
+    .requiredOption("--ids <ids>", "Comma-separated resource_ids")
+    .action((opts) => {
+      try {
+        const workspaceDir = getWorkspaceDir()
+        const stateManager = new NetworkStateManager(workspaceDir)
+        const memoryIds = (opts.ids as string).split(",").map((s: string) => s.trim()).filter(Boolean)
+
+        const { newCount, totalCount } = completeMemories(stateManager, memoryIds)
+        process.stdout.write(`Marked ${newCount} new memories as processed (${totalCount} total)\n`)
+      } catch (err) {
+        process.stderr.write(`Complete failed: ${err instanceof Error ? err.message : String(err)}\n`)
+        process.exit(1)
+      }
+    })
+
+  networkCmd
+    .command("sync")
+    .description("Sync entity files in memory/ to Hyperspell")
+    .action(async () => {
+      try {
+        const cfg = parseConfig(pluginConfig)
+        const client = new HyperspellClient(cfg)
+        const workspaceDir = getWorkspaceDir()
+
+        const result = await syncAllMemoryFiles(client, workspaceDir)
+        process.stdout.write(`Synced ${result.synced} files, ${result.failed} failed\n`)
+        if (result.errors.length > 0) {
+          for (const error of result.errors) {
+            process.stderr.write(`  ${error}\n`)
+          }
+        }
+      } catch (err) {
+        process.stderr.write(`Sync failed: ${err instanceof Error ? err.message : String(err)}\n`)
+        process.exit(1)
+      }
     })
 }

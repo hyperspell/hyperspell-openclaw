@@ -10,6 +10,12 @@ export type HyperspellSource =
   | "vault"
   | "web_crawler"
 
+export type KnowledgeGraphConfig = {
+  enabled: boolean
+  scanIntervalMinutes: number
+  batchSize: number
+}
+
 export type HyperspellConfig = {
   apiKey: string
   userId?: string
@@ -18,6 +24,7 @@ export type HyperspellConfig = {
   sources: HyperspellSource[]
   maxResults: number
   debug: boolean
+  knowledgeGraph: KnowledgeGraphConfig
 }
 
 const ALLOWED_KEYS = [
@@ -28,6 +35,7 @@ const ALLOWED_KEYS = [
   "sources",
   "maxResults",
   "debug",
+  "knowledgeGraph",
 ]
 
 const VALID_SOURCES: HyperspellSource[] = [
@@ -128,6 +136,8 @@ export function parseConfig(raw: unknown): HyperspellConfig {
     )
   }
 
+  const kgRaw = (cfg.knowledgeGraph ?? {}) as Record<string, unknown>
+
   return {
     apiKey,
     userId: cfg.userId as string | undefined,
@@ -136,6 +146,11 @@ export function parseConfig(raw: unknown): HyperspellConfig {
     sources: parseSources(cfg.sources as string | string[] | undefined),
     maxResults: (cfg.maxResults as number) ?? 10,
     debug: (cfg.debug as boolean) ?? false,
+    knowledgeGraph: {
+      enabled: (kgRaw.enabled as boolean) ?? false,
+      scanIntervalMinutes: (kgRaw.scanIntervalMinutes as number) ?? 60,
+      batchSize: (kgRaw.batchSize as number) ?? 20,
+    },
   }
 }
 
