@@ -30,6 +30,8 @@ export type HyperspellConfig = {
 	userId?: string;
 	autoContext: boolean;
 	autoTrace: AutoTraceConfig;
+	emotionalContext: boolean;
+	relationshipId?: string;
 	syncMemories: boolean;
 	sources: HyperspellSource[];
 	maxResults: number;
@@ -43,6 +45,8 @@ const ALLOWED_KEYS = [
 	"userId",
 	"autoContext",
 	"autoTrace",
+	"emotionalContext",
+	"relationshipId",
 	"syncMemories",
 	"sources",
 	"maxResults",
@@ -168,6 +172,8 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 				| Record<string, string | number | boolean>
 				| undefined,
 		},
+		emotionalContext: (cfg.emotionalContext as boolean) ?? false,
+		relationshipId: cfg.relationshipId as string | undefined,
 		syncMemories: (cfg.syncMemories as boolean) ?? false,
 		sources: parseSources(cfg.sources as string | string[] | undefined),
 		maxResults: (cfg.maxResults as number) ?? 10,
