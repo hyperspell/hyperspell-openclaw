@@ -19,6 +19,17 @@
       "help": "Inject relevant memories before every AI turn",
       "advanced": true
     },
+    "emotionalContext": {
+      "label": "Emotional Context",
+      "help": "Maintain emotional continuity across sessions — remembers not just what happened, but how it felt",
+      "advanced": true
+    },
+    "relationshipId": {
+      "label": "Relationship ID",
+      "placeholder": "partner-anna",
+      "help": "Optional identifier for per-relationship emotional state (e.g. different registers for different people)",
+      "advanced": true
+    },
     "sources": {
       "label": "Sources",
       "placeholder": "notion,slack,google_drive",
@@ -59,6 +70,12 @@
       },
       "autoContext": {
         "type": "boolean"
+      },
+      "emotionalContext": {
+        "type": "boolean"
+      },
+      "relationshipId": {
+        "type": "string"
       },
       "sources": {
         "type": "string"

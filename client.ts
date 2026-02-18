@@ -30,6 +30,25 @@ export type Connection = {
   provider: HyperspellSource
 }
 
+export type EmotionalStateResponse = {
+  resourceId: string
+  summary: string
+  extractedAt: string
+  sessionId: string | null
+  relationshipId: string | null
+  status: string
+}
+
+export type EmotionalStateLatest = {
+  resourceId: string
+  summary: string
+  extractedAt: string
+  sessionId: string | null
+  relationshipId: string | null
+}
+
+const API_BASE_URL = "https://api.hyperspell.com"
+
 export class HyperspellClient {
   private client: Hyperspell
   private config: HyperspellConfig
@@ -41,6 +60,17 @@ export class HyperspellClient {
       userID: config.userId,
     })
     log.info(`client initialized${config.userId ? ` for user ${config.userId}` : ""}`)
+  }
+
+  private rawHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${this.config.apiKey}`,
+    }
+    if (this.config.userId) {
+      headers["X-As-User"] = this.config.userId
+    }
+    return headers
   }
 
   async search(
@@ -248,5 +278,107 @@ export class HyperspellClient {
 
     log.debugResponse("connections.list", { count: connections.length })
     return connections
+  }
+
+  // -- Emotional State (raw fetch — not in public SDK) -----------------------
+
+  async storeEmotionalState(
+    conversation: string,
+    options?: {
+      sessionId?: string
+      relationshipId?: string
+      metadata?: Record<string, string | number | boolean>
+    },
+  ): Promise<EmotionalStateResponse> {
+    log.debugRequest("emotional-state.store", {
+      conversationLength: conversation.length,
+      relationshipId: options?.relationshipId,
+    })
+
+    const body: Record<string, unknown> = { conversation }
+    if (options?.sessionId) body.session_id = options.sessionId
+    if (options?.relationshipId) body.relationship_id = options.relationshipId
+    if (options?.metadata) body.metadata = options.metadata
+
+    const res = await fetch(`${API_BASE_URL}/emotional-state`, {
+      method: "POST",
+      headers: this.rawHeaders(),
+      body: JSON.stringify(body),
+    })
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "")
+      throw new Error(`POST /emotional-state failed (${res.status}): ${text}`)
+    }
+
+    const data = await res.json()
+    const result: EmotionalStateResponse = {
+      resourceId: data.resource_id,
+      summary: data.summary,
+      extractedAt: data.extracted_at,
+      sessionId: data.session_id ?? null,
+      relationshipId: data.relationship_id ?? null,
+      status: data.status,
+    }
+
+    log.debugResponse("emotional-state.store", { resourceId: result.resourceId })
+    return result
+  }
+
+  async getEmotionalState(relationshipId?: string): Promise<EmotionalStateLatest | null> {
+    log.debugRequest("emotional-state.get", { relationshipId })
+
+    const url = new URL(`${API_BASE_URL}/emotional-state`)
+    if (relationshipId) url.searchParams.set("relationship_id", relationshipId)
+
+    const res = await fetch(url.toString(), {
+      method: "GET",
+      headers: this.rawHeaders(),
+    })
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "")
+      throw new Error(`GET /emotional-state failed (${res.status}): ${text}`)
+    }
+
+    const data = await res.json()
+    if (data === null) {
+      log.debugResponse("emotional-state.get", { found: false })
+      return null
+    }
+
+    const result: EmotionalStateLatest = {
+      resourceId: data.resource_id,
+      summary: data.summary,
+      extractedAt: data.extracted_at,
+      sessionId: data.session_id ?? null,
+      relationshipId: data.relationship_id ?? null,
+    }
+
+    log.debugResponse("emotional-state.get", { found: true, resourceId: result.resourceId })
+    return result
+  }
+
+  async deleteEmotionalState(relationshipId?: string): Promise<{ deletedCount: number }> {
+    log.debugRequest("emotional-state.delete", { relationshipId })
+
+    const url = new URL(`${API_BASE_URL}/emotional-state`)
+    if (relationshipId) url.searchParams.set("relationship_id", relationshipId)
+
+    const res = await fetch(url.toString(), {
+      method: "DELETE",
+      headers: this.rawHeaders(),
+    })
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "")
+      throw new Error(`DELETE /emotional-state failed (${res.status}): ${text}`)
+    }
+
+    const data = await res.json()
+    const result = { deletedCount: data.deleted_count }
+
+    log.debugResponse("emotional-state.delete", result)
+    return result
   }
 }

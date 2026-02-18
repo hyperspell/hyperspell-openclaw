@@ -379,6 +379,7 @@ async function runSetup(): Promise<void> {
         apiKey,
         userId,
         autoContext: true,
+        emotionalContext: false,
         syncMemories: true,
         sources: [],
         maxResults: 10,
