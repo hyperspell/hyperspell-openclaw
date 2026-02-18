@@ -20,6 +20,8 @@ export type HyperspellConfig = {
   apiKey: string
   userId?: string
   autoContext: boolean
+  emotionalContext: boolean
+  relationshipId?: string
   syncMemories: boolean
   sources: HyperspellSource[]
   maxResults: number
@@ -31,6 +33,8 @@ const ALLOWED_KEYS = [
   "apiKey",
   "userId",
   "autoContext",
+  "emotionalContext",
+  "relationshipId",
   "syncMemories",
   "sources",
   "maxResults",
@@ -142,6 +146,8 @@ export function parseConfig(raw: unknown): HyperspellConfig {
     apiKey,
     userId: cfg.userId as string | undefined,
     autoContext: (cfg.autoContext as boolean) ?? true,
+    emotionalContext: (cfg.emotionalContext as boolean) ?? false,
+    relationshipId: cfg.relationshipId as string | undefined,
     syncMemories: (cfg.syncMemories as boolean) ?? false,
     sources: parseSources(cfg.sources as string | string[] | undefined),
     maxResults: (cfg.maxResults as number) ?? 10,
