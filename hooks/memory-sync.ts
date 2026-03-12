@@ -27,7 +27,11 @@ export function buildFileSyncHandler(client: HyperspellClient, _cfg: HyperspellC
     try {
       const result = await syncMarkdownFile(client, filePath)
       if (result.success) {
-        log.info(`Synced ${fileName} -> ${result.resourceId}`)
+        if (result.warning) {
+          log.warn(`Synced with warning: ${fileName} — ${result.warning}`)
+        } else {
+          log.info(`Synced ${fileName} -> ${result.resourceId}`)
+        }
       } else {
         log.error(`Failed to sync ${fileName}: ${result.error}`)
       }
