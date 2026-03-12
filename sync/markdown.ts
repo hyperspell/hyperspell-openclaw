@@ -56,9 +56,10 @@ function parseFrontmatter(content: string): {
  * in Knowledge Graph entity files (source_memories, relationships).
  */
 function serializeFrontmatter(frontmatter: Record<string, string>): string {
-	const lines = Object.entries(frontmatter).map(
-		([key, value]) => `${key}: ${value}`,
-	);
+	const lines = Object.entries(frontmatter).map(([key, value]) => {
+		const safe = value.replace(/\n/g, " ").replace(/\r/g, "");
+		return `${key}: ${safe}`;
+	});
 	return `---\n${lines.join("\n")}\n---\n`;
 }
 
@@ -167,7 +168,7 @@ export async function syncMarkdownFile(
 			log.warn(
 				`Sync of ${filePath} succeeded but API returned no resourceId — file is not linked to a remote resource`,
 			);
-			return { success: false, error: "No resourceId returned from API" };
+			return { success: true };
 		}
 
 		if (result.resourceId !== file.hyperspellId) {
