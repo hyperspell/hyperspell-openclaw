@@ -157,3 +157,62 @@ This ensures the AI always has access to relevant information from your connecte
 - `google_drive` - Google Drive files
 - `box` - Box files
 - `web_crawler` - Crawled web pages
+
+---
+
+## SommeliAgent
+
+An AI sommelier hidden inside your memory plugin. It recommends wine based on your Spotify listening habits by mapping music features to wine dimensions.
+
+**Requires:** `uv` ([install](https://docs.astral.sh/uv/))
+
+### Setup
+
+1. Create a Spotify app at https://developer.spotify.com/dashboard (redirect URI: `http://localhost:8888/callback`)
+2. Set environment variables: `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`
+3. Authenticate: `/wine-auth`
+
+Or skip all that and try demo mode: `/wine demo`
+
+### Slash Commands
+
+#### `/wine [options]`
+
+Get wine recommendations. Options can be combined:
+
+```
+/wine                    — recommendations from your Spotify
+/wine demo               — use demo profile (no Spotify needed)
+/wine red premium        — only red wines, premium price range
+/wine white 5            — 5 white wine recommendations
+/wine demo profile       — show full music-to-wine mapping
+```
+
+#### `/wine-auth`
+
+Connect your Spotify account.
+
+#### `/wine-rate <wine-id> <1-5> [notes]`
+
+Rate a recommendation to improve future suggestions.
+
+```
+/wine-rate barolo-massolino 5 "Incredible tannins, paired perfectly with my Radiohead phase"
+```
+
+#### `/wine-history`
+
+View your rating history and derived taste preferences.
+
+### AI Tools
+
+The plugin also registers tools the AI can use autonomously:
+
+- **hyperspell_sommelier** - Get wine recommendations (with full personality instructions)
+- **hyperspell_sommelier_rate** - Rate wines
+
+### How It Works
+
+Your Spotify audio features (energy, valence, complexity, acousticness, tempo) are mapped to wine dimensions (body, sweetness, tannin, acidity, complexity, fruitiness, earthiness, spiciness). The cross-domain mapping is entertainment-first — the comedy comes from a pretentious sommelier voice analyzing your questionable music taste.
+
+See `sommeliagent/references/cross-domain-mappings.md` for the full methodology.
