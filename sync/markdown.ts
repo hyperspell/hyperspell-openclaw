@@ -142,7 +142,12 @@ export function getMemoryFiles(workspaceDir: string): string[] {
 export async function syncMarkdownFile(
 	client: HyperspellClient,
 	filePath: string,
-): Promise<{ success: boolean; resourceId?: string; error?: string }> {
+): Promise<{
+	success: boolean;
+	resourceId?: string;
+	error?: string;
+	warning?: string;
+}> {
 	const file = readMarkdownFile(filePath);
 	if (!file) {
 		return { success: false, error: "Failed to read file" };
@@ -168,7 +173,10 @@ export async function syncMarkdownFile(
 			log.warn(
 				`Sync of ${filePath} succeeded but API returned no resourceId — file is not linked to a remote resource`,
 			);
-			return { success: true };
+			return {
+				success: true,
+				warning: "No resourceId returned — file is not linked to remote resource",
+			};
 		}
 
 		if (result.resourceId !== file.hyperspellId) {
@@ -238,7 +246,11 @@ export async function syncAllMemoryFiles(
 		const result = await syncMarkdownFile(client, filePath);
 		if (result.success) {
 			synced++;
-			log.info(`Synced: ${path.basename(filePath)} -> ${result.resourceId}`);
+			if (result.warning) {
+				log.warn(`Synced with warning: ${path.basename(filePath)} — ${result.warning}`);
+			} else {
+				log.info(`Synced: ${path.basename(filePath)} -> ${result.resourceId}`);
+			}
 		} else {
 			failed++;
 			errors.push(`${path.basename(filePath)}: ${result.error}`);
