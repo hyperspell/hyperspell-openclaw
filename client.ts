@@ -234,6 +234,24 @@ export class HyperspellClient {
     return raw
   }
 
+  async deleteMemory(
+    resourceId: string,
+    source: HyperspellSource,
+  ): Promise<{ success: boolean; chunksDeleted: number }> {
+    log.debugRequest("memories.delete", { resourceId, source })
+
+    const response = await this.client.memories.delete(resourceId, { source })
+
+    log.debugResponse("memories.delete", {
+      success: response.success,
+      chunksDeleted: response.chunks_deleted,
+    })
+    return {
+      success: response.success,
+      chunksDeleted: response.chunks_deleted,
+    }
+  }
+
   async listConnections(): Promise<Connection[]> {
     log.debugRequest("connections.list", {})
 
