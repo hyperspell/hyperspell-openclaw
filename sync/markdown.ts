@@ -34,8 +34,9 @@ function parseFrontmatter(content: string): {
 			const key = line.slice(0, colonIndex).trim();
 			let value = line.slice(colonIndex + 1).trim();
 			if (
-				(value.startsWith('"') && value.endsWith('"')) ||
-				(value.startsWith("'") && value.endsWith("'"))
+				value.length >= 2 &&
+				((value.startsWith('"') && value.endsWith('"')) ||
+					(value.startsWith("'") && value.endsWith("'")))
 			) {
 				value = value.slice(1, -1);
 			}
@@ -157,7 +158,14 @@ export async function syncMarkdownFile(
 		});
 
 		// Update frontmatter with new resource ID if it changed or was newly created
-		if (result.resourceId && result.resourceId !== file.hyperspellId) {
+		if (!result.resourceId) {
+			log.warn(
+				`Sync of ${filePath} succeeded but API returned no resourceId — file is not linked to a remote resource`,
+			);
+			return { success: false, error: "No resourceId returned from API" };
+		}
+
+		if (result.resourceId !== file.hyperspellId) {
 			updateFrontmatterId(filePath, result.resourceId);
 		}
 
