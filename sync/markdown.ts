@@ -32,7 +32,13 @@ function parseFrontmatter(content: string): {
 		const colonIndex = line.indexOf(":");
 		if (colonIndex > 0) {
 			const key = line.slice(0, colonIndex).trim();
-			const value = line.slice(colonIndex + 1).trim();
+			let value = line.slice(colonIndex + 1).trim();
+			if (
+				(value.startsWith('"') && value.endsWith('"')) ||
+				(value.startsWith("'") && value.endsWith("'"))
+			) {
+				value = value.slice(1, -1);
+			}
 			frontmatter[key] = value;
 		}
 	}
@@ -151,7 +157,7 @@ export async function syncMarkdownFile(
 		});
 
 		// Update frontmatter with new resource ID if it changed or was newly created
-		if (result.resourceId !== file.hyperspellId) {
+		if (result.resourceId && result.resourceId !== file.hyperspellId) {
 			updateFrontmatterId(filePath, result.resourceId);
 		}
 
@@ -174,17 +180,28 @@ export function deleteLocalMemoryFile(
 	const files = getMemoryFiles(workspaceDir);
 
 	for (const filePath of files) {
+		let matched = false;
 		try {
 			const content = fs.readFileSync(filePath, "utf-8");
 			const { frontmatter } = parseFrontmatter(content);
+			matched = frontmatter.hyperspell_id === hyperspellId;
+		} catch (err) {
+			log.error(`Failed to read file ${filePath}`, err);
+			continue;
+		}
 
-			if (frontmatter.hyperspell_id === hyperspellId) {
+		if (matched) {
+			try {
 				fs.unlinkSync(filePath);
 				log.info(`Deleted local memory file: ${filePath}`);
 				return true;
+			} catch (err) {
+				log.error(
+					`Found matching file ${filePath} but failed to delete it`,
+					err,
+				);
+				return false;
 			}
-		} catch (err) {
-			log.error(`Failed to check file ${filePath}`, err);
 		}
 	}
 

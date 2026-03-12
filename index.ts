@@ -130,8 +130,14 @@ export default {
 
 				// Sync memories on startup if enabled
 				if (cfg.syncMemories) {
-					const workspaceDir = getWorkspaceDir();
-					await syncMemoriesOnStartup(client, workspaceDir);
+					try {
+						const workspaceDir = getWorkspaceDir();
+						await syncMemoriesOnStartup(client, workspaceDir);
+					} catch (err) {
+						api.logger.warn(
+							`hyperspell: memory sync on startup failed: ${err instanceof Error ? err.message : String(err)}`,
+						);
+					}
 				}
 			},
 			stop: () => {
