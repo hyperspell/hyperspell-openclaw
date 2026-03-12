@@ -149,11 +149,69 @@ This ensures the AI always has access to relevant information from your connecte
 
 ## Available Sources
 
+### Documents & Storage
 - `vault` - User-created or synced memories
 - `notion` - Notion pages and databases
-- `slack` - Slack messages
-- `google_calendar` - Google Calendar events
-- `google_mail` - Gmail messages
 - `google_drive` - Google Drive files
 - `box` - Box files
+- `dropbox` - Dropbox files
+- `onedrive` - Microsoft OneDrive files
+
+### Communication
+- `slack` - Slack messages
+- `google_mail` - Gmail messages
+
+### Calendars & Meetings
+- `google_calendar` - Google Calendar events
+- `zoom` - Zoom meeting recordings and transcripts
+- `fathom` - Fathom meeting recordings
+- `fireflies` - Fireflies.ai meeting transcripts
+
+### Project Management
+- `linear` - Linear issues and comments
+
+### CRM
+- `hubspot` - HubSpot contacts, companies, and deals
+- `attio` - Attio CRM contacts, companies, and deals
+
+### Developer Tools
+- `github` - GitHub repositories and commits
+
+### Other
 - `web_crawler` - Crawled web pages
+
+## Knowledge Graph
+
+The plugin can automatically build a local knowledge graph from your memories:
+
+1. **Scan** memories for entities (people, organizations, projects, topics)
+2. **Extract** structured information and relationships
+3. **Write** entity files to `memory/people/`, `memory/organizations/`, etc.
+4. **Link** entities via markdown relationship references
+
+Enable the graph tools by using `hyperspell_network_scan`, `hyperspell_network_write`, and `hyperspell_network_complete` in your agent workflows.
+
+## Troubleshooting
+
+### "No relevant memories found"
+- Check that your sources are connected: `openclaw openclaw-hyperspell status`
+- Verify your API key is set: `echo $HYPERSPELL_API_KEY`
+- Make sure content has been indexed (initial sync can take a few minutes)
+
+### Memory sync not working
+- Ensure `syncMemories: true` in your config
+- Check that markdown files are in `~/.openclaw/workspace/memory/`
+- Run `/sync` manually to trigger a sync and see any errors
+
+### Auto-context not injecting
+- Verify `autoContext: true` in your config
+- Enable `debug: true` to see what queries are being made
+- Check that you have memories matching your conversation topics
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+
+## License
+
+MIT
