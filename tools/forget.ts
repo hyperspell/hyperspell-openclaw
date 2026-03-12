@@ -95,10 +95,18 @@ export function registerForgetTool(
 
 					for (const doc of documents) {
 						try {
-							await client.deleteMemory(
+							const deleteResult = await client.deleteMemory(
 								doc.resource_id,
 								doc.source as HyperspellSource,
 							);
+
+							if (!deleteResult.success) {
+								results.push(
+									`Failed: [${doc.source}] ${doc.title || "(untitled)"} - API returned success: false`,
+								);
+								failed++;
+								continue;
+							}
 
 							// Clean up local markdown file if it exists
 							const localDeleted = deleteLocalMemoryFile(

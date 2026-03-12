@@ -118,10 +118,18 @@ export function registerCommands(
 
 				for (const doc of documents) {
 					try {
-						await client.deleteMemory(
+						const deleteResult = await client.deleteMemory(
 							doc.resource_id,
 							doc.source as HyperspellSource,
 						);
+
+						if (!deleteResult.success) {
+							const title = doc.title
+								? truncate(doc.title, 50)
+								: `[${doc.source}]`;
+							results.push(`  Failed: ${title} - API returned success: false`);
+							continue;
+						}
 
 						const localDeleted = deleteLocalMemoryFile(
 							workspaceDir,

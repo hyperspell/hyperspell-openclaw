@@ -48,7 +48,12 @@ function parseFrontmatter(content: string): {
 }
 
 /**
- * Serialize frontmatter back to string
+ * Serialize frontmatter back to string.
+ *
+ * Values are written unquoted intentionally — the codebase uses a first-colon
+ * parser (not a YAML parser), so colons/special chars in values are safe.
+ * Adding YAML-style quoting would break roundtripping of JSON values stored
+ * in Knowledge Graph entity files (source_memories, relationships).
  */
 function serializeFrontmatter(frontmatter: Record<string, string>): string {
 	const lines = Object.entries(frontmatter).map(
