@@ -43,9 +43,14 @@ export class HyperspellClient {
     log.info(`client initialized${config.userId ? ` for user ${config.userId}` : ""}`)
   }
 
+  private requestOptions(userId?: string) {
+    if (!userId) return undefined
+    return { headers: { "X-As-User": userId } }
+  }
+
   async search(
     query: string,
-    options?: { limit?: number; sources?: HyperspellSource[] },
+    options?: { limit?: number; sources?: HyperspellSource[]; userId?: string },
   ): Promise<SearchResult[]> {
     const limit = options?.limit ?? this.config.maxResults
     const sources =
@@ -53,13 +58,16 @@ export class HyperspellClient {
 
     log.debugRequest("memories.search", { query, limit, sources })
 
-    const response = await this.client.memories.search({
-      query,
-      sources,
-      options: {
-        max_results: limit,
+    const response = await this.client.memories.search(
+      {
+        query,
+        sources,
+        options: {
+          max_results: limit,
+        },
       },
-    })
+      this.requestOptions(options?.userId),
+    )
 
     const results: SearchResult[] = response.documents.map((doc) => ({
       resourceId: doc.resource_id,
@@ -76,7 +84,7 @@ export class HyperspellClient {
 
   async searchRaw(
     query: string,
-    options?: { limit?: number; sources?: HyperspellSource[] },
+    options?: { limit?: number; sources?: HyperspellSource[]; userId?: string },
   ): Promise<Record<string, unknown>> {
     const limit = options?.limit ?? this.config.maxResults
     const sources =
@@ -84,13 +92,16 @@ export class HyperspellClient {
 
     log.debugRequest("memories.search (raw)", { query, limit, sources })
 
-    const response = await this.client.memories.search({
-      query,
-      sources,
-      options: {
-        max_results: limit,
+    const response = await this.client.memories.search(
+      {
+        query,
+        sources,
+        options: {
+          max_results: limit,
+        },
       },
-    })
+      this.requestOptions(options?.userId),
+    )
 
     log.debugResponse("memories.search (raw)", { count: response.documents.length })
 
@@ -99,7 +110,7 @@ export class HyperspellClient {
 
   async searchWithAnswer(
     query: string,
-    options?: { limit?: number; sources?: HyperspellSource[] },
+    options?: { limit?: number; sources?: HyperspellSource[]; userId?: string },
   ): Promise<SearchWithAnswerResult> {
     const limit = options?.limit ?? this.config.maxResults
     const sources =
@@ -107,14 +118,17 @@ export class HyperspellClient {
 
     log.debugRequest("memories.search (with answer)", { query, limit, sources })
 
-    const response = await this.client.memories.search({
-      query,
-      sources,
-      answer: true,
-      options: {
-        max_results: limit,
+    const response = await this.client.memories.search(
+      {
+        query,
+        sources,
+        answer: true,
+        options: {
+          max_results: limit,
+        },
       },
-    })
+      this.requestOptions(options?.userId),
+    )
 
     const documents: SearchResult[] = response.documents.map((doc) => ({
       resourceId: doc.resource_id,
@@ -143,6 +157,7 @@ export class HyperspellClient {
       resourceId?: string
       collection?: string
       metadata?: Record<string, string | number | boolean>
+      userId?: string
     },
   ): Promise<{ resourceId: string }> {
     log.debugRequest("memories.add", {
@@ -152,16 +167,19 @@ export class HyperspellClient {
       collection: options?.collection,
     })
 
-    const result = await this.client.memories.add({
-      text,
-      title: options?.title,
-      resource_id: options?.resourceId,
-      collection: options?.collection,
-      metadata: {
-        ...options?.metadata,
-        openclaw_source: "command",
+    const result = await this.client.memories.add(
+      {
+        text,
+        title: options?.title,
+        resource_id: options?.resourceId,
+        collection: options?.collection,
+        metadata: {
+          ...options?.metadata,
+          openclaw_source: "command",
+        },
       },
-    })
+      this.requestOptions(options?.userId),
+    )
 
     log.debugResponse("memories.add", { resourceId: result.resource_id })
     return { resourceId: result.resource_id }
@@ -183,10 +201,17 @@ export class HyperspellClient {
     return integrations
   }
 
-  async getConnectUrl(integrationId: string): Promise<{ url: string; expiresAt: string }> {
+  async getConnectUrl(
+    integrationId: string,
+    options?: { userId?: string },
+  ): Promise<{ url: string; expiresAt: string }> {
     log.debugRequest("integrations.connect", { integrationId })
 
-    const response = await this.client.integrations.connect(integrationId)
+    const response = await this.client.integrations.connect(
+      integrationId,
+      undefined,
+      this.requestOptions(options?.userId),
+    )
 
     log.debugResponse("integrations.connect", { url: response.url })
     return {
@@ -196,7 +221,7 @@ export class HyperspellClient {
   }
 
   async *listMemories(
-    options?: { source?: HyperspellSource; collection?: string; pageSize?: number },
+    options?: { source?: HyperspellSource; collection?: string; pageSize?: number; userId?: string },
   ): AsyncGenerator<{
     resourceId: string
     source: HyperspellSource
@@ -211,7 +236,10 @@ export class HyperspellClient {
     if (options?.source) params.source = options.source
     if (options?.collection) params.collection = options.collection
 
-    for await (const memory of this.client.memories.list(params as any)) {
+    for await (const memory of this.client.memories.list(
+      params as any,
+      this.requestOptions(options?.userId),
+    )) {
       yield {
         resourceId: memory.resource_id,
         source: memory.source as HyperspellSource,
@@ -224,20 +252,25 @@ export class HyperspellClient {
   async getMemory(
     resourceId: string,
     source: HyperspellSource,
+    options?: { userId?: string },
   ): Promise<Record<string, unknown>> {
     log.debugRequest("memories.get", { resourceId, source })
 
-    const response = await this.client.memories.get(resourceId, { source })
+    const response = await this.client.memories.get(
+      resourceId,
+      { source },
+      this.requestOptions(options?.userId),
+    )
     const raw = response as unknown as Record<string, unknown>
 
     log.debugResponse("memories.get", { resourceId, hasData: "data" in raw })
     return raw
   }
 
-  async listConnections(): Promise<Connection[]> {
+  async listConnections(options?: { userId?: string }): Promise<Connection[]> {
     log.debugRequest("connections.list", {})
 
-    const response = await this.client.connections.list()
+    const response = await this.client.connections.list(this.requestOptions(options?.userId))
 
     const connections: Connection[] = response.connections.map((conn) => ({
       id: conn.id,
