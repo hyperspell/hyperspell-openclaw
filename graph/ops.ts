@@ -1,6 +1,8 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import type { HyperspellClient } from "../client.ts"
+import type { HyperspellConfig } from "../config.ts"
+import { getAllUserIds } from "../lib/sender.ts"
 import { log } from "../logger.ts"
 import { NetworkStateManager } from "./state.ts"
 
@@ -28,6 +30,7 @@ export interface WriteEntityParams {
   email?: string
   phone?: string
   domain?: string
+  userId?: string
 }
 
 export function slugify(name: string): string {
@@ -93,36 +96,42 @@ export async function scanMemories(
   client: HyperspellClient,
   stateManager: NetworkStateManager,
   batchSize: number,
+  cfg?: HyperspellConfig,
 ): Promise<ScannedMemory[]> {
   const unprocessed: ScannedMemory[] = []
+  const userIds = cfg ? getAllUserIds(cfg) : [undefined]
 
-  for await (const mem of client.listMemories()) {
-    if (stateManager.isProcessed(mem.resourceId)) continue
-    if (mem.metadata?.graph_entity === "true" || mem.metadata?.graph_entity === true) continue
-    if ((mem.metadata?.status as string) !== "completed") continue
+  for (const userId of userIds) {
+    for await (const mem of client.listMemories({ userId })) {
+      if (stateManager.isProcessed(mem.resourceId)) continue
+      if (mem.metadata?.graph_entity === "true" || mem.metadata?.graph_entity === true) continue
+      if ((mem.metadata?.status as string) !== "completed") continue
 
-    let summary = ""
-    try {
-      const full = await client.getMemory(mem.resourceId, mem.source)
-      const data = full.data as unknown[] | undefined
+      let summary = ""
+      try {
+        const full = await client.getMemory(mem.resourceId, mem.source, { userId })
+        const data = full.data as unknown[] | undefined
 
-      const participants = full.participants as Array<{ name?: string; email?: string }> | undefined
-      const participantLine = participants?.length
-        ? `Participants: ${participants.map((p) => `${p.name || ""} <${p.email || ""}>`).join(", ")}`
-        : ""
+        const participants = full.participants as Array<{ name?: string; email?: string }> | undefined
+        const participantLine = participants?.length
+          ? `Participants: ${participants.map((p) => `${p.name || ""} <${p.email || ""}>`).join(", ")}`
+          : ""
 
-      const dataSummary = data ? summarizeMemoryData(data, mem.source) : ""
-      summary = [participantLine, dataSummary].filter(Boolean).join("\n\n")
-    } catch {
-      summary = "(content unavailable)"
+        const dataSummary = data ? summarizeMemoryData(data, mem.source) : ""
+        summary = [participantLine, dataSummary].filter(Boolean).join("\n\n")
+      } catch {
+        summary = "(content unavailable)"
+      }
+
+      unprocessed.push({
+        resourceId: mem.resourceId,
+        source: mem.source,
+        title: mem.title,
+        summary: summary.slice(0, 1000),
+      })
+
+      if (unprocessed.length >= batchSize) break
     }
-
-    unprocessed.push({
-      resourceId: mem.resourceId,
-      source: mem.source,
-      title: mem.title,
-      summary: summary.slice(0, 1000),
-    })
 
     if (unprocessed.length >= batchSize) break
   }
