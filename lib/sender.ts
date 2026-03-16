@@ -1,4 +1,4 @@
-import type { HyperspellConfig, UserProfile } from "../config.ts"
+import type { HyperspellConfig } from "../config.ts"
 import { log } from "../logger.ts"
 
 export interface ResolvedUser {

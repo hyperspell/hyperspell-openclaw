@@ -113,7 +113,8 @@ async function multiUserSearch(
     searches.push(client.search(prompt, { limit: cfg.maxResults, userId: resolved.userId }))
   }
 
-  if (includeShared) {
+  if (includeShared || isUnknownSender) {
+    // Always search shared for unknown senders, even if includeSharedInSearch is false
     const sharedLimit = isUnknownSender ? cfg.maxResults : Math.ceil(cfg.maxResults / 2)
     searches.push(client.search(prompt, { limit: sharedLimit, userId: multiUser.sharedUserId }))
   }
