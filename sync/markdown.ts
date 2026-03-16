@@ -122,6 +122,7 @@ export function getMemoryFiles(workspaceDir: string): string[] {
 export async function syncMarkdownFile(
   client: HyperspellClient,
   filePath: string,
+  options?: { userId?: string },
 ): Promise<{ success: boolean; resourceId?: string; error?: string }> {
   const file = readMarkdownFile(filePath)
   if (!file) {
@@ -141,6 +142,7 @@ export async function syncMarkdownFile(
         openclaw_source: "memory_sync",
         file_path: filePath,
       },
+      userId: options?.userId,
     })
 
     // Update frontmatter with new resource ID if it changed or was newly created
@@ -162,6 +164,7 @@ export async function syncMarkdownFile(
 export async function syncAllMemoryFiles(
   client: HyperspellClient,
   workspaceDir: string,
+  options?: { userId?: string },
 ): Promise<{ synced: number; failed: number; errors: string[] }> {
   const files = getMemoryFiles(workspaceDir)
   let synced = 0
@@ -169,7 +172,7 @@ export async function syncAllMemoryFiles(
   const errors: string[] = []
 
   for (const filePath of files) {
-    const result = await syncMarkdownFile(client, filePath)
+    const result = await syncMarkdownFile(client, filePath, { userId: options?.userId })
     if (result.success) {
       synced++
       log.info(`Synced: ${path.basename(filePath)} -> ${result.resourceId}`)

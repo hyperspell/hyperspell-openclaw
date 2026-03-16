@@ -102,7 +102,9 @@ export default {
         // Sync memories on startup if enabled
         if (cfg.syncMemories) {
           const workspaceDir = getWorkspaceDir()
-          await syncMemoriesOnStartup(client, workspaceDir)
+          await syncMemoriesOnStartup(client, workspaceDir, {
+            userId: cfg.multiUser?.sharedUserId,
+          })
         }
       },
       stop: () => {
