@@ -2,6 +2,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk"
 import type { HyperspellClient } from "../client.ts"
 import type { HyperspellConfig } from "../config.ts"
 import { getWorkspaceDir } from "../config.ts"
+import { resolveUser } from "../lib/sender.ts"
 import { log } from "../logger.ts"
 import { syncAllMemoryFiles } from "../sync/markdown.ts"
 
@@ -18,7 +19,7 @@ function formatScore(score: number | null): string {
 export function registerCommands(
   api: OpenClawPluginApi,
   client: HyperspellClient,
-  _cfg: HyperspellConfig,
+  cfg: HyperspellConfig,
 ): void {
   // /getcontext <query> - Search memories and show summaries
   api.registerCommand({
@@ -26,16 +27,18 @@ export function registerCommands(
     description: "Search your memories for relevant context",
     acceptsArgs: true,
     requireAuth: true,
-    handler: async (ctx: { args?: string }) => {
+    handler: async (ctx: { args?: string; senderId?: string; channel?: string }) => {
       const query = ctx.args?.trim()
       if (!query) {
         return { text: "Usage: /getcontext <search query>" }
       }
 
-      log.debug(`/getcontext command: "${query}"`)
+      const resolved = resolveUser(ctx as Record<string, unknown>, cfg)
+      const userId = resolved?.userId
+      log.debug(`/getcontext command: "${query}" userId=${userId}`)
 
       try {
-        const results = await client.search(query, { limit: 5 })
+        const results = await client.search(query, { limit: 5, userId })
 
         if (results.length === 0) {
           return { text: `No memories found for: "${query}"` }
@@ -63,17 +66,20 @@ export function registerCommands(
     description: "Save something to memory",
     acceptsArgs: true,
     requireAuth: true,
-    handler: async (ctx: { args?: string }) => {
+    handler: async (ctx: { args?: string; senderId?: string; channel?: string }) => {
       const text = ctx.args?.trim()
       if (!text) {
         return { text: "Usage: /remember <text to remember>" }
       }
 
-      log.debug(`/remember command: "${truncate(text, 50)}"`)
+      const resolved = resolveUser(ctx as Record<string, unknown>, cfg)
+      const userId = resolved?.userId
+      log.debug(`/remember command: "${truncate(text, 50)}" userId=${userId}`)
 
       try {
         await client.addMemory(text, {
           metadata: { source: "openclaw_command" },
+          userId,
         })
 
         const preview = truncate(text, 60)
@@ -96,7 +102,9 @@ export function registerCommands(
 
       try {
         const workspaceDir = getWorkspaceDir()
-        const result = await syncAllMemoryFiles(client, workspaceDir)
+        const result = await syncAllMemoryFiles(client, workspaceDir, {
+          userId: cfg.multiUser?.sharedUserId,
+        })
 
         if (result.synced === 0 && result.failed === 0) {
           return { text: "No memory files found in memory/ directory." }

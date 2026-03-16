@@ -8,9 +8,10 @@ import { syncMarkdownFile, syncAllMemoryFiles } from "../sync/markdown.ts"
 /**
  * Build a handler for file change events that syncs markdown files to Hyperspell
  */
-export function buildFileSyncHandler(client: HyperspellClient, _cfg: HyperspellConfig) {
+export function buildFileSyncHandler(client: HyperspellClient, cfg: HyperspellConfig) {
   const workspaceDir = getWorkspaceDir()
   const memoryDir = path.join(workspaceDir, "memory")
+  const syncUserId = cfg.multiUser?.sharedUserId
 
   return async (event: Record<string, unknown>) => {
     const filePath = event.file_path as string | undefined
@@ -25,7 +26,7 @@ export function buildFileSyncHandler(client: HyperspellClient, _cfg: HyperspellC
     log.info(`Memory file changed: ${fileName}`)
 
     try {
-      const result = await syncMarkdownFile(client, filePath)
+      const result = await syncMarkdownFile(client, filePath, { userId: syncUserId })
       if (result.success) {
         log.info(`Synced ${fileName} -> ${result.resourceId}`)
       } else {
@@ -43,10 +44,11 @@ export function buildFileSyncHandler(client: HyperspellClient, _cfg: HyperspellC
 export async function syncMemoriesOnStartup(
   client: HyperspellClient,
   workspaceDir: string,
+  options?: { userId?: string },
 ): Promise<void> {
   log.info("Syncing existing memory files...")
 
-  const result = await syncAllMemoryFiles(client, workspaceDir)
+  const result = await syncAllMemoryFiles(client, workspaceDir, { userId: options?.userId })
 
   if (result.synced > 0) {
     log.info(`Synced ${result.synced} memory files`)
