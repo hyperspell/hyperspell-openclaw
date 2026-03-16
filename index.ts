@@ -6,8 +6,8 @@ import { parseConfig, hyperspellConfigSchema, getWorkspaceDir } from "./config.t
 import { buildAutoContextHandler } from "./hooks/auto-context.ts"
 import { buildFileSyncHandler, syncMemoriesOnStartup } from "./hooks/memory-sync.ts"
 import { initLogger } from "./logger.ts"
-import { registerRememberTool } from "./tools/remember.ts"
-import { registerSearchTool } from "./tools/search.ts"
+import { createRememberToolFactory } from "./tools/remember.ts"
+import { createSearchToolFactory } from "./tools/search.ts"
 import { registerNetworkTools } from "./graph/index.ts"
 
 export default {
@@ -69,9 +69,9 @@ export default {
 
     const client = new HyperspellClient(cfg)
 
-    // Register AI tools
-    registerSearchTool(api, client, cfg)
-    registerRememberTool(api, client, cfg)
+    // Register AI tools (factory pattern for sender context)
+    api.registerTool(createSearchToolFactory(client, cfg), { name: "hyperspell_search" })
+    api.registerTool(createRememberToolFactory(client, cfg), { name: "hyperspell_remember" })
 
     // Register auto-context hook
     if (cfg.autoContext) {

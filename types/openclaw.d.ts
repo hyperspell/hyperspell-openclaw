@@ -48,6 +48,22 @@ declare module "openclaw/plugin-sdk" {
       },
       meta: { name: string },
     ): void
+    registerTool<T = unknown>(
+      factory: (ctx: Record<string, unknown>) => {
+        name: string
+        label: string
+        description: string
+        parameters: unknown
+        execute: (
+          toolCallId: string,
+          params: T,
+        ) => Promise<{
+          content: Array<{ type: "text"; text: string }>
+          details?: Record<string, unknown>
+        }>
+      },
+      meta: { name: string },
+    ): void
     on(event: string, handler: (event: Record<string, unknown>, ctx?: Record<string, unknown>) => Promise<{ prependContext?: string } | void> | void): void
     registerService(options: {
       id: string
