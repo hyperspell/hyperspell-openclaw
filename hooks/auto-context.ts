@@ -100,40 +100,53 @@ async function multiUserSearch(
   client: HyperspellClient,
   cfg: HyperspellConfig,
   prompt: string,
-  resolved: { userId: string; name: string; context?: string },
+  resolved: { userId: string; name: string; context?: string; resolved: boolean },
 ) {
   const multiUser = cfg.multiUser!
   const includeShared = multiUser.includeSharedInSearch
-  const isUnknownSender = resolved.name === "unknown"
+  const isKnownSender = resolved.resolved
 
-  // For unknown senders, only search shared context
-  const searches: Promise<SearchResult[]>[] = []
+  // Build parallel searches: personal (known senders only) + shared
+  const personalSearch = isKnownSender
+    ? client.search(prompt, { limit: cfg.maxResults, userId: resolved.userId })
+    : null
 
-  if (!isUnknownSender) {
-    searches.push(client.search(prompt, { limit: cfg.maxResults, userId: resolved.userId }))
-  }
+  // Always search shared for unknown senders, even if includeSharedInSearch is false
+  const sharedLimit = isKnownSender ? Math.ceil(cfg.maxResults / 2) : cfg.maxResults
+  const sharedSearch = (includeShared || !isKnownSender)
+    ? client.search(prompt, { limit: sharedLimit, userId: multiUser.sharedUserId })
+    : null
 
-  if (includeShared || isUnknownSender) {
-    // Always search shared for unknown senders, even if includeSharedInSearch is false
-    const sharedLimit = isUnknownSender ? cfg.maxResults : Math.ceil(cfg.maxResults / 2)
-    searches.push(client.search(prompt, { limit: sharedLimit, userId: multiUser.sharedUserId }))
-  }
+  // Run searches in parallel, preserving partial results on failure
+  const searches = [personalSearch, sharedSearch].filter(Boolean) as Promise<SearchResult[]>[]
+  const settled = await Promise.allSettled(searches)
 
-  const searchResults = await Promise.all(searches)
+  // Map settled results back to personal/shared based on which searches ran
+  let settledIdx = 0
   let personalResults: SearchResult[] = []
   let sharedResults: SearchResult[] = []
 
-  if (isUnknownSender) {
-    sharedResults = searchResults[0] ?? []
-  } else {
-    personalResults = searchResults[0] ?? []
-    sharedResults = searchResults[1] ?? []
+  if (personalSearch) {
+    const result = settled[settledIdx++]
+    if (result.status === "fulfilled") {
+      personalResults = result.value
+    } else {
+      log.error("auto-context: personal search failed", result.reason)
+    }
+  }
+  if (sharedSearch) {
+    const result = settled[settledIdx++]
+    if (result.status === "fulfilled") {
+      sharedResults = result.value
+    } else {
+      log.error("auto-context: shared search failed", result.reason)
+    }
   }
 
   const sections: string[] = []
 
   // User identity preamble
-  if (!isUnknownSender) {
+  if (isKnownSender) {
     const contextLine = resolved.context ? ` ${resolved.context}` : ""
     sections.push(`You are speaking with ${resolved.name}.${contextLine}`)
   }
@@ -148,17 +161,18 @@ async function multiUserSearch(
 
   // Shared section
   if (sharedResults.length > 0) {
-    const formatted = formatResultsList(sharedResults, Math.ceil(cfg.maxResults / 2))
+    const sharedDisplayLimit = isKnownSender ? Math.ceil(cfg.maxResults / 2) : cfg.maxResults
+    const formatted = formatResultsList(sharedResults, sharedDisplayLimit)
     sections.push(
       `<shared-context>\nShared memories available to all users.\n\n## Relevant Memories\n${formatted}\n</shared-context>`,
     )
   }
 
-  if (sections.length === 0 || (sections.length === 1 && !isUnknownSender)) {
+  if (sections.length === 0 || (sections.length === 1 && isKnownSender)) {
     // Only the preamble, no actual results
     log.debug("auto-context: no relevant memories found")
     // Still inject user identity even with no results
-    if (!isUnknownSender && resolved.context) {
+    if (isKnownSender && resolved.context) {
       return { prependContext: `<hyperspell-context>\nYou are speaking with ${resolved.name}. ${resolved.context}\n</hyperspell-context>` }
     }
     return

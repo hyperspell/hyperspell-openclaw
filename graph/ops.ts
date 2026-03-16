@@ -30,7 +30,6 @@ export interface WriteEntityParams {
   email?: string
   phone?: string
   domain?: string
-  userId?: string
 }
 
 export function slugify(name: string): string {

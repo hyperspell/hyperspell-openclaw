@@ -155,7 +155,7 @@ function parseMultiUser(raw: unknown): MultiUserConfig | undefined {
   return {
     senderMap,
     sharedUserId: typeof mu.sharedUserId === "string" ? mu.sharedUserId : "shared",
-    includeSharedInSearch: (mu.includeSharedInSearch as boolean) ?? true,
+    includeSharedInSearch: typeof mu.includeSharedInSearch === "boolean" ? mu.includeSharedInSearch : true,
   }
 }
 
