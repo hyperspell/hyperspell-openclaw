@@ -5,6 +5,7 @@ import { registerWineCommands } from "./commands/wine.ts"
 import { registerCliCommands } from "./commands/setup.ts"
 import { parseConfig, hyperspellConfigSchema, getWorkspaceDir } from "./config.ts"
 import { buildAutoContextHandler } from "./hooks/auto-context.ts"
+import { buildEmotionalStateFetchHandler, buildEmotionalStateStoreHandler } from "./hooks/emotional-state.ts"
 import { buildFileSyncHandler, syncMemoriesOnStartup } from "./hooks/memory-sync.ts"
 import { initLogger } from "./logger.ts"
 import { registerRememberTool } from "./tools/remember.ts"
@@ -79,6 +80,12 @@ export default {
     // Register AI tools
     registerSearchTool(api, client, cfg)
     registerRememberTool(api, client, cfg)
+
+    // Register emotional context hooks (fetch on start, store on end)
+    if (cfg.emotionalContext) {
+      api.on("before_agent_start", buildEmotionalStateFetchHandler(client, cfg))
+      api.on("agent_end", buildEmotionalStateStoreHandler(client, cfg))
+    }
 
     // Register auto-context hook
     if (cfg.autoContext) {
