@@ -1,6 +1,6 @@
 {
   "name": "@hyperspell/openclaw-hyperspell",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "type": "module",
   "description": "OpenClaw Hyperspell memory plugin",
   "license": "MIT",
@@ -14,6 +14,7 @@
     "graph/",
     "lib/",
     "types/",
+    "sommeliagent/",
     "openclaw.plugin.json",
     "README.md"
   ],
@@ -27,7 +28,9 @@
     "memory",
     "rag",
     "ai",
-    "plugin"
+    "plugin",
+    "sommelier",
+    "wine"
   ],
   "dependencies": {
     "@clack/prompts": "^1.0.0",

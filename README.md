@@ -157,3 +157,69 @@ This ensures the AI always has access to relevant information from your connecte
 - `google_drive` - Google Drive files
 - `box` - Box files
 - `web_crawler` - Crawled web pages
+
+---
+
+## SommeliAgent 🍷
+
+> *"Your playlist says more about your palate than you'd like to admit, darling."*
+> — A Linea, Hyperspell's hidden sommelier
+
+An opinionated AI sommelier living inside your memory plugin. She reads your Spotify listening habits, judges them (affectionately), and recommends wines that match the person your music says you are — not the person you think you are.
+
+215 wines. 26 countries. Zero tolerance for boring recommendations.
+
+**Requires:** `uv` ([install](https://docs.astral.sh/uv/))
+
+### Setup
+
+1. Create a Spotify app at https://developer.spotify.com/dashboard (redirect URI: `http://localhost:8888/callback`)
+2. Set environment variables: `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`
+3. Authenticate: `/wine-auth`
+
+Or skip all that and try demo mode: `/wine demo`
+
+### Slash Commands
+
+#### `/wine [options]`
+
+Get wine recommendations. Options can be combined:
+
+```
+/wine                    — recommendations from your Spotify
+/wine demo               — use demo profile (no Spotify needed)
+/wine red premium        — only red wines, premium price range
+/wine white 5            — 5 white wine recommendations
+/wine demo profile       — show full music-to-wine mapping
+```
+
+#### `/wine-auth`
+
+Connect your Spotify account.
+
+#### `/wine-rate <wine-id> <1-5> [notes]`
+
+Rate a recommendation to improve future suggestions.
+
+```
+/wine-rate red-it-001 5 "Incredible tannins, paired perfectly with my Radiohead phase"
+```
+
+#### `/wine-history`
+
+View your rating history and derived taste preferences.
+
+### AI Tools
+
+The plugin also registers tools the AI can use autonomously:
+
+- **hyperspell_sommelier** - Get wine recommendations (with full personality instructions)
+- **hyperspell_sommelier_rate** - Rate wines
+
+### How It Works
+
+Your Spotify audio features (energy, valence, complexity, acousticness, tempo) are mapped to wine dimensions (body, sweetness, tannin, acidity, complexity, fruitiness, earthiness, spiciness). The cross-domain mapping is entertainment-first — the comedy comes from a sharp, opinionated sommelier voice diagnosing your personality through your questionable music taste.
+
+The sommelier is A Linea — she lives inside Hyperspell and has strong opinions about both your playlist and your palate. She chose Alexander McQueen as her fashion house, so expect the wine recommendations to have a similar aesthetic: beautiful, a little dark, and never boring.
+
+See `sommeliagent/references/cross-domain-mappings.md` for the full methodology. 🖤

@@ -1,6 +1,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk"
 import { HyperspellClient } from "./client.ts"
 import { registerCommands } from "./commands/slash.ts"
+import { registerWineCommands } from "./commands/wine.ts"
 import { registerCliCommands } from "./commands/setup.ts"
 import { parseConfig, hyperspellConfigSchema, getWorkspaceDir } from "./config.ts"
 import { buildAutoContextHandler } from "./hooks/auto-context.ts"
@@ -8,6 +9,7 @@ import { buildFileSyncHandler, syncMemoriesOnStartup } from "./hooks/memory-sync
 import { initLogger } from "./logger.ts"
 import { registerRememberTool } from "./tools/remember.ts"
 import { registerSearchTool } from "./tools/search.ts"
+import { registerSommelierTool, registerSommelierRateTool } from "./tools/sommelier.ts"
 import { registerNetworkTools } from "./graph/index.ts"
 
 export default {
@@ -29,6 +31,11 @@ export default {
     // Check if configured
     const rawConfig = api.pluginConfig as Record<string, unknown> | undefined
     const hasConfig = rawConfig?.apiKey || process.env.HYPERSPELL_API_KEY
+
+    // SommeliAgent works independently of Hyperspell config — it just needs uv + Spotify
+    registerSommelierTool(api)
+    registerSommelierRateTool(api)
+    registerWineCommands(api)
 
     if (!hasConfig) {
       api.logger.info("hyperspell: not configured - run 'openclaw openclaw-hyperspell setup'")
