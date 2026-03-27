@@ -38,14 +38,17 @@ After every agent turn completes, capture the user prompt and assistant response
   Assistant: <assistant message>
   ```
 - Calls `client.addMemory()` with:
-  - `collection`: `"openclaw_conversations"`
+  - `collection`: `"openclaw_conversations"` (defined as `CONVERSATION_COLLECTION` constant in `config.ts`)
   - `title`: First ~80 chars of user prompt
-  - `metadata`: `{ source: "openclaw_conversation", session_id: event.sessionId }`
+  - `resourceId`: Deterministic ID `openclaw_conv_{sessionId}_{turnIndex}` where turnIndex is derived from the message count (prevents duplicates on retries)
+  - `metadata`: `{ openclaw_source: "conversation", session_id: event.sessionId }`
 - Fire-and-forget — errors are logged but don't block the user
 - Skipped if `event.success` is false or messages are empty
 - Gated by config: `captureConversations` (default: `true`)
 
-**Content extraction:** Handles both string content and array content blocks (same pattern as LanceDB plugin — type-guard for `{ type: "text", text: string }` blocks).
+**Content extraction:** Handles both string content and array content blocks (same pattern as LanceDB plugin — type-guard for `{ type: "text", text: string }` blocks). Combined content truncated to 10,000 chars max.
+
+**Note on `client.addMemory()`:** The existing method hardcodes `openclaw_source: "command"` in metadata. This will be changed so that caller-provided metadata keys take precedence — the hardcoded default only applies when the caller does not provide `openclaw_source`.
 
 ### 2. Session Start Context (`session_start` hook)
 
@@ -55,12 +58,12 @@ When a new session begins, fetch recent conversation history and inject it as co
 
 **Behavior:**
 - Registered on `session_start` event
-- Searches Hyperspell for recent conversation memories:
-  1. First search: recent memories (within `recentContextHours`, default 48h) from `openclaw_conversations` collection
-  2. If no results: fall back to an unfiltered search across all collections for the most relevant memories
-- Formats results as prepended context with a section header indicating these are prior conversation summaries
+- Uses `client.listMemories()` (not `search()`) filtered to `collection: "openclaw_conversations"` to fetch recent memories — this avoids needing a query string since there's no user prompt yet
+- Client-side filters to memories within `recentContextHours` (default 48h) using `metadata.created_at`
+- If no recent results: falls back to `client.search()` with a generic query like `"recent conversations and context"` across all collections, limited to `maxResults`
+- Formats results as prepended context
 - Returns `{ prependContext: formattedString }`
-- Uses `maxResults` config for result count
+- **Total context budget:** Max 5 conversation memories on session start, with each truncated to 500 chars preview. This caps the injected context at ~3,000 chars to avoid blowing up the LLM context window.
 
 **Context format:**
 ```
@@ -83,13 +86,15 @@ Modify the existing `before_agent_start` handler to do a broader search when ini
 
 **Trigger conditions (OR):**
 - Fewer than 3 results returned
-- All returned results have relevance score below 30%
+- All returned results have relevance score below the configured threshold (default 0.30, configurable via `minRelevanceScore`)
 
 **Fallback behavior:**
 - Run `client.searchWithAnswer()` with the same query — this does a broader search and generates an LLM-synthesized answer
 - Merge fallback results with initial results, deduplicating by `resourceId`
 - Include the synthesized answer in the context block if available
 - The merged + enhanced context replaces the original sparse context
+
+**Latency note:** `searchWithAnswer()` involves an LLM call and adds ~1-3s latency. This is acceptable because the fallback only triggers when the initial search failed to find good results — in the normal case (plenty of relevant memories), the fast path is unchanged. No config gate needed since the trigger conditions already limit when this fires.
 
 **Enhanced context format** (when answer is available):
 ```
@@ -109,8 +114,11 @@ New fields added to `HyperspellConfig`:
 |-------|------|---------|-------------|
 | `captureConversations` | boolean | `true` | Capture conversation turns to Hyperspell |
 | `recentContextHours` | number | `48` | Hours of recent history to fetch on session start |
+| `minRelevanceScore` | number | `0.30` | Minimum relevance score (0-1) before "try harder" fallback triggers |
 
 Added to `openclaw.plugin.json` config schema and UI hints.
+
+**Shared constant:** `CONVERSATION_COLLECTION = "openclaw_conversations"` defined in `config.ts`.
 
 ### 5. Registration (index.ts)
 
@@ -136,7 +144,8 @@ Session context uses the same `autoContext` gate since it's conceptually the sam
 
 | File | Change |
 |------|--------|
-| `config.ts` | Add `captureConversations`, `recentContextHours` to type, parser, and defaults |
+| `config.ts` | Add `captureConversations`, `recentContextHours`, `minRelevanceScore`, and `CONVERSATION_COLLECTION` constant |
+| `client.ts` | Fix `addMemory()` metadata merge so caller-provided keys take precedence over defaults |
 | `hooks/conversation-capture.ts` | **New** — `agent_end` handler for conversation capture |
 | `hooks/session-context.ts` | **New** — `session_start` handler for recent history injection |
 | `hooks/auto-context.ts` | Add "try harder" fallback with `searchWithAnswer()` |
@@ -146,8 +155,10 @@ Session context uses the same `autoContext` gate since it's conceptually the sam
 
 ## Edge Cases
 
-- **Long messages:** Truncate combined user+assistant content to a reasonable limit (e.g. 10,000 chars) before sending to `addMemory()` to avoid oversized payloads
-- **Tool-heavy turns:** Some turns are mostly tool calls with minimal text. Still capture them — the user prompt alone is valuable context
-- **Rapid-fire turns:** Each turn is captured independently. Hyperspell handles deduplication at the search layer
+- **Long messages:** Truncate combined user+assistant content to 10,000 chars before sending to `addMemory()`
+- **Tool-heavy turns:** Still captured — the user prompt alone is valuable context
+- **Duplicate captures:** Deterministic `resourceId` (`openclaw_conv_{sessionId}_{turnIndex}`) prevents duplicates on retries or plugin restarts
 - **API failures:** All Hyperspell calls in new hooks are wrapped in try/catch. Failures log warnings but never break the user's session
-- **`session_start` vs `before_agent_start`:** If `session_start` doesn't support returning `prependContext`, fall back to detecting "first turn" in `before_agent_start` (check if it's the first event in a session)
+- **Session-start context overflow:** Capped at 5 conversations, 500 chars each (~3,000 chars total)
+- **`session_start` vs `before_agent_start`:** If `session_start` doesn't support returning `prependContext`, fall back to detecting "first turn" in `before_agent_start` (track session IDs seen in a Set)
+- **`addMemory` metadata:** Caller-provided `openclaw_source` takes precedence over the default `"command"` value
