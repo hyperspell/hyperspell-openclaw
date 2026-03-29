@@ -30,6 +30,7 @@ export type HyperspellConfig = {
 	syncMemories: boolean;
 	sources: HyperspellSource[];
 	maxResults: number;
+	minRelevance: number;
 	debug: boolean;
 	knowledgeGraph: KnowledgeGraphConfig;
 };
@@ -42,6 +43,7 @@ const ALLOWED_KEYS = [
 	"syncMemories",
 	"sources",
 	"maxResults",
+	"minRelevance",
 	"debug",
 	"knowledgeGraph",
 ];
@@ -163,6 +165,7 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 		syncMemories: (cfg.syncMemories as boolean) ?? false,
 		sources: parseSources(cfg.sources as string | string[] | undefined),
 		maxResults: (cfg.maxResults as number) ?? 10,
+		minRelevance: (cfg.minRelevance as number) ?? 0,
 		debug: (cfg.debug as boolean) ?? false,
 		knowledgeGraph: {
 			enabled: (kgRaw.enabled as boolean) ?? false,

@@ -36,6 +36,12 @@
 			"help": "Maximum memories injected into context per turn",
 			"advanced": true
 		},
+		"minRelevance": {
+			"label": "Min Relevance",
+			"placeholder": "0",
+			"help": "Minimum relevance score (0-1) for memories to be injected. 0 = no filter, 0.5 = only 50%+ matches. Reduces noise from low-relevance results.",
+			"advanced": true
+		},
 		"debug": {
 			"label": "Debug Logging",
 			"help": "Enable verbose debug logs for API calls and responses",
@@ -86,6 +92,11 @@
 				"type": "number",
 				"minimum": 1,
 				"maximum": 20
+			},
+			"minRelevance": {
+				"type": "number",
+				"minimum": 0,
+				"maximum": 1
 			},
 			"debug": {
 				"type": "boolean"

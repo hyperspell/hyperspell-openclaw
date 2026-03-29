@@ -26,8 +26,11 @@ function formatRelativeTime(isoTimestamp: string): string {
   }
 }
 
-function formatContext(results: SearchResult[], maxResults: number): string | null {
-  const limited = results.slice(0, maxResults)
+function formatContext(results: SearchResult[], maxResults: number, minRelevance: number): string | null {
+  const filtered = minRelevance > 0
+    ? results.filter((r) => r.score != null && r.score >= minRelevance)
+    : results
+  const limited = filtered.slice(0, maxResults)
 
   if (limited.length === 0) return null
 
@@ -59,14 +62,17 @@ export function buildAutoContextHandler(
 
     try {
       const results = await client.search(prompt, { limit: cfg.maxResults })
-      const context = formatContext(results, cfg.maxResults)
+      const context = formatContext(results, cfg.maxResults, cfg.minRelevance)
 
       if (!context) {
         log.debug("auto-context: no relevant memories found")
         return
       }
 
-      log.debug(`auto-context: injecting ${results.length} memories`)
+      const injected = cfg.minRelevance > 0
+        ? results.filter((r) => r.score != null && r.score >= cfg.minRelevance).length
+        : results.length
+      log.debug(`auto-context: injecting ${injected}/${results.length} memories (minRelevance: ${cfg.minRelevance})`)
       return { prependContext: context }
     } catch (err) {
       log.error("auto-context failed", err)
