@@ -19,16 +19,20 @@ export function registerRememberTool(
         title: Type.Optional(
           Type.String({ description: "Optional title for the memory" }),
         ),
+        date: Type.Optional(
+          Type.String({ description: "Date of the memory (ISO 8601 or YYYY-MM-DD). Helps ranking and enables date-range filtering. Defaults to now if omitted." }),
+        ),
       }),
       async execute(
         _toolCallId: string,
-        params: { text: string; title?: string },
+        params: { text: string; title?: string; date?: string },
       ) {
-        log.debug(`remember tool: "${params.text.slice(0, 50)}..."`)
+        log.debug(`remember tool: "${params.text.slice(0, 50)}..." date=${params.date ?? "now"}`)
 
         try {
           await client.addMemory(params.text, {
             title: params.title,
+            date: params.date,
             metadata: { source: "openclaw_tool" },
           })
 
