@@ -1,88 +1,111 @@
 {
-  "id": "openclaw-hyperspell",
-  "kind": "memory",
-  "uiHints": {
-    "apiKey": {
-      "label": "Hyperspell API Key",
-      "sensitive": true,
-      "placeholder": "hs_...",
-      "help": "Your API key from app.hyperspell.com (or use ${HYPERSPELL_API_KEY})"
-    },
-    "userId": {
-      "label": "User ID",
-      "placeholder": "user_123",
-      "help": "User ID (can be your email)",
-      "advanced": false
-    },
-    "autoContext": {
-      "label": "Auto-Context",
-      "help": "Inject relevant memories before every AI turn",
-      "advanced": true
-    },
-    "sources": {
-      "label": "Sources",
-      "placeholder": "notion,slack,google_drive",
-      "help": "Comma-separated list of sources to search. Leave empty for all sources.",
-      "advanced": true
-    },
-    "maxResults": {
-      "label": "Max Results",
-      "placeholder": "10",
-      "help": "Maximum memories injected into context per turn",
-      "advanced": true
-    },
-    "debug": {
-      "label": "Debug Logging",
-      "help": "Enable verbose debug logs for API calls and responses",
-      "advanced": true
-    },
-    "syncMemories": {
-      "label": "Sync Memory Files",
-      "help": "Automatically sync markdown files in workspace/memory/ to Hyperspell",
-      "advanced": true
-    },
-    "knowledgeGraph": {
-      "label": "Memory Network",
-      "help": "Extract entities (people, projects, orgs, topics) from memories into structured markdown files. Requires a cron job for periodic scanning.",
-      "advanced": true
-    }
-  },
-  "configSchema": {
-    "type": "object",
-    "additionalProperties": false,
-    "properties": {
-      "apiKey": {
-        "type": "string"
-      },
-      "userId": {
-        "type": "string"
-      },
-      "autoContext": {
-        "type": "boolean"
-      },
-      "sources": {
-        "type": "string"
-      },
-      "maxResults": {
-        "type": "number",
-        "minimum": 1,
-        "maximum": 20
-      },
-      "debug": {
-        "type": "boolean"
-      },
-      "syncMemories": {
-        "type": "boolean"
-      },
-      "knowledgeGraph": {
-        "type": "object",
-        "properties": {
-          "enabled": { "type": "boolean" },
-          "scanIntervalMinutes": { "type": "number", "minimum": 5, "maximum": 1440 },
-          "batchSize": { "type": "number", "minimum": 5, "maximum": 100 }
-        }
-      }
-    },
-    "required": []
-  }
+	"id": "openclaw-hyperspell",
+	"kind": "memory",
+	"uiHints": {
+		"apiKey": {
+			"label": "Hyperspell API Key",
+			"sensitive": true,
+			"placeholder": "hs_...",
+			"help": "Your API key from app.hyperspell.com (or use ${HYPERSPELL_API_KEY})"
+		},
+		"userId": {
+			"label": "User ID",
+			"placeholder": "user_123",
+			"help": "User ID (can be your email)",
+			"advanced": false
+		},
+		"autoContext": {
+			"label": "Auto-Context",
+			"help": "Inject relevant memories before every AI turn",
+			"advanced": true
+		},
+		"autoTrace": {
+			"label": "Auto-Trace",
+			"help": "Automatically send conversation traces to Hyperspell for memory extraction (procedural, mood) at the end of each session",
+			"advanced": true
+		},
+		"sources": {
+			"label": "Sources",
+			"placeholder": "notion,slack,google_drive",
+			"help": "Comma-separated list of sources to search. Leave empty for all sources.",
+			"advanced": true
+		},
+		"maxResults": {
+			"label": "Max Results",
+			"placeholder": "10",
+			"help": "Maximum memories injected into context per turn",
+			"advanced": true
+		},
+		"debug": {
+			"label": "Debug Logging",
+			"help": "Enable verbose debug logs for API calls and responses",
+			"advanced": true
+		},
+		"syncMemories": {
+			"label": "Sync Memory Files",
+			"help": "Automatically sync markdown files in workspace/memory/ to Hyperspell",
+			"advanced": true
+		},
+		"knowledgeGraph": {
+			"label": "Memory Network",
+			"help": "Extract entities (people, projects, orgs, topics) from memories into structured markdown files. Requires a cron job for periodic scanning.",
+			"advanced": true
+		}
+	},
+	"configSchema": {
+		"type": "object",
+		"additionalProperties": false,
+		"properties": {
+			"apiKey": {
+				"type": "string"
+			},
+			"userId": {
+				"type": "string"
+			},
+			"autoContext": {
+				"type": "boolean"
+			},
+			"autoTrace": {
+				"type": "object",
+				"properties": {
+					"enabled": { "type": "boolean" },
+					"extract": {
+						"type": "array",
+						"items": {
+							"type": "string",
+							"enum": ["procedure", "memory", "mood"]
+						}
+					},
+					"metadata": { "type": "object" }
+				}
+			},
+			"sources": {
+				"type": "string"
+			},
+			"maxResults": {
+				"type": "number",
+				"minimum": 1,
+				"maximum": 20
+			},
+			"debug": {
+				"type": "boolean"
+			},
+			"syncMemories": {
+				"type": "boolean"
+			},
+			"knowledgeGraph": {
+				"type": "object",
+				"properties": {
+					"enabled": { "type": "boolean" },
+					"scanIntervalMinutes": {
+						"type": "number",
+						"minimum": 5,
+						"maximum": 1440
+					},
+					"batchSize": { "type": "number", "minimum": 5, "maximum": 100 }
+				}
+			}
+		},
+		"required": []
+	}
 }
