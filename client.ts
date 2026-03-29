@@ -47,20 +47,22 @@ export class HyperspellClient {
 
 	async search(
 		query: string,
-		options?: { limit?: number; sources?: HyperspellSource[] },
+		options?: { limit?: number; sources?: HyperspellSource[]; after?: string; before?: string },
 	): Promise<SearchResult[]> {
 		const limit = options?.limit ?? this.config.maxResults;
 		const sources =
 			options?.sources ??
 			(this.config.sources.length > 0 ? this.config.sources : undefined);
 
-		log.debugRequest("memories.search", { query, limit, sources });
+		log.debugRequest("memories.search", { query, limit, sources, after: options?.after, before: options?.before });
 
 		const response = await this.client.memories.search({
 			query,
 			sources,
 			options: {
 				max_results: limit,
+				...(options?.after ? { after: options.after } : {}),
+				...(options?.before ? { before: options.before } : {}),
 			},
 		});
 
@@ -79,20 +81,22 @@ export class HyperspellClient {
 
 	async searchRaw(
 		query: string,
-		options?: { limit?: number; sources?: HyperspellSource[] },
+		options?: { limit?: number; sources?: HyperspellSource[]; after?: string; before?: string },
 	): Promise<Record<string, unknown>> {
 		const limit = options?.limit ?? this.config.maxResults;
 		const sources =
 			options?.sources ??
 			(this.config.sources.length > 0 ? this.config.sources : undefined);
 
-		log.debugRequest("memories.search (raw)", { query, limit, sources });
+		log.debugRequest("memories.search (raw)", { query, limit, sources, after: options?.after, before: options?.before });
 
 		const response = await this.client.memories.search({
 			query,
 			sources,
 			options: {
 				max_results: limit,
+				...(options?.after ? { after: options.after } : {}),
+				...(options?.before ? { before: options.before } : {}),
 			},
 		});
 
@@ -153,6 +157,7 @@ export class HyperspellClient {
 			title?: string;
 			resourceId?: string;
 			collection?: string;
+			date?: string;
 			metadata?: Record<string, string | number | boolean>;
 		},
 	): Promise<{ resourceId: string }> {
@@ -161,6 +166,7 @@ export class HyperspellClient {
 			title: options?.title,
 			resourceId: options?.resourceId,
 			collection: options?.collection,
+			date: options?.date,
 		});
 
 		const result = await this.client.memories.add({
@@ -168,6 +174,7 @@ export class HyperspellClient {
 			title: options?.title,
 			resource_id: options?.resourceId,
 			collection: options?.collection,
+			date: options?.date,
 			metadata: {
 				...options?.metadata,
 				openclaw_source: "command",

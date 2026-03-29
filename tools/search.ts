@@ -20,16 +20,22 @@ export function registerSearchTool(
         limit: Type.Optional(
           Type.Number({ description: "Max results (default: 5)" }),
         ),
+        after: Type.Optional(
+          Type.String({ description: "Only return memories created on or after this date (ISO 8601 or YYYY-MM-DD)" }),
+        ),
+        before: Type.Optional(
+          Type.String({ description: "Only return memories created before this date (ISO 8601 or YYYY-MM-DD)" }),
+        ),
       }),
       async execute(
         _toolCallId: string,
-        params: { query: string; limit?: number },
+        params: { query: string; limit?: number; after?: string; before?: string },
       ) {
         const limit = params.limit ?? 5
-        log.debug(`search tool: query="${params.query}" limit=${limit}`)
+        log.debug(`search tool: query="${params.query}" limit=${limit} after=${params.after ?? "none"} before=${params.before ?? "none"}`)
 
         try {
-          const response = await client.searchRaw(params.query, { limit })
+          const response = await client.searchRaw(params.query, { limit, after: params.after, before: params.before })
           const documents = (response.documents ?? []) as Array<{
             source: string
             resource_id: string
