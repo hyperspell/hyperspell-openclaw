@@ -1,22 +1,26 @@
-import { exec } from "node:child_process"
+import { execFile } from "node:child_process"
 import { platform } from "node:os"
 
 export function openInBrowser(url: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    let command: string
+    let file: string
+    let args: string[]
 
     switch (platform()) {
       case "darwin":
-        command = `open "${url}"`
+        file = "open"
+        args = [url]
         break
       case "win32":
-        command = `start "" "${url}"`
+        file = "cmd"
+        args = ["/c", "start", "", url]
         break
       default:
-        command = `xdg-open "${url}"`
+        file = "xdg-open"
+        args = [url]
     }
 
-    exec(command, (error) => {
+    execFile(file, args, (error) => {
       if (error) {
         reject(error)
       } else {

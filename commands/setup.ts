@@ -1,44 +1,17 @@
-import { exec, execFileSync } from "node:child_process"
+import { execFileSync } from "node:child_process"
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { homedir, platform, userInfo } from "node:os"
+import { userInfo } from "node:os"
 import * as p from "@clack/prompts"
 import type { Command } from "commander"
 import Hyperspell from "hyperspell"
 import { syncAllMemoryFiles, getMemoryFiles } from "../sync/markdown.ts"
+import { openInBrowser } from "../lib/browser.ts"
 import { HyperspellClient } from "../client.ts"
-import { getWorkspaceDir, parseConfig } from "../config.ts"
+import { getWorkspaceDir, parseConfig, resolveConfigPath } from "../config.ts"
 import { buildExtractionPrompt, CRON_JOB_NAME } from "../graph/cron.ts"
 import { NetworkStateManager } from "../graph/state.ts"
 import { scanMemories, formatScanResults, completeMemories } from "../graph/ops.ts"
-
-/**
- * Resolve OpenClaw state directory, matching OpenClaw's logic.
- * Checks OPENCLAW_STATE_DIR env var, falls back to ~/.openclaw
- */
-function resolveStateDir(): string {
-  const override = process.env.OPENCLAW_STATE_DIR?.trim() || process.env.CLAWDBOT_STATE_DIR?.trim()
-  if (override) {
-    return override.startsWith("~")
-      ? override.replace(/^~(?=$|[\\/])/, homedir())
-      : path.resolve(override)
-  }
-  return path.join(homedir(), ".openclaw")
-}
-
-/**
- * Resolve OpenClaw config path, matching OpenClaw's logic.
- * Checks OPENCLAW_CONFIG_PATH env var, falls back to $STATE_DIR/openclaw.json
- */
-function resolveConfigPath(): string {
-  const override = process.env.OPENCLAW_CONFIG_PATH?.trim() || process.env.CLAWDBOT_CONFIG_PATH?.trim()
-  if (override) {
-    return override.startsWith("~")
-      ? override.replace(/^~(?=$|[\\/])/, homedir())
-      : path.resolve(override)
-  }
-  return path.join(resolveStateDir(), "openclaw.json")
-}
 
 async function fetchConnectionSources(client: Hyperspell, userId: string): Promise<string[]> {
   try {
@@ -67,26 +40,6 @@ function updateConfigSources(configPath: string, sources: string[]): void {
     pluginConfig.sources = sources.join(",")
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n")
   }
-}
-
-function openUrl(url: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let command: string
-    switch (platform()) {
-      case "darwin":
-        command = `open "${url}"`
-        break
-      case "win32":
-        command = `start "" "${url}"`
-        break
-      default:
-        command = `xdg-open "${url}"`
-    }
-    exec(command, (error) => {
-      if (error) reject(error)
-      else resolve()
-    })
-  })
 }
 
 async function runSetup(): Promise<void> {
@@ -120,7 +73,7 @@ async function runSetup(): Promise<void> {
     }
 
     if (openSignup) {
-      await openUrl("https://app.hyperspell.com")
+      await openInBrowser("https://app.hyperspell.com")
       p.log.info("Browser opened. Come back when you've created your account.")
     }
 
@@ -229,7 +182,7 @@ async function runSetup(): Promise<void> {
       })
 
       if (!p.isCancel(openConnect) && openConnect) {
-        await openUrl(connectUrl)
+        await openInBrowser(connectUrl)
         p.log.info("Browser opened. Connect your accounts and come back when done.")
 
         await p.confirm({
@@ -382,6 +335,7 @@ async function runSetup(): Promise<void> {
         syncMemories: true,
         sources: [],
         maxResults: 10,
+        relevanceThreshold: 0.6,
         debug: false,
         knowledgeGraph: { enabled: false, scanIntervalMinutes: 60, batchSize: 20 },
       })
@@ -555,7 +509,7 @@ async function runConnect(pluginConfig: unknown): Promise<void> {
 
     s.stop("Connect URL ready")
 
-    await openUrl(connectUrl)
+    await openInBrowser(connectUrl)
     p.log.success("Browser opened to connect.hyperspell.com")
 
     await p.confirm({
