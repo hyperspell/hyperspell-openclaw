@@ -2,6 +2,12 @@ import Hyperspell from "hyperspell";
 import type { HyperspellConfig, HyperspellSource } from "./config.ts";
 import { log } from "./logger.ts";
 
+export type Highlight = {
+	id: string;
+	score: number;
+	text: string;
+};
+
 export type SearchResult = {
 	resourceId: string;
 	title: string | null;
@@ -9,6 +15,7 @@ export type SearchResult = {
 	score: number | null;
 	url: string | null;
 	createdAt: string | null;
+	highlights: Highlight[];
 };
 
 export type SearchWithAnswerResult = {
@@ -66,14 +73,18 @@ export class HyperspellClient {
 			},
 		});
 
-		const results: SearchResult[] = response.documents.map((doc) => ({
-			resourceId: doc.resource_id,
-			title: doc.title ?? null,
-			source: doc.source as HyperspellSource,
-			score: doc.score ?? null,
-			url: (doc.metadata?.url as string | null) ?? null,
-			createdAt: (doc.metadata?.created_at as string | null) ?? null,
-		}));
+		const results: SearchResult[] = response.documents.map((doc) => {
+			const raw = doc as typeof doc & { highlights?: Array<{ id: string; score: number; text: string }> };
+			return {
+				resourceId: doc.resource_id,
+				title: doc.title ?? null,
+				source: doc.source as HyperspellSource,
+				score: doc.score ?? null,
+				url: (doc.metadata?.url as string | null) ?? null,
+				createdAt: (doc.metadata?.created_at as string | null) ?? null,
+				highlights: (raw.highlights ?? []).map((h) => ({ id: h.id, score: h.score, text: h.text })),
+			};
+		});
 
 		log.debugResponse("memories.search", { count: results.length });
 		return results;

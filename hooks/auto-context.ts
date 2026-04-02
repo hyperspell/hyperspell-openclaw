@@ -26,25 +26,31 @@ function formatRelativeTime(isoTimestamp: string): string {
   }
 }
 
-function formatContext(results: SearchResult[], maxResults: number): string | null {
-  const limited = results.slice(0, maxResults)
+function formatContext(results: SearchResult[], maxResults: number, threshold: number): string | null {
+  const sections: string[] = []
 
-  if (limited.length === 0) return null
+  for (const r of results.slice(0, maxResults)) {
+    if ((r.score ?? 0) < threshold) continue
 
-  const lines = limited.map((r) => {
+    const aboveThreshold = r.highlights.filter((h) => h.score >= threshold)
+    if (aboveThreshold.length === 0) continue
+
     const title = r.title ?? `[${r.source}]`
-    const timeStr = r.createdAt ? formatRelativeTime(r.createdAt) : ""
-    const pct = r.score != null ? `[${Math.round(r.score * 100)}%]` : ""
-    const prefix = timeStr ? `[${timeStr}]` : ""
-    return `- ${prefix} ${title} ${pct}`.trim()
-  })
+    const bullets = aboveThreshold
+      .map((h) => `- ${h.text.replace(/\n/g, " ")} [${Math.round(h.score * 100)}%]`)
+      .join("\n")
+
+    sections.push(`### ${title} (resource_id: ${r.resourceId}, source: ${r.source})\n\n${bullets}`)
+  }
+
+  if (sections.length === 0) return null
 
   const intro =
     "The following is context from the user's connected sources. Reference it only when relevant to the conversation."
   const disclaimer =
     "Use this context naturally when relevant — including indirect connections — but don't force it into every response or make assumptions beyond what's stated."
 
-  return `<hyperspell-context>\n${intro}\n\n## Relevant Memories (with relevance %)\n${lines.join("\n")}\n\n${disclaimer}\n</hyperspell-context>`
+  return `<hyperspell-context>\n${intro}\n\n${sections.join("\n\n")}\n\n${disclaimer}\n</hyperspell-context>`
 }
 
 export function buildAutoContextHandler(
@@ -59,7 +65,7 @@ export function buildAutoContextHandler(
 
     try {
       const results = await client.search(prompt, { limit: cfg.maxResults })
-      const context = formatContext(results, cfg.maxResults)
+      const context = formatContext(results, cfg.maxResults, cfg.relevanceThreshold)
 
       if (!context) {
         log.debug("auto-context: no relevant memories found")
