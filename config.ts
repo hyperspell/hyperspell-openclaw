@@ -180,6 +180,42 @@ export const hyperspellConfigSchema = {
 };
 
 /**
+ * Resolve OpenClaw state directory (matches OpenClaw's own logic).
+ */
+export function resolveStateDir(): string {
+	const { homedir } = require("node:os");
+	const path = require("node:path");
+
+	const override =
+		process.env.OPENCLAW_STATE_DIR?.trim() ||
+		process.env.CLAWDBOT_STATE_DIR?.trim();
+	if (override) {
+		return override.startsWith("~")
+			? override.replace(/^~(?=$|[\\/])/, homedir())
+			: path.resolve(override);
+	}
+	return path.join(homedir(), ".openclaw");
+}
+
+/**
+ * Resolve OpenClaw config file path (matches OpenClaw's own logic).
+ */
+export function resolveConfigPath(): string {
+	const path = require("node:path");
+
+	const override =
+		process.env.OPENCLAW_CONFIG_PATH?.trim() ||
+		process.env.CLAWDBOT_CONFIG_PATH?.trim();
+	if (override) {
+		const { homedir } = require("node:os");
+		return override.startsWith("~")
+			? override.replace(/^~(?=$|[\\/])/, homedir())
+			: path.resolve(override);
+	}
+	return path.join(resolveStateDir(), "openclaw.json");
+}
+
+/**
  * Get the workspace directory from OpenClaw config
  */
 export function getWorkspaceDir(): string {
