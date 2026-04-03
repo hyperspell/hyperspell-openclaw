@@ -1,6 +1,6 @@
 {
   "name": "@hyperspell/openclaw-hyperspell",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "type": "module",
   "description": "OpenClaw Hyperspell memory plugin",
   "license": "MIT",
@@ -48,7 +48,8 @@
   "openclaw": {
     "extensions": [
       "./index.ts"
-    ]
+    ],
+    "hooks": []
   },
   "devDependencies": {
     "typescript": "^5.9.3"
