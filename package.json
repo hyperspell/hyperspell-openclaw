@@ -20,7 +20,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hyperspell/openclaw-hyperspell.git"
+    "url": "git+https://github.com/hyperspell/hyperspell-openclaw.git"
   },
   "keywords": [
     "openclaw",
