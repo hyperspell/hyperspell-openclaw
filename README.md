@@ -7,8 +7,10 @@ OpenClaw plugin for [Hyperspell](https://hyperspell.com) - Context and memory fo
 ## Installation
 
 ```bash
-openclaw plugins install @hyperspell/openclaw-hyperspell
+openclaw plugins install --dangerously-force-unsafe-install @hyperspell/openclaw-hyperspell
 ```
+
+> **Note:** The `--dangerously-force-unsafe-install` flag is required because OpenClaw's automated install scanner detects standard operations that are essential to how the plugin works — opening your browser during setup, scheduling background jobs, and securely communicating with the Hyperspell API. These are normal, expected behaviors and the plugin does not execute arbitrary code or access data beyond what is needed to function. The source is fully open and auditable in this repository.
 
 ## Quick Start
 
