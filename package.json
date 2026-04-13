@@ -17,6 +17,8 @@
     "openclaw.plugin.json",
     "README.md"
   ],
+  "author": "Hyperspell <hello@hyperspell.com> (https://hyperspell.com)",
+  "homepage": "https://hyperspell.com",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/hyperspell/hyperspell-openclaw.git"
@@ -46,7 +48,15 @@
     "extensions": [
       "./index.ts"
     ],
-    "hooks": []
+    "hooks": [],
+    "compat": {
+      "pluginApi": ">=2026.1.29",
+      "minGatewayVersion": "2026.1.29"
+    },
+    "build": {
+      "openclawVersion": "2026.3.24-beta.2",
+      "pluginSdkVersion": "2026.3.24-beta.2"
+    }
   },
   "devDependencies": {
     "typescript": "^5.9.3"
