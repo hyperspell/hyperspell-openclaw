@@ -333,6 +333,7 @@ async function runSetup(): Promise<void> {
         userId,
         autoContext: true,
         autoTrace: { enabled: false, extract: ["procedure"] },
+        emotionalContext: false,
         syncMemories: true,
         sources: [],
         maxResults: 10,
