@@ -4,9 +4,63 @@ import { resolveUser } from "../lib/sender.ts";
 import { log } from "../logger.ts";
 
 type Message = { role?: string; content?: string | unknown };
+type ContentItem = { type?: string; text?: string } & Record<string, unknown>;
 
 const MIN_MESSAGES = 3;
 const MIN_CONVERSATION_LENGTH = 100;
+
+/**
+ * Strip transport/injection metadata from a text blob before it's stored as a
+ * trace memory. Without this the auto-context and emotional-state hooks'
+ * prepended wrappers get captured verbatim, extracted as "memory content",
+ * and then surface again on the next session's retrieval — a self-amplifying
+ * pollution loop.
+ */
+export function sanitizeTraceText(input: string): string {
+	let out = input;
+	out = out.replace(
+		/<hyperspell-context>[\s\S]*?<\/hyperspell-context>\n?/g,
+		"",
+	);
+	out = out.replace(
+		/<hyperspell-emotional-context>[\s\S]*?<\/hyperspell-emotional-context>\n?/g,
+		"",
+	);
+	out = out.replace(
+		/Sender \(untrusted metadata\):\s*```json[\s\S]*?```\n?/g,
+		"",
+	);
+	out = out.replace(
+		/\[Bootstrap pending\][\s\S]*?(?=\n{2,}|\nSystem:|\nSender|$)/g,
+		"",
+	);
+	out = out.replace(
+		/^System(?:\s+\(untrusted\))?:\s*\[[^\]]+\][^\n]*\n?/gm,
+		"",
+	);
+	out = out.replace(/\n{3,}/g, "\n\n").trim();
+	return out;
+}
+
+function sanitizeContent(content: unknown): ContentItem[] {
+	const items: ContentItem[] =
+		typeof content === "string"
+			? [{ type: "text", text: content }]
+			: Array.isArray(content)
+				? (content as ContentItem[])
+				: [{ type: "text", text: JSON.stringify(content) }];
+
+	const cleaned: ContentItem[] = [];
+	for (const item of items) {
+		if (item?.type === "text" && typeof item.text === "string") {
+			const text = sanitizeTraceText(item.text);
+			if (text.length > 0) cleaned.push({ ...item, text });
+		} else if (item) {
+			cleaned.push(item);
+		}
+	}
+	return cleaned;
+}
 
 /**
  * Convert event.messages into OpenClaw JSONL format for the trace API.
@@ -14,7 +68,6 @@ const MIN_CONVERSATION_LENGTH = 100;
 function messagesToJSONL(messages: unknown[], sessionId: string): string {
 	const lines: string[] = [];
 
-	// Session header
 	lines.push(
 		JSON.stringify({
 			type: "session",
@@ -24,21 +77,16 @@ function messagesToJSONL(messages: unknown[], sessionId: string): string {
 		}),
 	);
 
-	// Message entries
 	for (const raw of messages as Message[]) {
 		if (!raw.role || !raw.content) continue;
+		if (raw.role === "system") continue;
 
-		const content =
-			typeof raw.content === "string"
-				? [{ type: "text", text: raw.content }]
-				: Array.isArray(raw.content)
-					? raw.content
-					: [{ type: "text", text: JSON.stringify(raw.content) }];
+		const content = sanitizeContent(raw.content);
+		if (content.length === 0) continue;
 
 		const id = crypto.randomUUID().slice(0, 8);
 
 		if (raw.role === "tool" || raw.role === "toolResult") {
-			// Tool results use a different structure
 			lines.push(
 				JSON.stringify({
 					type: "message",
