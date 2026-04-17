@@ -25,6 +25,18 @@ export type AutoTraceConfig = {
 	metadata?: Record<string, string | number | boolean>;
 };
 
+export type UserProfile = {
+	userId: string;
+	name: string;
+	context?: string;
+};
+
+export type MultiUserConfig = {
+	senderMap: Record<string, UserProfile>;
+	sharedUserId: string;
+	includeSharedInSearch: boolean;
+};
+
 export type HyperspellConfig = {
 	apiKey: string;
 	userId?: string;
@@ -38,6 +50,7 @@ export type HyperspellConfig = {
 	relevanceThreshold: number;
 	debug: boolean;
 	knowledgeGraph: KnowledgeGraphConfig;
+	multiUser?: MultiUserConfig;
 };
 
 const ALLOWED_KEYS = [
@@ -53,6 +66,7 @@ const ALLOWED_KEYS = [
 	"relevanceThreshold",
 	"debug",
 	"knowledgeGraph",
+	"multiUser",
 ];
 
 const VALID_SOURCES: HyperspellSource[] = [
@@ -135,6 +149,40 @@ function parseSources(raw: string | string[] | undefined): HyperspellSource[] {
 	return sources;
 }
 
+function parseMultiUser(raw: unknown): MultiUserConfig | undefined {
+	if (!raw || typeof raw !== "object") return undefined;
+	const mu = raw as Record<string, unknown>;
+
+	const senderMap: Record<string, UserProfile> = {};
+	const rawMap = mu.senderMap as Record<string, unknown> | undefined;
+	if (rawMap && typeof rawMap === "object") {
+		for (const [handle, profile] of Object.entries(rawMap)) {
+			if (profile && typeof profile === "object") {
+				const p = profile as Record<string, unknown>;
+				if (typeof p.userId === "string" && typeof p.name === "string") {
+					senderMap[handle] = {
+						userId: p.userId,
+						name: p.name,
+						context: typeof p.context === "string" ? p.context : undefined,
+					};
+				}
+			}
+		}
+	}
+
+	if (Object.keys(senderMap).length === 0) return undefined;
+
+	return {
+		senderMap,
+		sharedUserId:
+			typeof mu.sharedUserId === "string" ? mu.sharedUserId : "shared",
+		includeSharedInSearch:
+			typeof mu.includeSharedInSearch === "boolean"
+				? mu.includeSharedInSearch
+				: true,
+	};
+}
+
 export function parseConfig(raw: unknown): HyperspellConfig {
 	const cfg =
 		raw && typeof raw === "object" && !Array.isArray(raw)
@@ -184,6 +232,7 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 			scanIntervalMinutes: (kgRaw.scanIntervalMinutes as number) ?? 60,
 			batchSize: (kgRaw.batchSize as number) ?? 20,
 		},
+		multiUser: parseMultiUser(cfg.multiUser),
 	};
 }
 
