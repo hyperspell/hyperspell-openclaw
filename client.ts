@@ -82,29 +82,52 @@ export class HyperspellClient {
 		return headers;
 	}
 
+	private requestOptions(userId?: string) {
+		if (!userId) return undefined;
+		return { headers: { "X-As-User": userId } };
+	}
+
 	async search(
 		query: string,
-		options?: { limit?: number; sources?: HyperspellSource[]; after?: string; before?: string },
+		options?: {
+			limit?: number;
+			sources?: HyperspellSource[];
+			after?: string;
+			before?: string;
+			userId?: string;
+		},
 	): Promise<SearchResult[]> {
 		const limit = options?.limit ?? this.config.maxResults;
 		const sources =
 			options?.sources ??
 			(this.config.sources.length > 0 ? this.config.sources : undefined);
 
-		log.debugRequest("memories.search", { query, limit, sources, after: options?.after, before: options?.before });
-
-		const response = await this.client.memories.search({
+		log.debugRequest("memories.search", {
 			query,
+			limit,
 			sources,
-			options: {
-				max_results: limit,
-				...(options?.after ? { after: options.after } : {}),
-				...(options?.before ? { before: options.before } : {}),
-			},
+			after: options?.after,
+			before: options?.before,
+			userId: options?.userId,
 		});
 
+		const response = await this.client.memories.search(
+			{
+				query,
+				sources,
+				options: {
+					max_results: limit,
+					...(options?.after ? { after: options.after } : {}),
+					...(options?.before ? { before: options.before } : {}),
+				},
+			},
+			this.requestOptions(options?.userId),
+		);
+
 		const results: SearchResult[] = response.documents.map((doc) => {
-			const raw = doc as typeof doc & { highlights?: Array<{ id: string; score: number; text: string }> };
+			const raw = doc as typeof doc & {
+				highlights?: Array<{ id: string; score: number; text: string }>;
+			};
 			return {
 				resourceId: doc.resource_id,
 				title: doc.title ?? null,
@@ -112,7 +135,11 @@ export class HyperspellClient {
 				score: doc.score ?? null,
 				url: (doc.metadata?.url as string | null) ?? null,
 				createdAt: (doc.metadata?.created_at as string | null) ?? null,
-				highlights: (raw.highlights ?? []).map((h) => ({ id: h.id, score: h.score, text: h.text })),
+				highlights: (raw.highlights ?? []).map((h) => ({
+					id: h.id,
+					score: h.score,
+					text: h.text,
+				})),
 			};
 		});
 
@@ -122,24 +149,40 @@ export class HyperspellClient {
 
 	async searchRaw(
 		query: string,
-		options?: { limit?: number; sources?: HyperspellSource[]; after?: string; before?: string },
+		options?: {
+			limit?: number;
+			sources?: HyperspellSource[];
+			after?: string;
+			before?: string;
+			userId?: string;
+		},
 	): Promise<Record<string, unknown>> {
 		const limit = options?.limit ?? this.config.maxResults;
 		const sources =
 			options?.sources ??
 			(this.config.sources.length > 0 ? this.config.sources : undefined);
 
-		log.debugRequest("memories.search (raw)", { query, limit, sources, after: options?.after, before: options?.before });
-
-		const response = await this.client.memories.search({
+		log.debugRequest("memories.search (raw)", {
 			query,
+			limit,
 			sources,
-			options: {
-				max_results: limit,
-				...(options?.after ? { after: options.after } : {}),
-				...(options?.before ? { before: options.before } : {}),
-			},
+			after: options?.after,
+			before: options?.before,
+			userId: options?.userId,
 		});
+
+		const response = await this.client.memories.search(
+			{
+				query,
+				sources,
+				options: {
+					max_results: limit,
+					...(options?.after ? { after: options.after } : {}),
+					...(options?.before ? { before: options.before } : {}),
+				},
+			},
+			this.requestOptions(options?.userId),
+		);
 
 		log.debugResponse("memories.search (raw)", {
 			count: response.documents.length,
@@ -150,7 +193,11 @@ export class HyperspellClient {
 
 	async searchWithAnswer(
 		query: string,
-		options?: { limit?: number; sources?: HyperspellSource[] },
+		options?: {
+			limit?: number;
+			sources?: HyperspellSource[];
+			userId?: string;
+		},
 	): Promise<SearchWithAnswerResult> {
 		const limit = options?.limit ?? this.config.maxResults;
 		const sources =
@@ -161,16 +208,20 @@ export class HyperspellClient {
 			query,
 			limit,
 			sources,
+			userId: options?.userId,
 		});
 
-		const response = await this.client.memories.search({
-			query,
-			sources,
-			answer: true,
-			options: {
-				max_results: limit,
+		const response = await this.client.memories.search(
+			{
+				query,
+				sources,
+				answer: true,
+				options: {
+					max_results: limit,
+				},
 			},
-		});
+			this.requestOptions(options?.userId),
+		);
 
 		const documents: SearchResult[] = response.documents.map((doc) => ({
 			resourceId: doc.resource_id,
@@ -201,6 +252,7 @@ export class HyperspellClient {
 			collection?: string;
 			date?: string;
 			metadata?: Record<string, string | number | boolean>;
+			userId?: string;
 		},
 	): Promise<{ resourceId: string }> {
 		log.debugRequest("memories.add", {
@@ -209,19 +261,23 @@ export class HyperspellClient {
 			resourceId: options?.resourceId,
 			collection: options?.collection,
 			date: options?.date,
+			userId: options?.userId,
 		});
 
-		const result = await this.client.memories.add({
-			text,
-			title: options?.title,
-			resource_id: options?.resourceId,
-			collection: options?.collection,
-			date: options?.date,
-			metadata: {
-				...options?.metadata,
-				openclaw_source: "command",
+		const result = await this.client.memories.add(
+			{
+				text,
+				title: options?.title,
+				resource_id: options?.resourceId,
+				collection: options?.collection,
+				date: options?.date,
+				metadata: {
+					...options?.metadata,
+					openclaw_source: "command",
+				},
 			},
-		});
+			this.requestOptions(options?.userId),
+		);
 
 		log.debugResponse("memories.add", { resourceId: result.resource_id });
 		return { resourceId: result.resource_id };
@@ -245,10 +301,15 @@ export class HyperspellClient {
 
 	async getConnectUrl(
 		integrationId: string,
+		options?: { userId?: string },
 	): Promise<{ url: string; expiresAt: string }> {
 		log.debugRequest("integrations.connect", { integrationId });
 
-		const response = await this.client.integrations.connect(integrationId);
+		const response = await this.client.integrations.connect(
+			integrationId,
+			undefined,
+			this.requestOptions(options?.userId),
+		);
 
 		log.debugResponse("integrations.connect", { url: response.url });
 		return {
@@ -261,6 +322,7 @@ export class HyperspellClient {
 		source?: HyperspellSource;
 		collection?: string;
 		pageSize?: number;
+		userId?: string;
 	}): AsyncGenerator<{
 		resourceId: string;
 		source: HyperspellSource;
@@ -270,6 +332,7 @@ export class HyperspellClient {
 		log.debugRequest("memories.list", {
 			source: options?.source,
 			collection: options?.collection,
+			userId: options?.userId,
 		});
 
 		const params: Record<string, unknown> = {
@@ -278,7 +341,10 @@ export class HyperspellClient {
 		if (options?.source) params.source = options.source;
 		if (options?.collection) params.collection = options.collection;
 
-		for await (const memory of this.client.memories.list(params as any)) {
+		for await (const memory of this.client.memories.list(
+			params as any,
+			this.requestOptions(options?.userId),
+		)) {
 			yield {
 				resourceId: memory.resource_id,
 				source: memory.source as HyperspellSource,
@@ -291,10 +357,15 @@ export class HyperspellClient {
 	async getMemory(
 		resourceId: string,
 		source: HyperspellSource,
+		options?: { userId?: string },
 	): Promise<Record<string, unknown>> {
 		log.debugRequest("memories.get", { resourceId, source });
 
-		const response = await this.client.memories.get(resourceId, { source });
+		const response = await this.client.memories.get(
+			resourceId,
+			{ source },
+			this.requestOptions(options?.userId),
+		);
 		const raw = response as unknown as Record<string, unknown>;
 
 		log.debugResponse("memories.get", { resourceId, hasData: "data" in raw });
@@ -308,30 +379,35 @@ export class HyperspellClient {
 			title?: string;
 			extract?: Array<"procedure" | "memory" | "mood">;
 			metadata?: Record<string, string | number | boolean>;
+			userId?: string;
 		},
 	): Promise<{ resourceId: string; status: string }> {
 		log.debugRequest("sessions.add", {
 			historyLength: history.length,
 			sessionId: options?.sessionId,
 			extract: options?.extract,
+			userId: options?.userId,
 		});
 
-		const result = await this.client.sessions.add({
-			history,
-			session_id: options?.sessionId,
-			title: options?.title,
-			format: "openclaw",
-			// Cast: SDK 0.35 typing accepts only ["procedure" | "memory"], but the
-			// backend's mood extractor (hyperspell/hyperspell#581) accepts "mood".
-			// Remove this cast once the OpenAPI spec is updated.
-			extract: (options?.extract ?? ["procedure"]) as Array<
-				"procedure" | "memory"
-			>,
-			metadata: {
-				...options?.metadata,
-				openclaw_source: "agent_end",
+		const result = await this.client.sessions.add(
+			{
+				history,
+				session_id: options?.sessionId,
+				title: options?.title,
+				format: "openclaw",
+				// Cast: SDK 0.35 typing accepts only ["procedure" | "memory"], but the
+				// backend's mood extractor (hyperspell/hyperspell#581) accepts "mood".
+				// Remove this cast once the OpenAPI spec is updated.
+				extract: (options?.extract ?? ["procedure"]) as Array<
+					"procedure" | "memory"
+				>,
+				metadata: {
+					...options?.metadata,
+					openclaw_source: "agent_end",
+				},
 			},
-		});
+			this.requestOptions(options?.userId),
+		);
 
 		log.debugResponse("sessions.add", {
 			resourceId: result.resource_id,
@@ -340,10 +416,14 @@ export class HyperspellClient {
 		return { resourceId: result.resource_id, status: result.status };
 	}
 
-	async listConnections(): Promise<Connection[]> {
-		log.debugRequest("connections.list", {});
+	async listConnections(options?: {
+		userId?: string;
+	}): Promise<Connection[]> {
+		log.debugRequest("connections.list", { userId: options?.userId });
 
-		const response = await this.client.connections.list();
+		const response = await this.client.connections.list(
+			this.requestOptions(options?.userId),
+		);
 
 		const connections: Connection[] = response.connections.map((conn) => ({
 			id: conn.id,

@@ -32,7 +32,7 @@ export function registerNetworkTools(
       async execute(_toolCallId: string, params: { batchSize?: number }) {
         const batchSize = params.batchSize ?? cfg.knowledgeGraph.batchSize
         try {
-          const memories = await scanMemories(client, stateManager, batchSize)
+          const memories = await scanMemories(client, stateManager, batchSize, cfg)
           const text = formatScanResults(memories, stateManager.getProcessedCount(), stateManager.getLastScanAt())
           return {
             content: [{ type: "text" as const, text }],

@@ -8,8 +8,8 @@ import { buildAutoTraceHandler } from "./hooks/auto-trace.ts"
 import { buildEmotionalStateFetchHandler, buildEmotionalStateStoreHandler } from "./hooks/emotional-state.ts"
 import { buildFileSyncHandler, syncMemoriesOnStartup } from "./hooks/memory-sync.ts"
 import { initLogger } from "./logger.ts"
-import { registerRememberTool } from "./tools/remember.ts"
-import { registerSearchTool } from "./tools/search.ts"
+import { createRememberToolFactory } from "./tools/remember.ts"
+import { createSearchToolFactory } from "./tools/search.ts"
 import { registerNetworkTools } from "./graph/index.ts"
 
 export default {
@@ -80,9 +80,13 @@ export default {
 
 		const client = new HyperspellClient(cfg);
 
-		// Register AI tools
-		registerSearchTool(api, client, cfg);
-		registerRememberTool(api, client, cfg);
+		// Register AI tools (factory pattern for sender context)
+		api.registerTool(createSearchToolFactory(client, cfg), {
+			name: "hyperspell_search",
+		});
+		api.registerTool(createRememberToolFactory(client, cfg), {
+			name: "hyperspell_remember",
+		});
 
 		// Register emotional context hooks (fetch on start, store on end)
 		if (cfg.emotionalContext) {
@@ -124,7 +128,9 @@ export default {
 				// Sync memories on startup if enabled
 				if (cfg.syncMemories) {
 					const workspaceDir = getWorkspaceDir();
-					await syncMemoriesOnStartup(client, workspaceDir);
+					await syncMemoriesOnStartup(client, workspaceDir, {
+						userId: cfg.multiUser?.sharedUserId,
+					});
 				}
 			},
 			stop: () => {

@@ -1,5 +1,6 @@
 import type { HyperspellClient } from "../client.ts";
 import type { HyperspellConfig } from "../config.ts";
+import { resolveUser } from "../lib/sender.ts";
 import { log } from "../logger.ts";
 
 type Message = { role?: string; content?: string | unknown };
@@ -75,7 +76,10 @@ export function buildAutoTraceHandler(
 	client: HyperspellClient,
 	cfg: HyperspellConfig,
 ) {
-	return async (event: Record<string, unknown>) => {
+	return async (
+		event: Record<string, unknown>,
+		ctx?: Record<string, unknown>,
+	) => {
 		if (event.success === false) {
 			log.debug("auto-trace: skipping — agent ended with error");
 			return;
@@ -109,15 +113,21 @@ export function buildAutoTraceHandler(
 			? String(firstUser.content).slice(0, 80).replace(/\n/g, " ")
 			: undefined;
 
+		// Resolve sender → userId so traces land in the right user's space.
+		// Falls back to sharedUserId for unknown senders (or undefined in single-user mode).
+		const resolved = resolveUser(ctx, cfg);
+		const userId = resolved?.userId;
+
 		try {
 			const result = await client.sendTrace(history, {
 				sessionId,
 				title,
 				extract: cfg.autoTrace.extract,
 				metadata: cfg.autoTrace.metadata,
+				userId,
 			});
 			log.info(
-				`auto-trace: sent ${result.resourceId} (${messages.length} messages)`,
+				`auto-trace: sent ${result.resourceId} (${messages.length} messages${userId ? `, user=${userId}` : ""})`,
 			);
 		} catch (err) {
 			// Fire-and-forget — never break the session
