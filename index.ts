@@ -5,7 +5,12 @@ import { registerCliCommands } from "./commands/setup.ts"
 import { parseConfig, hyperspellConfigSchema, getWorkspaceDir } from "./config.ts"
 import { buildAutoContextHandler } from "./hooks/auto-context.ts"
 import { buildAutoTraceHandler } from "./hooks/auto-trace.ts"
-import { buildEmotionalStateFetchHandler, buildEmotionalStateStoreHandler } from "./hooks/emotional-state.ts"
+import {
+	buildEmotionalStateCompactionHandler,
+	buildEmotionalStateFetchHandler,
+	buildEmotionalStateSessionCleanupHandler,
+	buildEmotionalStateStoreHandler,
+} from "./hooks/emotional-state.ts"
 import { buildFileSyncHandler, syncMemoriesOnStartup } from "./hooks/memory-sync.ts"
 import { initLogger } from "./logger.ts"
 import { createRememberToolFactory } from "./tools/remember.ts"
@@ -88,9 +93,15 @@ export default {
 			name: "hyperspell_remember",
 		});
 
-		// Register emotional context hooks (fetch on start, store on end)
+		// Register emotional context hooks.
+		// - fetch: inject once per session on first turn (cached thereafter)
+		// - compaction: clear cache so the next turn re-injects after trim
+		// - session cleanup: drop Set entry on session end
+		// - store: extract new emotional state from the finished session
 		if (cfg.emotionalContext) {
 			api.on("before_agent_start", buildEmotionalStateFetchHandler(client, cfg));
+			api.on("after_compaction", buildEmotionalStateCompactionHandler());
+			api.on("session_end", buildEmotionalStateSessionCleanupHandler());
 			api.on("agent_end", buildEmotionalStateStoreHandler(client, cfg));
 		}
 
