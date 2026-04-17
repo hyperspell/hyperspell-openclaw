@@ -27,7 +27,7 @@ export type Integration = {
 	id: string;
 	name: string;
 	provider: HyperspellSource;
-	icon: string;
+	icon: string | null;
 };
 
 export type Connection = {
@@ -149,6 +149,7 @@ export class HyperspellClient {
 			score: doc.score ?? null,
 			url: (doc.metadata?.url as string | null) ?? null,
 			createdAt: (doc.metadata?.created_at as string | null) ?? null,
+			highlights: [],
 		}));
 
 		log.debugResponse("memories.search (with answer)", {
@@ -290,7 +291,12 @@ export class HyperspellClient {
 			session_id: options?.sessionId,
 			title: options?.title,
 			format: "openclaw",
-			extract: options?.extract ?? ["procedure"],
+			// Cast: SDK 0.35 typing accepts only ["procedure" | "memory"], but the
+			// backend's mood extractor (hyperspell/hyperspell#581) accepts "mood".
+			// Remove this cast once the OpenAPI spec is updated.
+			extract: (options?.extract ?? ["procedure"]) as Array<
+				"procedure" | "memory"
+			>,
 			metadata: {
 				...options?.metadata,
 				openclaw_source: "agent_end",

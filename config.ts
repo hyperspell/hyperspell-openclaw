@@ -1,5 +1,4 @@
 export type HyperspellSource =
-	| "collections"
 	| "reddit"
 	| "notion"
 	| "slack"
@@ -8,7 +7,11 @@ export type HyperspellSource =
 	| "box"
 	| "google_drive"
 	| "vault"
-	| "web_crawler";
+	| "web_crawler"
+	| "dropbox"
+	| "github"
+	| "trace"
+	| "microsoft_teams";
 
 export type KnowledgeGraphConfig = {
 	enabled: boolean;
@@ -49,7 +52,6 @@ const ALLOWED_KEYS = [
 ];
 
 const VALID_SOURCES: HyperspellSource[] = [
-	"collections",
 	"reddit",
 	"notion",
 	"slack",
@@ -59,6 +61,10 @@ const VALID_SOURCES: HyperspellSource[] = [
 	"google_drive",
 	"vault",
 	"web_crawler",
+	"dropbox",
+	"github",
+	"trace",
+	"microsoft_teams",
 ];
 
 function assertAllowedKeys(
