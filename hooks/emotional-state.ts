@@ -8,13 +8,38 @@ type Message = { role?: string; content?: string | unknown };
 const MIN_MESSAGES = 3;
 const MIN_CONVERSATION_LENGTH = 100;
 
+/**
+ * Extract readable text from a message content, unwrapping the common
+ * `[{ type: "text", text: "..." }]` array shape so sanitizeTraceText can
+ * operate on real text (not JSON-stringified content where newlines would
+ * be escaped and regex line-anchors wouldn't match).
+ */
+function contentToText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (Array.isArray(content)) {
+		const texts: string[] = [];
+		for (const item of content) {
+			if (
+				item &&
+				typeof item === "object" &&
+				(item as { type?: unknown }).type === "text" &&
+				typeof (item as { text?: unknown }).text === "string"
+			) {
+				texts.push((item as { text: string }).text);
+			}
+		}
+		if (texts.length > 0) return texts.join("\n");
+	}
+	return "";
+}
+
 function messagesToTranscript(messages: unknown[]): string {
 	const lines: string[] = [];
 	for (const m of messages as Message[]) {
 		if (!m.role || !m.content) continue;
 		if (m.role === "system") continue;
-		const raw =
-			typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+		const raw = contentToText(m.content);
+		if (!raw) continue;
 		const cleaned = sanitizeTraceText(raw);
 		if (cleaned.length === 0) continue;
 		lines.push(`${m.role}: ${cleaned}`);

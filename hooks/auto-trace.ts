@@ -35,6 +35,14 @@ export function sanitizeTraceText(input: string): string {
 		"",
 	);
 	out = out.replace(
+		/\[Startup context loaded by runtime\][\s\S]*?(?:\n\n|$)/g,
+		"",
+	);
+	out = out.replace(
+		/\[Untrusted daily memory:[^\]]*\][\s\S]*?END_QUOTED_NOTES\n?/g,
+		"",
+	);
+	out = out.replace(
 		/^System(?:\s+\(untrusted\))?:\s*\[[^\]]+\][^\n]*\n?/gm,
 		"",
 	);
