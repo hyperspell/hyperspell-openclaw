@@ -1,6 +1,7 @@
 import type { HyperspellClient } from "../client.ts";
 import type { HyperspellConfig } from "../config.ts";
 import { log } from "../logger.ts";
+import { sanitizeTraceText } from "./auto-trace.ts";
 
 type Message = { role?: string; content?: string | unknown };
 
@@ -8,14 +9,17 @@ const MIN_MESSAGES = 3;
 const MIN_CONVERSATION_LENGTH = 100;
 
 function messagesToTranscript(messages: unknown[]): string {
-	return (messages as Message[])
-		.filter((m) => m.role && m.content)
-		.map((m) => {
-			const content =
-				typeof m.content === "string" ? m.content : JSON.stringify(m.content);
-			return `${m.role}: ${content}`;
-		})
-		.join("\n");
+	const lines: string[] = [];
+	for (const m of messages as Message[]) {
+		if (!m.role || !m.content) continue;
+		if (m.role === "system") continue;
+		const raw =
+			typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+		const cleaned = sanitizeTraceText(raw);
+		if (cleaned.length === 0) continue;
+		lines.push(`${m.role}: ${cleaned}`);
+	}
+	return lines.join("\n");
 }
 
 /**
