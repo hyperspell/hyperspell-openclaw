@@ -1,6 +1,6 @@
 {
   "name": "@hyperspell/openclaw-hyperspell",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "type": "module",
   "description": "OpenClaw Hyperspell memory plugin",
   "license": "MIT",
@@ -34,7 +34,7 @@
   "dependencies": {
     "@clack/prompts": "^1.0.0",
     "@sinclair/typebox": "^0.34.0",
-    "hyperspell": "^0.30.0"
+    "hyperspell": "^0.35.1"
   },
   "peerDependencies": {
     "openclaw": ">=2026.1.29"
