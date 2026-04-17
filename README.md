@@ -35,6 +35,9 @@ Add to your `openclaw.json`:
 ```json
 {
   "plugins": {
+    "slots": {
+      "memory": "openclaw-hyperspell"
+    },
     "entries": {
       "openclaw-hyperspell": {
         "enabled": true,
@@ -43,8 +46,14 @@ Add to your `openclaw.json`:
           "userId": "your-email",
           "autoContext": true,
           "syncMemories": true,
-          "sources": "vault,notion,slack"
+          "sources": "vault,notion,slack",
+          "dreaming": {
+            "enabled": true
+          }
         }
+      },
+      "memory-core": {
+        "enabled": true
       }
     }
   }
@@ -56,6 +65,28 @@ Set the environment variable in `~/.openclaw/.env`:
 ```bash
 HYPERSPELL_API_KEY=hs_...
 ```
+
+### Running alongside Dreaming
+
+OpenClaw's memory slot (`plugins.slots.memory`) is exclusive, but the `memory-core` dreaming engine is an explicit exception: it can sidecar-load alongside the slot owner so Dreaming keeps running while Hyperspell handles remote search and storage.
+
+To enable this, all four settings must be true at once:
+
+| Setting | Value |
+|---|---|
+| `plugins.slots.memory` | `openclaw-hyperspell` |
+| `plugins.entries.openclaw-hyperspell.enabled` | `true` |
+| `plugins.entries.openclaw-hyperspell.config.dreaming.enabled` | `true` |
+| `plugins.entries.memory-core.enabled` | `true` |
+
+The `dreaming.enabled: true` flag on the Hyperspell plugin's config is what tells OpenClaw to load `memory-core` as a sidecar (see `resolveDreamingSidecarEngineId` in OpenClaw's plugin loader). Without it, `memory-core` is treated as a normal memory plugin and the slot policy disables it.
+
+**Two distinct memory tracks:**
+
+- **Hyperspell** — remote, cross-source (Slack, Notion, Drive, Gmail, vault, ...). Runs on every agent turn via `autoContext` and `autoTrace`. Owns the memory slot.
+- **Dreaming** — local, consolidates daily notes and session transcripts into `workspace/MEMORY.md` on cron (light every 6h, deep nightly, REM weekly). Does not read Hyperspell's remote memories. Reads only local files the agent runner writes.
+
+The two systems don't share state at runtime. They can be enabled independently.
 
 ## CLI Commands
 
@@ -82,6 +113,7 @@ Open the Hyperspell connect page to link your accounts (Notion, Slack, Google Dr
 | `sources` | string | - | Comma-separated sources to search (e.g., `vault,notion,slack`) |
 | `maxResults` | number | `10` | Maximum memories per context injection |
 | `debug` | boolean | `false` | Enable verbose logging |
+| `dreaming.enabled` | boolean | `false` | Allow `memory-core` to sidecar-load so Dreaming can consolidate local session transcripts into `workspace/MEMORY.md`. See [Running alongside Dreaming](#running-alongside-dreaming). |
 
 ## Slash Commands
 
@@ -211,6 +243,10 @@ Enable the graph tools by using `hyperspell_network_scan`, `hyperspell_network_w
 - Verify `autoContext: true` in your config
 - Enable `debug: true` to see what queries are being made
 - Check that you have memories matching your conversation topics
+
+### Enabling `memory-core` disabled Hyperspell
+- This means `memory-core` was placed in `plugins.slots.memory`. The slot should stay on `openclaw-hyperspell`; `memory-core` rides alongside as a sidecar.
+- Restore: set `plugins.slots.memory = "openclaw-hyperspell"`, set both plugins `enabled: true`, and add `dreaming: { enabled: true }` to the Hyperspell config. See [Running alongside Dreaming](#running-alongside-dreaming).
 
 ## Contributing
 
