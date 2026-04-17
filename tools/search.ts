@@ -1,13 +1,19 @@
 import { Type } from "@sinclair/typebox"
 import type { HyperspellClient } from "../client.ts"
-import type { HyperspellConfig } from "../config.ts"
-import { resolveUser } from "../lib/sender.ts"
+import type { CanReadScope, HyperspellConfig } from "../config.ts"
+import { buildScopeFilter, getCanReadScopes, resolveUser } from "../lib/sender.ts"
 import { log } from "../logger.ts"
 
 export function createSearchToolFactory(
   client: HyperspellClient,
   cfg: HyperspellConfig,
 ) {
+  const scopingEnabled = !!cfg.multiUser?.scoping
+  const availableScopes = cfg.multiUser?.scoping?.scopes ?? []
+  const scopeDescription = scopingEnabled
+    ? `Narrow search to a single privacy scope. Available: ${availableScopes.join(", ")}. Omit to search all scopes visible to the caller's role.`
+    : "Privacy scope (only used when scoping is enabled in config)."
+
   return (ctx: Record<string, unknown>) => ({
     name: "hyperspell_search",
     label: "Memory Search",
@@ -30,17 +36,39 @@ export function createSearchToolFactory(
             "Search as a specific user (e.g. 'ben', 'shared'). Omit to search as current sender.",
         }),
       ),
+      scope: Type.Optional(Type.String({ description: scopeDescription })),
     }),
     async execute(
       _toolCallId: string,
-      params: { query: string; limit?: number; after?: string; before?: string; userId?: string },
+      params: {
+        query: string
+        limit?: number
+        after?: string
+        before?: string
+        userId?: string
+        scope?: string
+      },
     ) {
       const limit = params.limit ?? 5
-      // Resolve userId: explicit param > sender resolution > config default
       const resolved = resolveUser(ctx, cfg)
       const userId = params.userId ?? resolved?.userId
+
+      // Build scope filter: intersect requested scope (if any) with caller's canRead
+      let filter: Record<string, unknown> | undefined
+      if (scopingEnabled) {
+        const canRead = getCanReadScopes(resolved, cfg)
+        const allowed: CanReadScope[] = params.scope
+          ? canRead.includes("*")
+            ? [params.scope]
+            : canRead.includes(params.scope)
+              ? [params.scope]
+              : [] // requested scope not allowed → match nothing
+          : canRead
+        filter = buildScopeFilter(allowed, resolved?.userId ?? "")
+      }
+
       log.debug(
-        `search tool: query="${params.query}" limit=${limit} after=${params.after ?? "none"} before=${params.before ?? "none"} userId=${userId}`,
+        `search tool: query="${params.query}" limit=${limit} after=${params.after ?? "none"} before=${params.before ?? "none"} userId=${userId} scope=${params.scope ?? "any"}`,
       )
 
       try {
@@ -49,6 +77,7 @@ export function createSearchToolFactory(
           after: params.after,
           before: params.before,
           userId,
+          filter,
         })
         const documents = (response.documents ?? []) as Array<{
           source: string

@@ -1,5 +1,10 @@
 import Hyperspell from "hyperspell";
-import type { HyperspellConfig, HyperspellSource } from "./config.ts";
+import type {
+	HyperspellConfig,
+	HyperspellSource,
+	ScopeName,
+} from "./config.ts";
+import { normalizeScope } from "./config.ts";
 import { log } from "./logger.ts";
 
 export type Highlight = {
@@ -95,6 +100,7 @@ export class HyperspellClient {
 			after?: string;
 			before?: string;
 			userId?: string;
+			filter?: Record<string, unknown>;
 		},
 	): Promise<SearchResult[]> {
 		const limit = options?.limit ?? this.config.maxResults;
@@ -109,6 +115,7 @@ export class HyperspellClient {
 			after: options?.after,
 			before: options?.before,
 			userId: options?.userId,
+			filter: options?.filter,
 		});
 
 		const response = await this.client.memories.search(
@@ -119,6 +126,7 @@ export class HyperspellClient {
 					max_results: limit,
 					...(options?.after ? { after: options.after } : {}),
 					...(options?.before ? { before: options.before } : {}),
+					...(options?.filter ? { filter: options.filter } : {}),
 				},
 			},
 			this.requestOptions(options?.userId),
@@ -155,6 +163,7 @@ export class HyperspellClient {
 			after?: string;
 			before?: string;
 			userId?: string;
+			filter?: Record<string, unknown>;
 		},
 	): Promise<Record<string, unknown>> {
 		const limit = options?.limit ?? this.config.maxResults;
@@ -169,6 +178,7 @@ export class HyperspellClient {
 			after: options?.after,
 			before: options?.before,
 			userId: options?.userId,
+			filter: options?.filter,
 		});
 
 		const response = await this.client.memories.search(
@@ -179,6 +189,7 @@ export class HyperspellClient {
 					max_results: limit,
 					...(options?.after ? { after: options.after } : {}),
 					...(options?.before ? { before: options.before } : {}),
+					...(options?.filter ? { filter: options.filter } : {}),
 				},
 			},
 			this.requestOptions(options?.userId),
@@ -197,6 +208,7 @@ export class HyperspellClient {
 			limit?: number;
 			sources?: HyperspellSource[];
 			userId?: string;
+			filter?: Record<string, unknown>;
 		},
 	): Promise<SearchWithAnswerResult> {
 		const limit = options?.limit ?? this.config.maxResults;
@@ -209,6 +221,7 @@ export class HyperspellClient {
 			limit,
 			sources,
 			userId: options?.userId,
+			filter: options?.filter,
 		});
 
 		const response = await this.client.memories.search(
@@ -218,6 +231,7 @@ export class HyperspellClient {
 				answer: true,
 				options: {
 					max_results: limit,
+					...(options?.filter ? { filter: options.filter } : {}),
 				},
 			},
 			this.requestOptions(options?.userId),
@@ -253,6 +267,7 @@ export class HyperspellClient {
 			date?: string;
 			metadata?: Record<string, string | number | boolean>;
 			userId?: string;
+			scope?: ScopeName;
 		},
 	): Promise<{ resourceId: string }> {
 		log.debugRequest("memories.add", {
@@ -262,6 +277,7 @@ export class HyperspellClient {
 			collection: options?.collection,
 			date: options?.date,
 			userId: options?.userId,
+			scope: options?.scope,
 		});
 
 		const result = await this.client.memories.add(
@@ -272,8 +288,12 @@ export class HyperspellClient {
 				collection: options?.collection,
 				date: options?.date,
 				metadata: {
-					...options?.metadata,
 					openclaw_source: "command",
+					...options?.metadata,
+					...(options?.userId ? { openclaw_user: options.userId } : {}),
+					...(options?.scope
+						? { openclaw_scope: normalizeScope(options.scope) }
+						: {}),
 				},
 			},
 			this.requestOptions(options?.userId),
@@ -380,6 +400,7 @@ export class HyperspellClient {
 			extract?: Array<"procedure" | "memory" | "mood">;
 			metadata?: Record<string, string | number | boolean>;
 			userId?: string;
+			scope?: ScopeName;
 		},
 	): Promise<{ resourceId: string; status: string }> {
 		log.debugRequest("sessions.add", {
@@ -387,6 +408,7 @@ export class HyperspellClient {
 			sessionId: options?.sessionId,
 			extract: options?.extract,
 			userId: options?.userId,
+			scope: options?.scope,
 		});
 
 		const result = await this.client.sessions.add(
@@ -402,8 +424,12 @@ export class HyperspellClient {
 					"procedure" | "memory"
 				>,
 				metadata: {
-					...options?.metadata,
 					openclaw_source: "agent_end",
+					...options?.metadata,
+					...(options?.userId ? { openclaw_user: options.userId } : {}),
+					...(options?.scope
+						? { openclaw_scope: normalizeScope(options.scope) }
+						: {}),
 				},
 			},
 			this.requestOptions(options?.userId),

@@ -29,13 +29,50 @@ export type UserProfile = {
 	userId: string;
 	name: string;
 	context?: string;
+	role?: string;
+};
+
+export type ScopeName = string;
+export type CanReadScope = ScopeName | "*" | "self";
+
+export type Role = {
+	canRead: CanReadScope[];
+	defaultWriteScope: ScopeName;
+	canWriteScopes?: ScopeName[];
+};
+
+export type VoiceIdConfig = {
+	enabled: boolean;
+	adapter?: string;
+	confidenceThreshold?: number;
+};
+
+export type ScopingConfig = {
+	enabled: boolean;
+	defaultScope: ScopeName;
+	scopes: ScopeName[];
+	roles: Record<string, Role>;
+	users: Record<string, { role: string }>;
+	collections?: Record<ScopeName, string>;
+	voiceId?: VoiceIdConfig;
 };
 
 export type MultiUserConfig = {
 	senderMap: Record<string, UserProfile>;
 	sharedUserId: string;
 	includeSharedInSearch: boolean;
+	scoping?: ScopingConfig;
 };
+
+/**
+ * Convert user-facing scope names (which may contain hyphens) to SDK-safe
+ * metadata values (alphanumeric + underscore only). Must be applied at every
+ * boundary where scopes cross into Hyperspell metadata — writes and reads —
+ * or filters will silently miss.
+ */
+export function normalizeScope(scope: ScopeName): string {
+	return scope.replace(/[^a-zA-Z0-9_]/g, "_");
+}
 
 export type HyperspellConfig = {
 	apiKey: string;
@@ -149,6 +186,130 @@ function parseSources(raw: string | string[] | undefined): HyperspellSource[] {
 	return sources;
 }
 
+function parseScoping(raw: unknown): ScopingConfig | undefined {
+	if (!raw || typeof raw !== "object") return undefined;
+	const sc = raw as Record<string, unknown>;
+
+	if (sc.enabled !== true) return undefined;
+
+	const scopes = Array.isArray(sc.scopes)
+		? (sc.scopes.filter((s) => typeof s === "string") as ScopeName[])
+		: [];
+	if (scopes.length === 0) {
+		throw new Error("scoping.scopes must be a non-empty array of scope names");
+	}
+
+	const defaultScope =
+		typeof sc.defaultScope === "string" ? sc.defaultScope : "private";
+	if (!scopes.includes(defaultScope)) {
+		throw new Error(
+			`scoping.defaultScope "${defaultScope}" must be one of scopes: ${scopes.join(", ")}`,
+		);
+	}
+
+	const rolesRaw =
+		sc.roles && typeof sc.roles === "object"
+			? (sc.roles as Record<string, unknown>)
+			: {};
+	const roles: Record<string, Role> = {};
+	for (const [roleName, rRaw] of Object.entries(rolesRaw)) {
+		if (!rRaw || typeof rRaw !== "object") continue;
+		const r = rRaw as Record<string, unknown>;
+
+		const canRead = Array.isArray(r.canRead)
+			? (r.canRead.filter((s) => typeof s === "string") as CanReadScope[])
+			: [];
+		for (const s of canRead) {
+			if (s === "*" || s === "self") continue;
+			if (!scopes.includes(s)) {
+				throw new Error(
+					`scoping.roles.${roleName}.canRead contains unknown scope "${s}"`,
+				);
+			}
+		}
+
+		const defaultWriteScope =
+			typeof r.defaultWriteScope === "string"
+				? r.defaultWriteScope
+				: defaultScope;
+		if (!scopes.includes(defaultWriteScope)) {
+			throw new Error(
+				`scoping.roles.${roleName}.defaultWriteScope "${defaultWriteScope}" must be one of scopes: ${scopes.join(", ")}`,
+			);
+		}
+
+		let canWriteScopes: ScopeName[] | undefined;
+		if (Array.isArray(r.canWriteScopes)) {
+			canWriteScopes = r.canWriteScopes.filter(
+				(s): s is ScopeName => typeof s === "string",
+			);
+			for (const s of canWriteScopes) {
+				if (!scopes.includes(s)) {
+					throw new Error(
+						`scoping.roles.${roleName}.canWriteScopes contains unknown scope "${s}"`,
+					);
+				}
+			}
+		}
+
+		roles[roleName] = { canRead, defaultWriteScope, canWriteScopes };
+	}
+
+	const usersRaw =
+		sc.users && typeof sc.users === "object"
+			? (sc.users as Record<string, unknown>)
+			: {};
+	const users: Record<string, { role: string }> = {};
+	for (const [uid, uRaw] of Object.entries(usersRaw)) {
+		if (!uRaw || typeof uRaw !== "object") continue;
+		const u = uRaw as Record<string, unknown>;
+		if (typeof u.role !== "string") continue;
+		if (!roles[u.role]) {
+			throw new Error(
+				`scoping.users.${uid}.role "${u.role}" does not key into scoping.roles`,
+			);
+		}
+		users[uid] = { role: u.role };
+	}
+
+	const collectionsRaw =
+		sc.collections && typeof sc.collections === "object"
+			? (sc.collections as Record<string, unknown>)
+			: undefined;
+	let collections: Record<ScopeName, string> | undefined;
+	if (collectionsRaw) {
+		collections = {};
+		for (const [scopeName, coll] of Object.entries(collectionsRaw)) {
+			if (typeof coll === "string" && scopes.includes(scopeName)) {
+				collections[scopeName] = coll;
+			}
+		}
+	}
+
+	let voiceId: VoiceIdConfig | undefined;
+	if (sc.voiceId && typeof sc.voiceId === "object") {
+		const v = sc.voiceId as Record<string, unknown>;
+		voiceId = {
+			enabled: v.enabled === true,
+			adapter: typeof v.adapter === "string" ? v.adapter : undefined,
+			confidenceThreshold:
+				typeof v.confidenceThreshold === "number"
+					? v.confidenceThreshold
+					: undefined,
+		};
+	}
+
+	return {
+		enabled: true,
+		defaultScope,
+		scopes,
+		roles,
+		users,
+		collections,
+		voiceId,
+	};
+}
+
 function parseMultiUser(raw: unknown): MultiUserConfig | undefined {
 	if (!raw || typeof raw !== "object") return undefined;
 	const mu = raw as Record<string, unknown>;
@@ -164,6 +325,7 @@ function parseMultiUser(raw: unknown): MultiUserConfig | undefined {
 						userId: p.userId,
 						name: p.name,
 						context: typeof p.context === "string" ? p.context : undefined,
+						role: typeof p.role === "string" ? p.role : undefined,
 					};
 				}
 			}
@@ -180,6 +342,7 @@ function parseMultiUser(raw: unknown): MultiUserConfig | undefined {
 			typeof mu.includeSharedInSearch === "boolean"
 				? mu.includeSharedInSearch
 				: true,
+		scoping: parseScoping(mu.scoping),
 	};
 }
 
