@@ -209,16 +209,78 @@ OpenClaw's session store already tracks `origin.from` (sender identity) per sess
 |-----------|--------|-------|
 | Hyperspell collections | ✅ Exists | `collection` field on `memories.add` |
 | Hyperspell metadata filters | ✅ Exists | MongoDB-style `filter` on search |
-| OpenClaw session store | ✅ Exists | Tracks `origin.from` per session on disk |
+| OpenClaw session store | ✅ Exists | Tracks sender identity in hook `ctx` |
 | OpenClaw plugin hooks | ✅ Exists | `before_agent_start` receives session context |
 | autoTrace extraction | ✅ Exists | Session summaries → Hyperspell |
-| Scoped writes | ❌ Needs building | Tag memories with user + scope |
-| Scoped reads | ❌ Needs building | Filter retrieval by role permissions |
-| Identity resolution | ❌ Needs building | Device/voice → user mapping |
-| Voice diarization | ❌ Phase 2 | Speaker identification from audio |
+| Scoped writes | ✅ Shipped (Phase 1) | Memories tagged `openclaw_user` + `openclaw_scope` |
+| Scoped reads | ✅ Shipped (Phase 1) | `buildScopeFilter` → Hyperspell `options.filter` |
+| Identity resolution | ✅ Shipped (Phase 1) | Via `senderMap` substring match on `sessionKey` (PR #6) |
+| Voice diarization | 🟡 Stub (seam only) | `VoiceIdentifier` interface + registry; no model |
+
+---
+
+## Implementation notes (Phase 1, 2026-04-17)
+
+**Defense-in-depth storage.** `private` scope memories live in the writer's own Hyperspell user space via `X-As-User` — server-side partitioned. Shared scopes (`family`, `parent_only`, `kid_shared`, custom) live in the configured `sharedUserId` space and are tagged with `openclaw_scope` metadata. Reads filter the shared space by the caller's role's `canRead` permissions via Hyperspell's MongoDB-style `options.filter`.
+
+Consequence: a filter-construction bug cannot leak `private` memories across users; at worst it over-restricts shared visibility. A compromised API key bypasses filters but still can't reach other users' private spaces.
+
+**Scope name normalization.** User-facing scope names may contain hyphens (`parent-only`). Hyperspell metadata values are alphanumeric + underscore only, so `normalizeScope()` converts hyphens at every write/read boundary. Keep user-facing names stable; the metadata-safe form is an implementation detail.
+
+**Voice-ID stub.** `lib/voice-id.ts` exports a `VoiceIdentifier` interface and a registry. Downstream code registers a real adapter; Phase 1 ships with none, so `getVoiceIdentifier` returns a no-op. `resolveUserAsync` consults the identifier only when `ctx.audio` is present and `scoping.voiceId.enabled` is true — otherwise falls back to `resolveUser` (the sync path used by all current hooks/tools).
+
+## Worked example — Ben's Sartre (household)
+
+```json
+{
+  "openclaw-hyperspell": {
+    "config": {
+      "apiKey": "${HYPERSPELL_API_KEY}",
+      "multiUser": {
+        "sharedUserId": "sartre-shared",
+        "includeSharedInSearch": true,
+        "senderMap": {
+          "ben-phone": { "userId": "ben", "name": "Ben", "context": "Dad" },
+          "kid1-ipad": { "userId": "kid1", "name": "Lily", "context": "12, middle school" },
+          "kid2-tablet": { "userId": "kid2", "name": "Sam", "context": "9, elementary" },
+          "kitchen-echo": { "userId": "sartre-shared", "name": "Kitchen" }
+        },
+        "scoping": {
+          "enabled": true,
+          "defaultScope": "private",
+          "scopes": ["private", "family", "parent_only", "kid_shared"],
+          "roles": {
+            "parent": {
+              "canRead": ["*"],
+              "defaultWriteScope": "private"
+            },
+            "child": {
+              "canRead": ["family", "kid_shared", "self"],
+              "defaultWriteScope": "family",
+              "canWriteScopes": ["family", "kid_shared"]
+            }
+          },
+          "users": {
+            "ben":  { "role": "parent" },
+            "kid1": { "role": "child" },
+            "kid2": { "role": "child" }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Behavior under this config:
+- Ben writes `/remember birthday gift idea for Lily` → lands in Ben's own Hyperspell space with `openclaw_scope=private`. Nothing a kid search against the shared space can recover.
+- Lily writes `/remember the WiFi password is …` → default `family` scope, lands in `sartre-shared` with `openclaw_scope=family`. Both kids and Ben see it.
+- Ben writes `/remember #parent_only discussing the move with Alice` → `sartre-shared` with `openclaw_scope=parent_only`. Kids' `canRead` doesn't include `parent_only`, so filter excludes it.
+- Kid2 asks "what's for dinner?" → auto-context runs dual-search. Personal search (`X-As-User: kid2`) pulls kid2's private items; shared search (`X-As-User: sartre-shared`, `filter: {openclaw_scope: {$in: ["family", "kid_shared"]}}`) pulls only family/kid_shared items. Parent-only divorce memories never surface.
+- Auto-trace at session end writes the full transcript into kid2's own space with `openclaw_scope=private` — can only be surfaced when kid2 is speaking.
 
 ---
 
 *This is a product design problem as much as an engineering one. The technical primitives exist. The hard part is getting identity right and making privacy boundaries feel natural, not bureaucratic.*
 
-*— A Linea*
+*— A Linea, March 29, 2026 (Phase 1 shipped 2026-04-17)*

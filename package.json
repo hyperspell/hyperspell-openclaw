@@ -42,7 +42,8 @@
   "scripts": {
     "check-types": "tsc --noEmit",
     "lint": "bunx @biomejs/biome ci .",
-    "lint:fix": "bunx @biomejs/biome check --write ."
+    "lint:fix": "bunx @biomejs/biome check --write .",
+    "test": "node --test --experimental-strip-types lib/sender.test.ts config.test.ts"
   },
   "openclaw": {
     "extensions": [

@@ -1,10 +1,28 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk"
 import type { HyperspellClient } from "../client.ts"
-import type { HyperspellConfig } from "../config.ts"
+import type { CanReadScope, HyperspellConfig } from "../config.ts"
 import { getWorkspaceDir } from "../config.ts"
-import { resolveUser } from "../lib/sender.ts"
+import {
+  buildScopeFilter,
+  getCanReadScopes,
+  getDefaultWriteScope,
+  resolveRole,
+  resolveUser,
+  routeWrite,
+} from "../lib/sender.ts"
 import { log } from "../logger.ts"
 import { syncAllMemoryFiles } from "../sync/markdown.ts"
+
+/**
+ * Strip a `#scope-name` prefix from free text. Returns the scope and the
+ * remainder. Used by /remember and /getcontext to let users narrow or route
+ * via a single keystroke.
+ */
+function parseScopePrefix(text: string): { scope?: string; rest: string } {
+  const m = text.match(/^#(\S+)\s+(.*)$/)
+  if (!m) return { rest: text }
+  return { scope: m[1], rest: m[2] }
+}
 
 function truncate(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text
@@ -28,17 +46,33 @@ export function registerCommands(
     acceptsArgs: true,
     requireAuth: true,
     handler: async (ctx: { args?: string; senderId?: string; channel?: string }) => {
-      const query = ctx.args?.trim()
-      if (!query) {
-        return { text: "Usage: /getcontext <search query>" }
+      const rawArgs = ctx.args?.trim()
+      if (!rawArgs) {
+        return { text: "Usage: /getcontext [#scope] <search query>" }
       }
+      const { scope: requestedScope, rest: query } = parseScopePrefix(rawArgs)
 
       const resolved = resolveUser(ctx as Record<string, unknown>, cfg)
       const userId = resolved?.userId
-      log.debug(`/getcontext command: "${query}" userId=${userId}`)
+
+      // Build scope filter: intersect requested scope (if any) with caller's canRead.
+      let filter: Record<string, unknown> | undefined
+      if (cfg.multiUser?.scoping) {
+        const canRead = getCanReadScopes(resolved, cfg)
+        const allowed: CanReadScope[] = requestedScope
+          ? canRead.includes("*") || canRead.includes(requestedScope)
+            ? [requestedScope]
+            : []
+          : canRead
+        filter = buildScopeFilter(allowed, resolved?.userId ?? "")
+      }
+
+      log.debug(
+        `/getcontext command: "${query}" userId=${userId} scope=${requestedScope ?? "any"}`,
+      )
 
       try {
-        const results = await client.search(query, { limit: 5, userId })
+        const results = await client.search(query, { limit: 5, userId, filter })
 
         if (results.length === 0) {
           return { text: `No memories found for: "${query}"` }
@@ -67,23 +101,60 @@ export function registerCommands(
     acceptsArgs: true,
     requireAuth: true,
     handler: async (ctx: { args?: string; senderId?: string; channel?: string }) => {
-      const text = ctx.args?.trim()
-      if (!text) {
-        return { text: "Usage: /remember <text to remember>" }
+      const rawArgs = ctx.args?.trim()
+      if (!rawArgs) {
+        return { text: "Usage: /remember [#scope] <text to remember>" }
       }
+      const { scope: requestedScope, rest: text } = parseScopePrefix(rawArgs)
 
       const resolved = resolveUser(ctx as Record<string, unknown>, cfg)
-      const userId = resolved?.userId
-      log.debug(`/remember command: "${truncate(text, 50)}" userId=${userId}`)
+      const scopingEnabled = !!cfg.multiUser?.scoping
+      const availableScopes = cfg.multiUser?.scoping?.scopes ?? []
+
+      // Scope resolution: prefix > role default > global default > "private"
+      const scope = scopingEnabled
+        ? (requestedScope ?? getDefaultWriteScope(resolved, cfg))
+        : "private"
+
+      // Validate scope is in declared vocabulary
+      if (
+        scopingEnabled &&
+        requestedScope &&
+        availableScopes.length > 0 &&
+        !availableScopes.includes(scope)
+      ) {
+        return {
+          text: `Unknown scope "${scope}". Available: ${availableScopes.join(", ")}.`,
+        }
+      }
+
+      // canWriteScopes enforcement
+      if (scopingEnabled) {
+        const role = resolveRole(resolved, cfg)
+        if (role?.canWriteScopes && !role.canWriteScopes.includes(scope)) {
+          return { text: `You cannot write to scope "${scope}".` }
+        }
+      }
+
+      const { userId, collection } = scopingEnabled
+        ? routeWrite(resolved, scope, cfg)
+        : { userId: resolved?.userId, collection: undefined }
+
+      log.debug(
+        `/remember command: "${truncate(text, 50)}" userId=${userId} scope=${scope}`,
+      )
 
       try {
         await client.addMemory(text, {
           metadata: { source: "openclaw_command" },
+          collection,
           userId,
+          scope: scopingEnabled ? scope : undefined,
         })
 
         const preview = truncate(text, 60)
-        return { text: `Remembered: "${preview}"` }
+        const scopeHint = scopingEnabled ? ` [${scope}]` : ""
+        return { text: `Remembered${scopeHint}: "${preview}"` }
       } catch (err) {
         log.error("/remember failed", err)
         return { text: "Failed to save memory. Check logs for details." }

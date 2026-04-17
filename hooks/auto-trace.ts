@@ -125,6 +125,10 @@ export function buildAutoTraceHandler(
 				extract: cfg.autoTrace.extract,
 				metadata: cfg.autoTrace.metadata,
 				userId,
+				// Auto-trace captures full conversation text — the most sensitive class
+				// of memory. Default to private; users opt into family-visible recall
+				// via explicit /remember.
+				scope: "private",
 			});
 			log.info(
 				`auto-trace: sent ${result.resourceId} (${messages.length} messages${userId ? `, user=${userId}` : ""})`,

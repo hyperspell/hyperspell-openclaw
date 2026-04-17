@@ -1,0 +1,202 @@
+import assert from "node:assert/strict"
+import { test } from "node:test"
+import { parseConfig } from "./config.ts"
+
+const base = {
+  apiKey: "test-key",
+  userId: "u1",
+}
+
+test("parseConfig — no multiUser returns no scoping", () => {
+  const cfg = parseConfig(base)
+  assert.equal(cfg.multiUser, undefined)
+})
+
+test("parseConfig — multiUser without scoping is valid", () => {
+  const cfg = parseConfig({
+    ...base,
+    multiUser: {
+      senderMap: { "u1-phone": { userId: "u1", name: "U1" } },
+      sharedUserId: "shared",
+    },
+  })
+  assert.equal(cfg.multiUser?.scoping, undefined)
+  assert.equal(cfg.multiUser?.sharedUserId, "shared")
+})
+
+test("parseConfig — scoping disabled returns no scoping", () => {
+  const cfg = parseConfig({
+    ...base,
+    multiUser: {
+      senderMap: { "u1-phone": { userId: "u1", name: "U1" } },
+      scoping: {
+        enabled: false,
+        defaultScope: "private",
+        scopes: ["private"],
+        roles: {},
+        users: {},
+      },
+    },
+  })
+  assert.equal(cfg.multiUser?.scoping, undefined)
+})
+
+test("parseConfig — empty scopes array throws", () => {
+  assert.throws(
+    () =>
+      parseConfig({
+        ...base,
+        multiUser: {
+          senderMap: { "u1-phone": { userId: "u1", name: "U1" } },
+          scoping: {
+            enabled: true,
+            defaultScope: "private",
+            scopes: [],
+            roles: {},
+            users: {},
+          },
+        },
+      }),
+    /scoping\.scopes/,
+  )
+})
+
+test("parseConfig — defaultScope not in scopes throws", () => {
+  assert.throws(
+    () =>
+      parseConfig({
+        ...base,
+        multiUser: {
+          senderMap: { "u1-phone": { userId: "u1", name: "U1" } },
+          scoping: {
+            enabled: true,
+            defaultScope: "nonexistent",
+            scopes: ["private", "family"],
+            roles: {},
+            users: {},
+          },
+        },
+      }),
+    /defaultScope/,
+  )
+})
+
+test("parseConfig — role canRead with unknown scope throws", () => {
+  assert.throws(
+    () =>
+      parseConfig({
+        ...base,
+        multiUser: {
+          senderMap: { "u1-phone": { userId: "u1", name: "U1" } },
+          scoping: {
+            enabled: true,
+            defaultScope: "private",
+            scopes: ["private", "family"],
+            roles: {
+              weird: { canRead: ["private", "ghost"], defaultWriteScope: "private" },
+            },
+            users: {},
+          },
+        },
+      }),
+    /canRead.*ghost/,
+  )
+})
+
+test("parseConfig — role defaultWriteScope not in scopes throws", () => {
+  assert.throws(
+    () =>
+      parseConfig({
+        ...base,
+        multiUser: {
+          senderMap: { "u1-phone": { userId: "u1", name: "U1" } },
+          scoping: {
+            enabled: true,
+            defaultScope: "private",
+            scopes: ["private", "family"],
+            roles: {
+              weird: { canRead: ["family"], defaultWriteScope: "nonexistent" },
+            },
+            users: {},
+          },
+        },
+      }),
+    /defaultWriteScope/,
+  )
+})
+
+test("parseConfig — canWriteScopes with unknown scope throws", () => {
+  assert.throws(
+    () =>
+      parseConfig({
+        ...base,
+        multiUser: {
+          senderMap: { "u1-phone": { userId: "u1", name: "U1" } },
+          scoping: {
+            enabled: true,
+            defaultScope: "private",
+            scopes: ["private", "family"],
+            roles: {
+              weird: {
+                canRead: ["*"],
+                defaultWriteScope: "private",
+                canWriteScopes: ["ghost"],
+              },
+            },
+            users: {},
+          },
+        },
+      }),
+    /canWriteScopes.*ghost/,
+  )
+})
+
+test("parseConfig — user role keying into unknown role throws", () => {
+  assert.throws(
+    () =>
+      parseConfig({
+        ...base,
+        multiUser: {
+          senderMap: { "u1-phone": { userId: "u1", name: "U1" } },
+          scoping: {
+            enabled: true,
+            defaultScope: "private",
+            scopes: ["private", "family"],
+            roles: {
+              parent: { canRead: ["*"], defaultWriteScope: "private" },
+            },
+            users: { u1: { role: "nonexistent" } },
+          },
+        },
+      }),
+    /does not key into scoping\.roles/,
+  )
+})
+
+test("parseConfig — valid scoping parses", () => {
+  const cfg = parseConfig({
+    ...base,
+    multiUser: {
+      senderMap: { "u1-phone": { userId: "u1", name: "U1" } },
+      scoping: {
+        enabled: true,
+        defaultScope: "private",
+        scopes: ["private", "family", "parent_only"],
+        roles: {
+          parent: { canRead: ["*"], defaultWriteScope: "private" },
+          kid: { canRead: ["family"], defaultWriteScope: "family" },
+        },
+        users: {
+          u1: { role: "parent" },
+        },
+        collections: { family: "household" },
+        voiceId: { enabled: true, confidenceThreshold: 0.8 },
+      },
+    },
+  })
+  assert.equal(cfg.multiUser?.scoping?.enabled, true)
+  assert.deepEqual(cfg.multiUser?.scoping?.scopes, ["private", "family", "parent_only"])
+  assert.equal(cfg.multiUser?.scoping?.roles.parent?.defaultWriteScope, "private")
+  assert.equal(cfg.multiUser?.scoping?.collections?.family, "household")
+  assert.equal(cfg.multiUser?.scoping?.voiceId?.confidenceThreshold, 0.8)
+})

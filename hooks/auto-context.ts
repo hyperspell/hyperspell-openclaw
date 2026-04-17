@@ -1,6 +1,11 @@
 import type { HyperspellClient, SearchResult } from "../client.ts"
-import type { HyperspellConfig } from "../config.ts"
-import { resolveUser } from "../lib/sender.ts"
+import type { CanReadScope, HyperspellConfig } from "../config.ts"
+import {
+  buildScopeFilter,
+  getCanReadScopes,
+  resolveUser,
+  type ResolvedUser,
+} from "../lib/sender.ts"
 import { log } from "../logger.ts"
 
 function formatRelativeTime(isoTimestamp: string): string {
@@ -111,16 +116,24 @@ async function multiUserSearch(
   client: HyperspellClient,
   cfg: HyperspellConfig,
   prompt: string,
-  resolved:
-    | { userId: string; name: string; context?: string; resolved: boolean }
-    | undefined,
+  resolved: ResolvedUser | undefined,
 ) {
   const multiUser = cfg.multiUser!
   const isKnownSender = !!resolved?.resolved
   const includeShared = multiUser.includeSharedInSearch
 
+  // Determine scope filter for the shared-space search based on caller's role.
+  // Unknown senders fall back to least-sensitive scopes; absent scoping config →
+  // filter is undefined → PR #6 behavior preserved.
+  const canRead: CanReadScope[] = multiUser.scoping
+    ? isKnownSender
+      ? getCanReadScopes(resolved, cfg)
+      : ["family", "kid_shared"]
+    : ["*"]
+  const scopeFilter = buildScopeFilter(canRead, resolved?.userId ?? "")
+
   log.debug(
-    `auto-context: searching for "${prompt.slice(0, 50)}..." user=${resolved?.userId ?? "unknown"}`,
+    `auto-context: searching for "${prompt.slice(0, 50)}..." user=${resolved?.userId ?? "unknown"} canRead=${JSON.stringify(canRead)}`,
   )
 
   // Build parallel searches — personal (known senders only) + shared
@@ -140,6 +153,7 @@ async function multiUserSearch(
       ? client.search(prompt, {
           limit: sharedLimit,
           userId: multiUser.sharedUserId,
+          filter: scopeFilter,
         })
       : null
 
