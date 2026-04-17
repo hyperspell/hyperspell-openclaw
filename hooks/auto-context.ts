@@ -8,6 +8,25 @@ import {
 } from "../lib/sender.ts"
 import { log } from "../logger.ts"
 
+/**
+ * Memories produced by session-end hooks (auto-trace, emotional-state) are
+ * tagged `source: "openclaw_agent_end"`. The emotional-state hook already has
+ * a dedicated fetch path (`getEmotionalState` + `<hyperspell-emotional-context>`
+ * injection), so those memories should NOT also surface via generic retrieval —
+ * double-injection dilutes results and replays the conversation verbatim.
+ * Exclude them here at the search filter.
+ */
+const EXCLUDE_SESSION_END_FILTER: Record<string, unknown> = {
+  source: { $ne: "openclaw_agent_end" },
+}
+
+function mergeWithExclude(
+  base?: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!base) return EXCLUDE_SESSION_END_FILTER
+  return { $and: [base, EXCLUDE_SESSION_END_FILTER] }
+}
+
 function formatRelativeTime(isoTimestamp: string): string {
   try {
     const dt = new Date(isoTimestamp)
@@ -91,7 +110,10 @@ export function buildAutoContextHandler(
     log.debug(`auto-context: searching for "${prompt.slice(0, 50)}..."`)
 
     try {
-      const results = await client.search(prompt, { limit: cfg.maxResults })
+      const results = await client.search(prompt, {
+        limit: cfg.maxResults,
+        filter: EXCLUDE_SESSION_END_FILTER,
+      })
       const formatted = formatHighlightBullets(
         results,
         cfg.maxResults,
@@ -141,6 +163,7 @@ async function multiUserSearch(
     ? client.search(prompt, {
         limit: cfg.maxResults,
         userId: resolved!.userId,
+        filter: EXCLUDE_SESSION_END_FILTER,
       })
     : null
 
@@ -153,7 +176,7 @@ async function multiUserSearch(
       ? client.search(prompt, {
           limit: sharedLimit,
           userId: multiUser.sharedUserId,
-          filter: scopeFilter,
+          filter: mergeWithExclude(scopeFilter),
         })
       : null
 
