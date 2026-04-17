@@ -69,6 +69,10 @@
 			"label": "Multi-User Support",
 			"help": "Per-sender context isolation for household or shared-device setups. Maps senders to user IDs; supports optional role-based privacy scopes (private/family/parent-only/etc).",
 			"advanced": true
+		},
+		"dreaming": {
+			"label": "Dreaming",
+			"help": "Optional dreaming config consumed by memory-core when this plugin owns the memory slot. Lets memory-core's dreaming engine consolidate local session transcripts into workspace/MEMORY.md on cron."
 		}
 	},
 	"configSchema": {
@@ -161,6 +165,9 @@
 						}
 					}
 				}
+			},
+			"dreaming": {
+				"type": "object"
 			}
 		},
 		"required": []
