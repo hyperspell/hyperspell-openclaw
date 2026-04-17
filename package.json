@@ -34,7 +34,7 @@
   "dependencies": {
     "@clack/prompts": "^1.0.0",
     "@sinclair/typebox": "^0.34.0",
-    "hyperspell": "^0.35.0"
+    "hyperspell": "^0.35.1"
   },
   "peerDependencies": {
     "openclaw": ">=2026.1.29"
