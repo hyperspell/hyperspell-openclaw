@@ -1,9 +1,9 @@
-export const CRON_JOB_NAME = "Hyperspell Memory Network"
+export const CRON_JOB_NAME = "Hyperspell Memory Network";
 
 export function buildExtractionPrompt(workspaceDir: string): string {
-  const memoryDir = `${workspaceDir}/memory`
+	const memoryDir = `${workspaceDir}/memory`;
 
-  return `You are a memory network builder. Your job is to scan memories and extract structured entities into markdown files.
+	return `You are a memory network builder. Your job is to scan memories and extract structured entities into markdown files.
 
 ## How it works
 
@@ -350,15 +350,18 @@ Retrieval-Augmented Generation — technique for grounding LLM responses in retr
 - **Cross-reference**: Use relationships to connect people to organizations, projects to topics, etc.
 - **Contact info is critical**: For people, always capture email addresses from sender/participant data. For organizations, derive their domain from email addresses (e.g. alice@hyperspell.com → hyperspell.com).
 - **source_memories format**: JSON object with source provider as key and array of resource_ids as value.
-- **graph_entity: true**: Always include this — it prevents the scan from re-processing entity files that get synced back to Hyperspell.`
+- **graph_entity: true**: Always include this — it prevents the scan from re-processing entity files that get synced back to Hyperspell.`;
 }
 
-export function getCronSetupCommand(workspaceDir: string, interval: string = "1h"): string {
-  const prompt = buildExtractionPrompt(workspaceDir)
-  const escaped = prompt.replace(/'/g, "'\\''")
-  return `openclaw cron add --name '${CRON_JOB_NAME}' --every ${interval} --session isolated --message '${escaped}'`
+export function getCronSetupCommand(
+	workspaceDir: string,
+	interval: string = "1h",
+): string {
+	const prompt = buildExtractionPrompt(workspaceDir);
+	const escaped = prompt.replace(/'/g, "'\\''");
+	return `openclaw cron add --name '${CRON_JOB_NAME}' --every ${interval} --session isolated --message '${escaped}'`;
 }
 
 export function getCronRemoveCommand(): string {
-  return `openclaw cron remove --name '${CRON_JOB_NAME}'`
+	return `openclaw cron remove --name '${CRON_JOB_NAME}'`;
 }
