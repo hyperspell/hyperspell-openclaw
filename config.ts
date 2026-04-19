@@ -25,6 +25,15 @@ export type AutoTraceConfig = {
 	metadata?: Record<string, string | number | boolean>;
 };
 
+export type StartupOrientationConfig = {
+	enabled: boolean;
+	recentDays: number;
+	recentLimit: number;
+	loopsLimit: number;
+	recentQuery: string;
+	loopsQuery: string;
+};
+
 export type UserProfile = {
 	userId: string;
 	name: string;
@@ -81,6 +90,7 @@ export type HyperspellConfig = {
 	autoTrace: AutoTraceConfig;
 	emotionalContext: boolean;
 	relationshipId?: string;
+	startupOrientation: StartupOrientationConfig;
 	syncMemories: boolean;
 	sources: HyperspellSource[];
 	maxResults: number;
@@ -97,6 +107,7 @@ const ALLOWED_KEYS = [
 	"autoTrace",
 	"emotionalContext",
 	"relationshipId",
+	"startupOrientation",
 	"syncMemories",
 	"sources",
 	"maxResults",
@@ -369,6 +380,7 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 
 	const kgRaw = (cfg.knowledgeGraph ?? {}) as Record<string, unknown>;
 	const atRaw = (cfg.autoTrace ?? {}) as Record<string, unknown>;
+	const soRaw = (cfg.startupOrientation ?? {}) as Record<string, unknown>;
 
 	return {
 		apiKey,
@@ -385,6 +397,17 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 		},
 		emotionalContext: (cfg.emotionalContext as boolean) ?? false,
 		relationshipId: cfg.relationshipId as string | undefined,
+		startupOrientation: {
+			enabled: (soRaw.enabled as boolean) ?? false,
+			recentDays: (soRaw.recentDays as number) ?? 7,
+			recentLimit: (soRaw.recentLimit as number) ?? 5,
+			loopsLimit: (soRaw.loopsLimit as number) ?? 3,
+			recentQuery:
+				(soRaw.recentQuery as string) ?? "conversation session interaction",
+			loopsQuery:
+				(soRaw.loopsQuery as string) ??
+				"open tasks pending questions unfinished promised need to follow up",
+		},
 		syncMemories: (cfg.syncMemories as boolean) ?? false,
 		sources: parseSources(cfg.sources as string | string[] | undefined),
 		maxResults: (cfg.maxResults as number) ?? 10,

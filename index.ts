@@ -12,6 +12,11 @@ import {
 	buildEmotionalStateStoreHandler,
 } from "./hooks/emotional-state.ts"
 import { buildFileSyncHandler, syncMemoriesOnStartup } from "./hooks/memory-sync.ts"
+import {
+	buildStartupOrientationCompactionHandler,
+	buildStartupOrientationHandler,
+	buildStartupOrientationSessionCleanupHandler,
+} from "./hooks/startup-orientation.ts"
 import { initLogger } from "./logger.ts"
 import { createRememberToolFactory } from "./tools/remember.ts"
 import { createSearchToolFactory } from "./tools/search.ts"
@@ -109,6 +114,14 @@ export default {
 		if (cfg.autoContext) {
 			const autoContextHandler = buildAutoContextHandler(client, cfg);
 			api.on("before_agent_start", autoContextHandler);
+		}
+
+		// Register startup-orientation hooks: recent-interactions + unfinished-loops
+		// injected once per session on first turn. Lifecycle mirrors emotional-context.
+		if (cfg.startupOrientation.enabled) {
+			api.on("before_agent_start", buildStartupOrientationHandler(client, cfg));
+			api.on("after_compaction", buildStartupOrientationCompactionHandler());
+			api.on("session_end", buildStartupOrientationSessionCleanupHandler());
 		}
 
 		// Register auto-trace hook (send conversations to Hyperspell on session end)

@@ -200,3 +200,33 @@ test("parseConfig — valid scoping parses", () => {
   assert.equal(cfg.multiUser?.scoping?.collections?.family, "household")
   assert.equal(cfg.multiUser?.scoping?.voiceId?.confidenceThreshold, 0.8)
 })
+
+test("parseConfig — startupOrientation defaults to disabled with sensible values", () => {
+  const cfg = parseConfig(base)
+  assert.equal(cfg.startupOrientation.enabled, false)
+  assert.equal(cfg.startupOrientation.recentDays, 7)
+  assert.equal(cfg.startupOrientation.recentLimit, 5)
+  assert.equal(cfg.startupOrientation.loopsLimit, 3)
+  assert.ok(cfg.startupOrientation.recentQuery.length > 0)
+  assert.ok(cfg.startupOrientation.loopsQuery.length > 0)
+})
+
+test("parseConfig — startupOrientation accepts overrides", () => {
+  const cfg = parseConfig({
+    ...base,
+    startupOrientation: {
+      enabled: true,
+      recentDays: 14,
+      recentLimit: 3,
+      loopsLimit: 5,
+      recentQuery: "custom recent",
+      loopsQuery: "custom loops",
+    },
+  })
+  assert.equal(cfg.startupOrientation.enabled, true)
+  assert.equal(cfg.startupOrientation.recentDays, 14)
+  assert.equal(cfg.startupOrientation.recentLimit, 3)
+  assert.equal(cfg.startupOrientation.loopsLimit, 5)
+  assert.equal(cfg.startupOrientation.recentQuery, "custom recent")
+  assert.equal(cfg.startupOrientation.loopsQuery, "custom loops")
+})
