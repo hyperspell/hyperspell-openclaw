@@ -1,53 +1,57 @@
 {
-  "name": "@hyperspell/openclaw-hyperspell",
-  "version": "0.5.0",
-  "type": "module",
-  "description": "OpenClaw Hyperspell memory plugin",
-  "license": "MIT",
-  "main": "./index.ts",
-  "files": [
-    "*.ts",
-    "commands/",
-    "hooks/",
-    "tools/",
-    "sync/",
-    "graph/",
-    "lib/",
-    "types/",
-    "openclaw.plugin.json",
-    "README.md"
-  ],
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/hyperspell/openclaw-hyperspell.git"
-  },
-  "keywords": [
-    "openclaw",
-    "hyperspell",
-    "memory",
-    "rag",
-    "ai",
-    "plugin"
-  ],
-  "dependencies": {
-    "@clack/prompts": "^1.0.0",
-    "@sinclair/typebox": "^0.34.0",
-    "hyperspell": "^0.30.0"
-  },
-  "peerDependencies": {
-    "openclaw": ">=2026.1.29"
-  },
-  "scripts": {
-    "check-types": "tsc --noEmit",
-    "lint": "bunx @biomejs/biome ci .",
-    "lint:fix": "bunx @biomejs/biome check --write ."
-  },
-  "openclaw": {
-    "extensions": [
-      "./index.ts"
-    ]
-  },
-  "devDependencies": {
-    "typescript": "^5.9.3"
-  }
+	"name": "@hyperspell/openclaw-hyperspell",
+	"version": "0.5.0",
+	"type": "module",
+	"description": "OpenClaw Hyperspell memory plugin",
+	"license": "MIT",
+	"main": "./index.ts",
+	"files": [
+		"*.ts",
+		"commands/",
+		"hooks/",
+		"tools/",
+		"sync/",
+		"graph/",
+		"lib/",
+		"types/",
+		"openclaw.plugin.json",
+		"README.md"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/hyperspell/openclaw-hyperspell.git"
+	},
+	"keywords": [
+		"openclaw",
+		"hyperspell",
+		"memory",
+		"rag",
+		"ai",
+		"plugin"
+	],
+	"dependencies": {
+		"@clack/prompts": "^1.0.0",
+		"@sinclair/typebox": "^0.34.0",
+		"hyperspell": "^0.30.0"
+	},
+	"peerDependencies": {
+		"openclaw": ">=2026.1.29"
+	},
+	"scripts": {
+		"check-types": "tsc --noEmit",
+		"lint": "bunx @biomejs/biome ci .",
+		"lint:fix": "bunx @biomejs/biome check --write .",
+		"test": "vitest run",
+		"test:watch": "vitest"
+	},
+	"openclaw": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"devDependencies": {
+		"@types/node": "^22.0.0",
+		"typescript": "^5.9.3",
+		"vitest": "^2.1.0"
+	}
 }
