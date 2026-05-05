@@ -1,3 +1,7 @@
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
+
 export type HyperspellSource =
 	| "reddit"
 	| "notion"
@@ -430,33 +434,27 @@ export const hyperspellConfigSchema = {
  * Resolve OpenClaw state directory (matches OpenClaw's own logic).
  */
 export function resolveStateDir(): string {
-	const { homedir } = require("node:os");
-	const path = require("node:path");
-
 	const override =
 		process.env.OPENCLAW_STATE_DIR?.trim() ||
 		process.env.CLAWDBOT_STATE_DIR?.trim();
 	if (override) {
 		return override.startsWith("~")
-			? override.replace(/^~(?=$|[\\/])/, homedir())
+			? override.replace(/^~(?=$|[\\/])/, os.homedir())
 			: path.resolve(override);
 	}
-	return path.join(homedir(), ".openclaw");
+	return path.join(os.homedir(), ".openclaw");
 }
 
 /**
  * Resolve OpenClaw config file path (matches OpenClaw's own logic).
  */
 export function resolveConfigPath(): string {
-	const path = require("node:path");
-
 	const override =
 		process.env.OPENCLAW_CONFIG_PATH?.trim() ||
 		process.env.CLAWDBOT_CONFIG_PATH?.trim();
 	if (override) {
-		const { homedir } = require("node:os");
 		return override.startsWith("~")
-			? override.replace(/^~(?=$|[\\/])/, homedir())
+			? override.replace(/^~(?=$|[\\/])/, os.homedir())
 			: path.resolve(override);
 	}
 	return path.join(resolveStateDir(), "openclaw.json");
@@ -466,10 +464,6 @@ export function resolveConfigPath(): string {
  * Get the workspace directory from OpenClaw config
  */
 export function getWorkspaceDir(): string {
-	const { homedir } = require("node:os");
-	const fs = require("node:fs");
-	const path = require("node:path");
-
 	// Resolve config path
 	const override =
 		process.env.OPENCLAW_CONFIG_PATH?.trim() ||
@@ -477,7 +471,7 @@ export function getWorkspaceDir(): string {
 	let configPath: string;
 	if (override) {
 		configPath = override.startsWith("~")
-			? override.replace(/^~(?=$|[\\/])/, homedir())
+			? override.replace(/^~(?=$|[\\/])/, os.homedir())
 			: path.resolve(override);
 	} else {
 		const stateDir =
@@ -485,9 +479,9 @@ export function getWorkspaceDir(): string {
 			process.env.CLAWDBOT_STATE_DIR?.trim();
 		const resolvedStateDir = stateDir
 			? stateDir.startsWith("~")
-				? stateDir.replace(/^~(?=$|[\\/])/, homedir())
+				? stateDir.replace(/^~(?=$|[\\/])/, os.homedir())
 				: path.resolve(stateDir)
-			: path.join(homedir(), ".openclaw");
+			: path.join(os.homedir(), ".openclaw");
 		configPath = path.join(resolvedStateDir, "openclaw.json");
 	}
 
@@ -499,7 +493,7 @@ export function getWorkspaceDir(): string {
 			const workspace = config?.agents?.defaults?.workspace;
 			if (workspace) {
 				return workspace.startsWith("~")
-					? workspace.replace(/^~(?=$|[\\/])/, homedir())
+					? workspace.replace(/^~(?=$|[\\/])/, os.homedir())
 					: workspace;
 			}
 		} catch (_e) {
@@ -513,8 +507,8 @@ export function getWorkspaceDir(): string {
 		process.env.CLAWDBOT_STATE_DIR?.trim();
 	const resolvedStateDir = stateDir
 		? stateDir.startsWith("~")
-			? stateDir.replace(/^~(?=$|[\\/])/, homedir())
+			? stateDir.replace(/^~(?=$|[\\/])/, os.homedir())
 			: path.resolve(stateDir)
-		: path.join(homedir(), ".openclaw");
+		: path.join(os.homedir(), ".openclaw");
 	return path.join(resolvedStateDir, "workspace");
 }
