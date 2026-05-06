@@ -1,19 +1,12 @@
 {
   "name": "@hyperspell/openclaw-hyperspell",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "type": "module",
   "description": "OpenClaw Hyperspell memory plugin",
   "license": "MIT",
-  "main": "./index.ts",
+  "main": "./dist/index.js",
   "files": [
-    "*.ts",
-    "commands/",
-    "hooks/",
-    "tools/",
-    "sync/",
-    "graph/",
-    "lib/",
-    "types/",
+    "dist/",
     "openclaw.plugin.json",
     "README.md"
   ],
@@ -40,14 +33,16 @@
     "openclaw": ">=2026.1.29"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run build",
     "check-types": "tsc --noEmit",
     "lint": "bunx @biomejs/biome ci .",
     "lint:fix": "bunx @biomejs/biome check --write .",
-    "test": "node --test --experimental-strip-types lib/sender.test.ts config.test.ts hooks/auto-trace.test.ts hooks/emotional-state.test.ts"
+    "test": "node --test --experimental-strip-types lib/sender.test.ts config.test.ts hooks/auto-trace.test.ts hooks/emotional-state.test.ts hooks/startup-orientation.test.ts"
   },
   "openclaw": {
     "extensions": [
-      "./index.ts"
+      "./dist/index.js"
     ],
     "hooks": [],
     "compat": {

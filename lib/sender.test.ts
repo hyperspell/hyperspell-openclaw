@@ -21,6 +21,14 @@ function cfg(overrides: Partial<HyperspellConfig["multiUser"]> = {}): Hyperspell
     relevanceThreshold: 0.6,
     debug: false,
     knowledgeGraph: { enabled: false, scanIntervalMinutes: 60, batchSize: 20 },
+    startupOrientation: {
+      enabled: false,
+      recentDays: 7,
+      recentLimit: 5,
+      loopsLimit: 3,
+      recentQuery: "conversation",
+      loopsQuery: "open tasks",
+    },
     multiUser: overrides.scoping
       ? {
           sharedUserId: "shared",

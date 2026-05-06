@@ -1,0 +1,15 @@
+{
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"noEmit": false,
+		"outDir": "./dist",
+		"rootDir": ".",
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+		"rewriteRelativeImportExtensions": true,
+		"declaration": false,
+		"sourceMap": false
+	},
+	"include": ["index.ts", "client.ts", "config.ts", "logger.ts", "commands/**/*.ts", "hooks/**/*.ts", "tools/**/*.ts", "sync/**/*.ts", "graph/**/*.ts", "lib/**/*.ts", "types/**/*.d.ts"],
+	"exclude": ["node_modules", "dist", "**/*.test.ts", "sommeliagent"]
+}

@@ -1,3 +1,7 @@
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
+
 export type HyperspellSource =
 	| "reddit"
 	| "notion"
@@ -23,6 +27,15 @@ export type AutoTraceConfig = {
 	enabled: boolean;
 	extract: Array<"procedure" | "memory" | "mood">;
 	metadata?: Record<string, string | number | boolean>;
+};
+
+export type StartupOrientationConfig = {
+	enabled: boolean;
+	recentDays: number;
+	recentLimit: number;
+	loopsLimit: number;
+	recentQuery: string;
+	loopsQuery: string;
 };
 
 export type UserProfile = {
@@ -81,6 +94,7 @@ export type HyperspellConfig = {
 	autoTrace: AutoTraceConfig;
 	emotionalContext: boolean;
 	relationshipId?: string;
+	startupOrientation: StartupOrientationConfig;
 	syncMemories: boolean;
 	sources: HyperspellSource[];
 	maxResults: number;
@@ -97,6 +111,7 @@ const ALLOWED_KEYS = [
 	"autoTrace",
 	"emotionalContext",
 	"relationshipId",
+	"startupOrientation",
 	"syncMemories",
 	"sources",
 	"maxResults",
@@ -369,6 +384,7 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 
 	const kgRaw = (cfg.knowledgeGraph ?? {}) as Record<string, unknown>;
 	const atRaw = (cfg.autoTrace ?? {}) as Record<string, unknown>;
+	const soRaw = (cfg.startupOrientation ?? {}) as Record<string, unknown>;
 
 	return {
 		apiKey,
@@ -385,6 +401,17 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 		},
 		emotionalContext: (cfg.emotionalContext as boolean) ?? false,
 		relationshipId: cfg.relationshipId as string | undefined,
+		startupOrientation: {
+			enabled: (soRaw.enabled as boolean) ?? false,
+			recentDays: (soRaw.recentDays as number) ?? 7,
+			recentLimit: (soRaw.recentLimit as number) ?? 5,
+			loopsLimit: (soRaw.loopsLimit as number) ?? 3,
+			recentQuery:
+				(soRaw.recentQuery as string) ?? "conversation session interaction",
+			loopsQuery:
+				(soRaw.loopsQuery as string) ??
+				"open tasks pending questions unfinished promised need to follow up",
+		},
 		syncMemories: (cfg.syncMemories as boolean) ?? false,
 		sources: parseSources(cfg.sources as string | string[] | undefined),
 		maxResults: (cfg.maxResults as number) ?? 10,
@@ -407,33 +434,27 @@ export const hyperspellConfigSchema = {
  * Resolve OpenClaw state directory (matches OpenClaw's own logic).
  */
 export function resolveStateDir(): string {
-	const { homedir } = require("node:os");
-	const path = require("node:path");
-
 	const override =
 		process.env.OPENCLAW_STATE_DIR?.trim() ||
 		process.env.CLAWDBOT_STATE_DIR?.trim();
 	if (override) {
 		return override.startsWith("~")
-			? override.replace(/^~(?=$|[\\/])/, homedir())
+			? override.replace(/^~(?=$|[\\/])/, os.homedir())
 			: path.resolve(override);
 	}
-	return path.join(homedir(), ".openclaw");
+	return path.join(os.homedir(), ".openclaw");
 }
 
 /**
  * Resolve OpenClaw config file path (matches OpenClaw's own logic).
  */
 export function resolveConfigPath(): string {
-	const path = require("node:path");
-
 	const override =
 		process.env.OPENCLAW_CONFIG_PATH?.trim() ||
 		process.env.CLAWDBOT_CONFIG_PATH?.trim();
 	if (override) {
-		const { homedir } = require("node:os");
 		return override.startsWith("~")
-			? override.replace(/^~(?=$|[\\/])/, homedir())
+			? override.replace(/^~(?=$|[\\/])/, os.homedir())
 			: path.resolve(override);
 	}
 	return path.join(resolveStateDir(), "openclaw.json");
@@ -443,10 +464,6 @@ export function resolveConfigPath(): string {
  * Get the workspace directory from OpenClaw config
  */
 export function getWorkspaceDir(): string {
-	const { homedir } = require("node:os");
-	const fs = require("node:fs");
-	const path = require("node:path");
-
 	// Resolve config path
 	const override =
 		process.env.OPENCLAW_CONFIG_PATH?.trim() ||
@@ -454,7 +471,7 @@ export function getWorkspaceDir(): string {
 	let configPath: string;
 	if (override) {
 		configPath = override.startsWith("~")
-			? override.replace(/^~(?=$|[\\/])/, homedir())
+			? override.replace(/^~(?=$|[\\/])/, os.homedir())
 			: path.resolve(override);
 	} else {
 		const stateDir =
@@ -462,9 +479,9 @@ export function getWorkspaceDir(): string {
 			process.env.CLAWDBOT_STATE_DIR?.trim();
 		const resolvedStateDir = stateDir
 			? stateDir.startsWith("~")
-				? stateDir.replace(/^~(?=$|[\\/])/, homedir())
+				? stateDir.replace(/^~(?=$|[\\/])/, os.homedir())
 				: path.resolve(stateDir)
-			: path.join(homedir(), ".openclaw");
+			: path.join(os.homedir(), ".openclaw");
 		configPath = path.join(resolvedStateDir, "openclaw.json");
 	}
 
@@ -476,7 +493,7 @@ export function getWorkspaceDir(): string {
 			const workspace = config?.agents?.defaults?.workspace;
 			if (workspace) {
 				return workspace.startsWith("~")
-					? workspace.replace(/^~(?=$|[\\/])/, homedir())
+					? workspace.replace(/^~(?=$|[\\/])/, os.homedir())
 					: workspace;
 			}
 		} catch (_e) {
@@ -490,8 +507,8 @@ export function getWorkspaceDir(): string {
 		process.env.CLAWDBOT_STATE_DIR?.trim();
 	const resolvedStateDir = stateDir
 		? stateDir.startsWith("~")
-			? stateDir.replace(/^~(?=$|[\\/])/, homedir())
+			? stateDir.replace(/^~(?=$|[\\/])/, os.homedir())
 			: path.resolve(stateDir)
-		: path.join(homedir(), ".openclaw");
+		: path.join(os.homedir(), ".openclaw");
 	return path.join(resolvedStateDir, "workspace");
 }

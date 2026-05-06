@@ -340,6 +340,14 @@ async function runSetup(): Promise<void> {
         relevanceThreshold: 0.6,
         debug: false,
         knowledgeGraph: { enabled: false, scanIntervalMinutes: 60, batchSize: 20 },
+        startupOrientation: {
+          enabled: false,
+          recentDays: 7,
+          recentLimit: 5,
+          loopsLimit: 3,
+          recentQuery: "conversation session interaction",
+          loopsQuery: "open tasks pending questions unfinished promised need to follow up",
+        },
       })
 
       const result = await syncAllMemoryFiles(hyperspellClient, workspaceDir)
