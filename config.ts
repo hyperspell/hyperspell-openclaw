@@ -119,6 +119,7 @@ const ALLOWED_KEYS = [
 	"debug",
 	"knowledgeGraph",
 	"multiUser",
+	"dreaming",
 ];
 
 const VALID_SOURCES: HyperspellSource[] = [
