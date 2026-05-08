@@ -27,6 +27,14 @@ export function sanitizeTraceText(input: string): string {
 		"",
 	);
 	out = out.replace(
+		/<hyperspell-recent-interactions>[\s\S]*?<\/hyperspell-recent-interactions>\n?/g,
+		"",
+	);
+	out = out.replace(
+		/<hyperspell-unfinished-loops>[\s\S]*?<\/hyperspell-unfinished-loops>\n?/g,
+		"",
+	);
+	out = out.replace(
 		/Sender \(untrusted metadata\):\s*```json[\s\S]*?```\n?/g,
 		"",
 	);

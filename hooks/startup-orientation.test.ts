@@ -12,21 +12,41 @@ type SearchCall = {
 	query: string;
 	options?: Parameters<HyperspellClient["search"]>[1];
 };
+type ListCall = { options?: Parameters<HyperspellClient["listMemories"]>[0] };
+type ListedMemory = {
+	resourceId: string;
+	source: "trace";
+	title: string | null;
+	metadata: Record<string, unknown>;
+};
 
-function makeClient(responses: {
-	recent?: SearchResult[];
+type ClientResponses = {
+	traces?: ListedMemory[];
 	loops?: SearchResult[];
-}) {
-	const calls: SearchCall[] = [];
+	listError?: Error;
+	loopsError?: Error;
+};
+
+function makeClient(responses: ClientResponses) {
+	const searchCalls: SearchCall[] = [];
+	const listCalls: ListCall[] = [];
 	const client = {
-		calls,
+		searchCalls,
+		listCalls,
 		async search(
 			query: string,
 			options?: Parameters<HyperspellClient["search"]>[1],
 		) {
-			calls.push({ query, options });
-			if (options?.after) return responses.recent ?? [];
+			searchCalls.push({ query, options });
+			if (responses.loopsError) throw responses.loopsError;
 			return responses.loops ?? [];
+		},
+		async *listMemories(
+			options?: Parameters<HyperspellClient["listMemories"]>[0],
+		) {
+			listCalls.push({ options });
+			if (responses.listError) throw responses.listError;
+			for (const m of responses.traces ?? []) yield m;
 		},
 	};
 	return client;
@@ -43,7 +63,6 @@ function makeCfg(overrides?: Partial<HyperspellConfig>): HyperspellConfig {
 			recentDays: 7,
 			recentLimit: 5,
 			loopsLimit: 3,
-			recentQuery: "conversation session interaction",
 			loopsQuery: "open tasks pending questions",
 		},
 		syncMemories: false,
@@ -56,25 +75,45 @@ function makeCfg(overrides?: Partial<HyperspellConfig>): HyperspellConfig {
 	};
 }
 
-function makeResult(partial: Partial<SearchResult>): SearchResult {
+function makeTrace(
+	partial: Partial<ListedMemory> & { ageDays?: number },
+): ListedMemory {
+	const ageDays = partial.ageDays ?? 1;
+	const created = new Date(
+		Date.now() - ageDays * 24 * 3600 * 1000,
+	).toISOString();
+	const meta: Record<string, unknown> = {
+		openclaw_source: "agent_end",
+		created_at: created,
+		...(partial.metadata ?? {}),
+	};
 	return {
-		resourceId: "r1",
-		title: "some session",
+		resourceId: partial.resourceId ?? "r1",
 		source: "trace",
-		score: 0.8,
+		title: partial.title ?? "some session",
+		metadata: meta,
+	};
+}
+
+function makeSearchResult(partial: Partial<SearchResult>): SearchResult {
+	return {
+		resourceId: "s1",
+		title: "loop title",
+		source: "trace",
+		score: 0.6,
 		url: null,
-		createdAt: new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString(),
-		highlights: [{ id: "h1", score: 0.75, text: "we talked about the plan" }],
+		createdAt: new Date().toISOString(),
+		highlights: [{ id: "h1", score: 0.5, text: "open thread text" }],
 		...partial,
 	};
 }
 
 test("startup-orientation — injects once per session, caches on subsequent turns", async () => {
 	const client = makeClient({
-		recent: [makeResult({ title: "yesterday's session" })],
+		traces: [makeTrace({ title: "yesterday's session", ageDays: 1 })],
 		loops: [
-			makeResult({
-				title: "followup question",
+			makeSearchResult({
+				title: "followup",
 				highlights: [{ id: "h", score: 0.4, text: "follow up on the config" }],
 			}),
 		],
@@ -92,19 +131,102 @@ test("startup-orientation — injects once per session, caches on subsequent tur
 	assert.ok(prepend.includes("<hyperspell-recent-interactions>"));
 	assert.ok(prepend.includes("<hyperspell-unfinished-loops>"));
 	assert.ok(prepend.includes("yesterday's session"));
-	assert.equal(client.calls.length, 2, "fires both searches in parallel");
+	assert.equal(client.listCalls.length, 1, "list runs once for recent");
+	assert.equal(client.searchCalls.length, 1, "search runs once for loops");
 
 	const second = await handler({}, ctx);
 	assert.equal(second, undefined);
+	assert.equal(client.listCalls.length, 1, "no re-fetch within same session");
+	assert.equal(client.searchCalls.length, 1);
+});
+
+test("startup-orientation — recent path filters non-agent_end traces and out-of-window items", async () => {
+	const client = makeClient({
+		traces: [
+			makeTrace({ title: "in-window agent_end", ageDays: 2 }),
+			makeTrace({
+				title: "non-agent_end",
+				ageDays: 1,
+				metadata: {
+					openclaw_source: "command",
+					created_at: new Date(Date.now() - 1 * 86400000).toISOString(),
+				},
+			}),
+			makeTrace({ title: "too old", ageDays: 30 }),
+		],
+		loops: [],
+	});
+	const handler = buildStartupOrientationHandler(
+		client as unknown as HyperspellClient,
+		makeCfg(),
+	);
+	const out = await handler({}, { sessionKey: "s-filter" });
+	const prepend =
+		(out as { prependContext?: string } | undefined)?.prependContext ?? "";
+	assert.ok(prepend.includes("in-window agent_end"));
+	assert.ok(!prepend.includes("non-agent_end"));
+	assert.ok(!prepend.includes("too old"));
+});
+
+test("startup-orientation — recent results sorted desc by created_at, capped at recentLimit", async () => {
+	// Inserted out-of-order to verify sort, not iteration order. With recentLimit=3,
+	// expected output (desc): newest (0.1d), middle (2d), thirdNewest (3d).
+	// "older" (4d) and "trimmed" (5d) get dropped past the limit.
+	const client = makeClient({
+		traces: [
+			makeTrace({ title: "older", ageDays: 4 }),
+			makeTrace({ title: "newest", ageDays: 0.1 }),
+			makeTrace({ title: "middle", ageDays: 2 }),
+			makeTrace({ title: "thirdNewest", ageDays: 3 }),
+			makeTrace({ title: "trimmed", ageDays: 5 }),
+		],
+		loops: [],
+	});
+	const handler = buildStartupOrientationHandler(
+		client as unknown as HyperspellClient,
+		makeCfg({
+			startupOrientation: {
+				enabled: true,
+				recentDays: 7,
+				recentLimit: 3,
+				loopsLimit: 3,
+				loopsQuery: "q",
+			},
+		}),
+	);
+	const out = await handler({}, { sessionKey: "s-sort" });
+	const prepend =
+		(out as { prependContext?: string } | undefined)?.prependContext ?? "";
+	const block = prepend.split("</hyperspell-recent-interactions>")[0];
+	const newestPos = block.indexOf("newest");
+	const middlePos = block.indexOf("middle");
+	const thirdPos = block.indexOf("thirdNewest");
+	assert.ok(
+		newestPos > -1 && middlePos > newestPos && thirdPos > middlePos,
+		"ordered desc by recency",
+	);
+	assert.ok(!block.includes("older"), "items beyond recentLimit are dropped");
+	assert.ok(!block.includes("trimmed"));
+});
+
+test("startup-orientation — list call passes source:trace and userId", async () => {
+	const client = makeClient({ traces: [makeTrace({})], loops: [] });
+	const handler = buildStartupOrientationHandler(
+		client as unknown as HyperspellClient,
+		makeCfg(),
+	);
+	await handler({}, { sessionKey: "s-list" });
+
+	assert.equal(client.listCalls[0]?.options?.source, "trace");
 	assert.equal(
-		client.calls.length,
-		2,
-		"does not re-search within same session",
+		client.listCalls[0]?.options?.userId,
+		undefined,
+		"single-user mode passes undefined",
 	);
 });
 
-test("startup-orientation — compaction clears cache, next turn re-injects", async () => {
-	const client = makeClient({ recent: [makeResult({})], loops: [] });
+test("startup-orientation — compaction clears cache, next turn re-fetches", async () => {
+	const client = makeClient({ traces: [makeTrace({})], loops: [] });
 	const handler = buildStartupOrientationHandler(
 		client as unknown as HyperspellClient,
 		makeCfg(),
@@ -114,15 +236,17 @@ test("startup-orientation — compaction clears cache, next turn re-injects", as
 
 	await handler({}, ctx);
 	await handler({}, ctx);
-	assert.equal(client.calls.length, 2);
+	assert.equal(client.listCalls.length, 1);
+	assert.equal(client.searchCalls.length, 1);
 
 	await onCompaction({}, ctx);
 	await handler({}, ctx);
-	assert.equal(client.calls.length, 4, "re-searches after compaction");
+	assert.equal(client.listCalls.length, 2, "list re-fetches after compaction");
+	assert.equal(client.searchCalls.length, 2);
 });
 
 test("startup-orientation — session_end cleanup allows later re-injection", async () => {
-	const client = makeClient({ recent: [makeResult({})], loops: [] });
+	const client = makeClient({ traces: [makeTrace({})], loops: [] });
 	const handler = buildStartupOrientationHandler(
 		client as unknown as HyperspellClient,
 		makeCfg(),
@@ -134,14 +258,14 @@ test("startup-orientation — session_end cleanup allows later re-injection", as
 	await onSessionEnd({}, ctx);
 	await handler({}, ctx);
 	assert.equal(
-		client.calls.length,
-		4,
-		"resumes searching after session end drops the cache entry",
+		client.listCalls.length,
+		2,
+		"resumes fetching after session_end drop",
 	);
 });
 
-test("startup-orientation — empty results cache the attempt (no retry storm)", async () => {
-	const client = makeClient({ recent: [], loops: [] });
+test("startup-orientation — empty results still mark session as handled (no retry storm)", async () => {
+	const client = makeClient({ traces: [], loops: [] });
 	const handler = buildStartupOrientationHandler(
 		client as unknown as HyperspellClient,
 		makeCfg(),
@@ -150,59 +274,74 @@ test("startup-orientation — empty results cache the attempt (no retry storm)",
 
 	const out = await handler({}, ctx);
 	assert.equal(out, undefined);
-	assert.equal(client.calls.length, 2);
+	assert.equal(client.listCalls.length, 1);
+	assert.equal(client.searchCalls.length, 1);
 
 	await handler({}, ctx);
 	assert.equal(
-		client.calls.length,
-		2,
-		"empty results still mark session as handled",
+		client.listCalls.length,
+		1,
+		"empty result counts as a successful attempt",
 	);
 });
 
-test("startup-orientation — recent search uses `after` and metadata filter", async () => {
-	const client = makeClient({ recent: [makeResult({})], loops: [] });
-	const handler = buildStartupOrientationHandler(
-		client as unknown as HyperspellClient,
-		makeCfg(),
-	);
-	await handler({}, { sessionKey: "s-filter" });
-
-	const recentCall = client.calls.find((c) => c.options?.after);
-	assert.ok(recentCall, "recent search must include `after`");
-	assert.equal(
-		(recentCall.options?.filter as { openclaw_source?: unknown } | undefined)
-			?.openclaw_source,
-		"agent_end",
-	);
-	assert.equal(recentCall.options?.limit, 5);
-});
-
-test("startup-orientation — loops search runs without filter or threshold", async () => {
+test("startup-orientation — retries on total failure up to MAX_ATTEMPTS, then gives up", async () => {
 	const client = makeClient({
-		recent: [],
-		loops: [makeResult({ title: "q" })],
+		traces: [],
+		loops: [],
+		listError: new Error("transient list outage"),
+		loopsError: new Error("transient search outage"),
 	});
 	const handler = buildStartupOrientationHandler(
 		client as unknown as HyperspellClient,
 		makeCfg(),
 	);
-	await handler({}, { sessionKey: "s-loops" });
+	const ctx = { sessionKey: "s-retry" };
 
-	const loopsCall = client.calls.find((c) => !c.options?.after);
-	assert.ok(loopsCall, "loops search must exist");
+	await handler({}, ctx);
+	assert.equal(client.listCalls.length, 1, "1st turn attempts");
+
+	await handler({}, ctx);
 	assert.equal(
-		loopsCall.options?.filter,
-		undefined,
-		"loops search has no metadata filter",
+		client.listCalls.length,
+		2,
+		"2nd turn retries after total failure",
 	);
-	assert.equal(loopsCall.options?.limit, 3);
+
+	await handler({}, ctx);
+	assert.equal(client.listCalls.length, 2, "gives up after MAX_ATTEMPTS=2");
+});
+
+test("startup-orientation — partial failure (recent fails, loops succeeds) marks injected and surfaces what worked", async () => {
+	const client = makeClient({
+		traces: [],
+		loops: [makeSearchResult({ title: "still-known loop" })],
+		listError: new Error("recent list down"),
+	});
+	const handler = buildStartupOrientationHandler(
+		client as unknown as HyperspellClient,
+		makeCfg(),
+	);
+	const ctx = { sessionKey: "s-partial" };
+
+	const out = await handler({}, ctx);
+	const prepend =
+		(out as { prependContext?: string } | undefined)?.prependContext ?? "";
+	assert.ok(prepend.includes("<hyperspell-unfinished-loops>"));
+	assert.ok(!prepend.includes("<hyperspell-recent-interactions>"));
+
+	await handler({}, ctx);
+	assert.equal(
+		client.searchCalls.length,
+		1,
+		"no retry — partial success counts as injected",
+	);
 });
 
 test("startup-orientation — skips orientation for unknown sender in multi-user mode", async () => {
 	const client = makeClient({
-		recent: [makeResult({})],
-		loops: [makeResult({})],
+		traces: [makeTrace({})],
+		loops: [makeSearchResult({})],
 	});
 	const cfg = makeCfg({
 		multiUser: {
@@ -217,11 +356,12 @@ test("startup-orientation — skips orientation for unknown sender in multi-user
 	);
 	const out = await handler({}, { sessionKey: "s-unknown", senderId: "+999" });
 	assert.equal(out, undefined);
-	assert.equal(client.calls.length, 0, "no searches for unresolved sender");
+	assert.equal(client.listCalls.length, 0);
+	assert.equal(client.searchCalls.length, 0);
 });
 
-test("startup-orientation — uses resolved userId for personal-only search in multi-user mode", async () => {
-	const client = makeClient({ recent: [makeResult({})], loops: [] });
+test("startup-orientation — uses resolved userId for both calls in multi-user mode", async () => {
+	const client = makeClient({ traces: [makeTrace({})], loops: [] });
 	const cfg = makeCfg({
 		multiUser: {
 			senderMap: { "+111": { userId: "alice", name: "Alice" } },
@@ -234,12 +374,6 @@ test("startup-orientation — uses resolved userId for personal-only search in m
 		cfg,
 	);
 	await handler({}, { sessionKey: "s-known", senderId: "+111" });
-	assert.ok(client.calls.length === 2);
-	for (const c of client.calls) {
-		assert.equal(
-			c.options?.userId,
-			"alice",
-			"both searches scoped to resolved personal userId",
-		);
-	}
+	assert.equal(client.listCalls[0]?.options?.userId, "alice");
+	assert.equal(client.searchCalls[0]?.options?.userId, "alice");
 });

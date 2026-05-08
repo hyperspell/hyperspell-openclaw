@@ -5,17 +5,25 @@ import { log } from "../logger.ts";
 
 type AgentContext = Record<string, unknown> & { sessionKey?: string };
 
-const RECENT_FILTER = { openclaw_source: "agent_end" } as const;
+const MAX_ATTEMPTS = 2;
+const RECENT_BUFFER_LIMIT = 100;
 
 /**
- * Track which sessions already received the orientation injection. The block is
- * expensive (two search calls + a few hundred tokens of wrapper) and its
- * contents don't change within a session, so inject-once is the right shape.
- * Lifecycle mirrors the emotional-context hook: first turn injects, later turns
- * skip, `after_compaction` clears (injection may have been trimmed), and
- * `session_end` deletes to keep the Set bounded.
+ * Sessions where the orientation block was already injected (or where we
+ * deliberately decided not to inject — unknown sender, exhausted retries).
+ * Re-checked at the top of every turn; on hit, we skip.
+ *
+ * Lifecycle mirrors the emotional-context hook: `after_compaction` clears
+ * (the original injection may have been trimmed out of history) and
+ * `session_end` cleans up to keep both structures bounded.
  */
 const injectedSessions = new Set<string>();
+/**
+ * Counts attempts for sessions where every call has failed so far. We only
+ * count failures here, so a session that succeeds on retry will never appear.
+ * Capped at MAX_ATTEMPTS — past that we give up and add to injectedSessions.
+ */
+const failedAttempts = new Map<string, number>();
 
 function formatRelativeTime(iso: string | null): string {
 	if (!iso) return "";
@@ -38,7 +46,7 @@ function formatRecentInteractions(results: SearchResult[]): string | null {
 	if (results.length === 0) return null;
 	const lines = results.map((r) => {
 		const when = formatRelativeTime(r.createdAt);
-		const title = r.title ?? `[${r.source}]`;
+		const title = r.title || `[${r.source}]`;
 		const prefix = when ? `[${when}] ` : "";
 		const top = r.highlights[0]?.text?.replace(/\n/g, " ").slice(0, 140);
 		const tail = top ? ` — ${top}` : "";
@@ -52,16 +60,16 @@ function formatUnfinishedLoops(results: SearchResult[]): string | null {
 	for (const r of results) {
 		const top = r.highlights[0];
 		if (!top) continue;
-		const title = r.title ?? `[${r.source}]`;
+		const title = r.title || `[${r.source}]`;
 		bullets.push(`- ${title}: ${top.text.replace(/\n/g, " ")}`);
 	}
 	return bullets.length > 0 ? bullets.join("\n") : null;
 }
 
-function isoDaysAgo(days: number): string {
+function isoDaysAgo(days: number): Date {
 	const d = new Date();
 	d.setUTCDate(d.getUTCDate() - days);
-	return d.toISOString();
+	return d;
 }
 
 /**
@@ -80,6 +88,65 @@ function personalUserId(
 	return { skip: false, userId: resolved.userId };
 }
 
+/**
+ * Pull recent agent_end traces via listMemories, sorted chronologically.
+ *
+ * Why list, not search: a date-window + relevance search ranks results by
+ * lexical similarity to a generic query, which is approximately random
+ * within a 7-day slice and can easily exclude yesterday in favor of a
+ * 5-day-old session. listMemories gives us true chronological recall.
+ *
+ * The SDK's list endpoint doesn't expose date or metadata filters in our
+ * wrapper, so we filter client-side. Buffer is capped at
+ * RECENT_BUFFER_LIMIT to bound wire cost; if a user has more than that
+ * many traces in the cutoff window we'll still get the newest ones,
+ * since the underlying API returns recency-ordered pages.
+ */
+async function fetchRecentTraces(
+	client: HyperspellClient,
+	cutoff: Date,
+	limit: number,
+	userId: string | undefined,
+): Promise<SearchResult[]> {
+	const buffer: SearchResult[] = [];
+	let scanned = 0;
+	const cutoffMs = cutoff.getTime();
+
+	for await (const memory of client.listMemories({
+		source: "trace",
+		userId,
+		pageSize: 50,
+	})) {
+		scanned++;
+		if (scanned > RECENT_BUFFER_LIMIT) break;
+
+		const meta = memory.metadata;
+		if (meta.openclaw_source !== "agent_end") continue;
+
+		const createdRaw = meta.created_at;
+		if (typeof createdRaw !== "string") continue;
+		const createdMs = new Date(createdRaw).getTime();
+		if (Number.isNaN(createdMs) || createdMs < cutoffMs) continue;
+
+		buffer.push({
+			resourceId: memory.resourceId,
+			title: memory.title,
+			source: memory.source,
+			score: null,
+			url: null,
+			createdAt: createdRaw,
+			highlights: [],
+		});
+	}
+
+	buffer.sort((a, b) => {
+		const at = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+		const bt = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+		return bt - at;
+	});
+	return buffer.slice(0, limit);
+}
+
 export function buildStartupOrientationHandler(
 	client: HyperspellClient,
 	cfg: HyperspellConfig,
@@ -88,6 +155,18 @@ export function buildStartupOrientationHandler(
 	return async (_event: Record<string, unknown>, ctx?: AgentContext) => {
 		const sessionKey = ctx?.sessionKey;
 		if (sessionKey && injectedSessions.has(sessionKey)) return;
+
+		const tries = (sessionKey && failedAttempts.get(sessionKey)) || 0;
+		if (tries >= MAX_ATTEMPTS) {
+			log.debug(
+				`startup-orientation: giving up after ${tries} failed attempt(s)`,
+			);
+			if (sessionKey) {
+				injectedSessions.add(sessionKey);
+				failedAttempts.delete(sessionKey);
+			}
+			return;
+		}
 
 		const { skip, userId } = personalUserId(cfg, ctx);
 		if (skip) {
@@ -98,41 +177,49 @@ export function buildStartupOrientationHandler(
 			return;
 		}
 
-		const after = isoDaysAgo(so.recentDays);
+		const cutoff = isoDaysAgo(so.recentDays);
 
 		const [recentSettled, loopsSettled] = await Promise.allSettled([
-			client.search(so.recentQuery, {
-				limit: so.recentLimit,
-				after,
-				filter: RECENT_FILTER,
-				userId,
-			}),
+			fetchRecentTraces(client, cutoff, so.recentLimit, userId),
 			client.search(so.loopsQuery, {
 				limit: so.loopsLimit,
 				userId,
 			}),
 		]);
 
-		const recent =
-			recentSettled.status === "fulfilled" ? recentSettled.value : [];
-		if (recentSettled.status === "rejected") {
+		const recentOk = recentSettled.status === "fulfilled";
+		const loopsOk = loopsSettled.status === "fulfilled";
+		const recent = recentOk ? recentSettled.value : [];
+		const loops = loopsOk ? loopsSettled.value : [];
+
+		if (!recentOk) {
 			log.error(
-				"startup-orientation: recent search failed",
-				recentSettled.reason,
+				"startup-orientation: recent listMemories failed",
+				(recentSettled as PromiseRejectedResult).reason,
 			);
 		}
-		const loops = loopsSettled.status === "fulfilled" ? loopsSettled.value : [];
-		if (loopsSettled.status === "rejected") {
+		if (!loopsOk) {
 			log.error(
 				"startup-orientation: loops search failed",
-				loopsSettled.reason,
+				(loopsSettled as PromiseRejectedResult).reason,
 			);
+		}
+
+		if (!recentOk && !loopsOk) {
+			if (sessionKey) failedAttempts.set(sessionKey, tries + 1);
+			log.debug(
+				`startup-orientation: both calls failed (attempt ${tries + 1}/${MAX_ATTEMPTS}); will retry next turn`,
+			);
+			return;
+		}
+
+		if (sessionKey) {
+			injectedSessions.add(sessionKey);
+			failedAttempts.delete(sessionKey);
 		}
 
 		const recentBody = formatRecentInteractions(recent);
 		const loopsBody = formatUnfinishedLoops(loops);
-
-		if (sessionKey) injectedSessions.add(sessionKey);
 
 		if (!recentBody && !loopsBody) {
 			log.debug("startup-orientation: nothing to inject");
@@ -144,7 +231,7 @@ export function buildStartupOrientationHandler(
 			blocks.push(
 				[
 					"<hyperspell-recent-interactions>",
-					`Your last ${so.recentDays} days of conversations with this user, most-relevant-first. Use for situational continuity — don't quote verbatim.`,
+					`Your last ${so.recentDays} days of conversations with this user, most-recent-first. Use for situational continuity — don't quote verbatim.`,
 					"",
 					recentBody,
 					"</hyperspell-recent-interactions>",
@@ -173,7 +260,10 @@ export function buildStartupOrientationHandler(
 export function buildStartupOrientationCompactionHandler() {
 	return async (_event: Record<string, unknown>, ctx?: AgentContext) => {
 		const sessionKey = ctx?.sessionKey;
-		if (sessionKey && injectedSessions.delete(sessionKey)) {
+		if (!sessionKey) return;
+		const dropped = injectedSessions.delete(sessionKey);
+		failedAttempts.delete(sessionKey);
+		if (dropped) {
 			log.debug(
 				`startup-orientation: cache cleared after compaction (session=${sessionKey})`,
 			);
@@ -184,6 +274,8 @@ export function buildStartupOrientationCompactionHandler() {
 export function buildStartupOrientationSessionCleanupHandler() {
 	return async (_event: Record<string, unknown>, ctx?: AgentContext) => {
 		const sessionKey = ctx?.sessionKey;
-		if (sessionKey) injectedSessions.delete(sessionKey);
+		if (!sessionKey) return;
+		injectedSessions.delete(sessionKey);
+		failedAttempts.delete(sessionKey);
 	};
 }

@@ -26,7 +26,6 @@ function cfg(overrides: Partial<HyperspellConfig["multiUser"]> = {}): Hyperspell
       recentDays: 7,
       recentLimit: 5,
       loopsLimit: 3,
-      recentQuery: "conversation",
       loopsQuery: "open tasks",
     },
     multiUser: overrides.scoping
