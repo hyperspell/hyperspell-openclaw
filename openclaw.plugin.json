@@ -41,6 +41,11 @@
 			"help": "Maintain emotional continuity across sessions — remembers not just what happened, but how it felt",
 			"advanced": true
 		},
+		"startupOrientation": {
+			"label": "Startup Orientation",
+			"help": "Inject recent-interactions and unfinished-loops blocks once per session at startup. Costs two extra calls + ~500–800 tokens of injection per session; off by default.",
+			"advanced": true
+		},
 		"relationshipId": {
 			"label": "Relationship ID",
 			"placeholder": "partner-anna",
@@ -116,6 +121,16 @@
 			},
 			"relationshipId": {
 				"type": "string"
+			},
+			"startupOrientation": {
+				"type": "object",
+				"properties": {
+					"enabled": { "type": "boolean" },
+					"recentDays": { "type": "number", "minimum": 1, "maximum": 90 },
+					"recentLimit": { "type": "number", "minimum": 1, "maximum": 20 },
+					"loopsLimit": { "type": "number", "minimum": 1, "maximum": 20 },
+					"loopsQuery": { "type": "string" }
+				}
 			},
 			"sources": {
 				"type": "string"

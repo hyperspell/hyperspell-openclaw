@@ -14,6 +14,18 @@ test("sanitizeTraceText — strips hyperspell-emotional-context wrapper", () => 
 	assert.equal(sanitizeTraceText(input), "real content");
 });
 
+test("sanitizeTraceText — strips hyperspell-recent-interactions wrapper", () => {
+	const input =
+		"<hyperspell-recent-interactions>\n- [2h ago] yesterday's session — talked about plans\n</hyperspell-recent-interactions>\nreal content";
+	assert.equal(sanitizeTraceText(input), "real content");
+});
+
+test("sanitizeTraceText — strips hyperspell-unfinished-loops wrapper", () => {
+	const input =
+		"<hyperspell-unfinished-loops>\n- followup: pending question\n</hyperspell-unfinished-loops>\nreal content";
+	assert.equal(sanitizeTraceText(input), "real content");
+});
+
 test("sanitizeTraceText — strips Sender untrusted envelope", () => {
 	const input =
 		'Sender (untrusted metadata):\n```json\n{"label": "x"}\n```\n\nreal message';
@@ -27,8 +39,7 @@ test("sanitizeTraceText — strips Bootstrap pending block", () => {
 });
 
 test("sanitizeTraceText — strips System timestamp line", () => {
-	const input =
-		"System: [2026-04-17 14:31:25 PDT] Node: machine\nreal line";
+	const input = "System: [2026-04-17 14:31:25 PDT] Node: machine\nreal line";
 	assert.equal(sanitizeTraceText(input), "real line");
 });
 
@@ -41,6 +52,14 @@ test("sanitizeTraceText — strips nested pollution cascade", () => {
 		"<hyperspell-context>",
 		"memories",
 		"</hyperspell-context>",
+		"",
+		"<hyperspell-recent-interactions>",
+		"- [2h ago] some session",
+		"</hyperspell-recent-interactions>",
+		"",
+		"<hyperspell-unfinished-loops>",
+		"- topic: open thread",
+		"</hyperspell-unfinished-loops>",
 		"",
 		"Sender (untrusted metadata):",
 		"```json",

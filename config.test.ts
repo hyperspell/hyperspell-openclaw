@@ -207,7 +207,6 @@ test("parseConfig — startupOrientation defaults to disabled with sensible valu
   assert.equal(cfg.startupOrientation.recentDays, 7)
   assert.equal(cfg.startupOrientation.recentLimit, 5)
   assert.equal(cfg.startupOrientation.loopsLimit, 3)
-  assert.ok(cfg.startupOrientation.recentQuery.length > 0)
   assert.ok(cfg.startupOrientation.loopsQuery.length > 0)
 })
 
@@ -219,7 +218,6 @@ test("parseConfig — startupOrientation accepts overrides", () => {
       recentDays: 14,
       recentLimit: 3,
       loopsLimit: 5,
-      recentQuery: "custom recent",
       loopsQuery: "custom loops",
     },
   })
@@ -227,6 +225,5 @@ test("parseConfig — startupOrientation accepts overrides", () => {
   assert.equal(cfg.startupOrientation.recentDays, 14)
   assert.equal(cfg.startupOrientation.recentLimit, 3)
   assert.equal(cfg.startupOrientation.loopsLimit, 5)
-  assert.equal(cfg.startupOrientation.recentQuery, "custom recent")
   assert.equal(cfg.startupOrientation.loopsQuery, "custom loops")
 })

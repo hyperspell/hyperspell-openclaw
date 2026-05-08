@@ -1,6 +1,6 @@
-import * as fs from "node:fs"
-import * as os from "node:os"
-import * as path from "node:path"
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 
 export type HyperspellSource =
 	| "reddit"
@@ -34,7 +34,6 @@ export type StartupOrientationConfig = {
 	recentDays: number;
 	recentLimit: number;
 	loopsLimit: number;
-	recentQuery: string;
 	loopsQuery: string;
 };
 
@@ -407,8 +406,6 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 			recentDays: (soRaw.recentDays as number) ?? 7,
 			recentLimit: (soRaw.recentLimit as number) ?? 5,
 			loopsLimit: (soRaw.loopsLimit as number) ?? 3,
-			recentQuery:
-				(soRaw.recentQuery as string) ?? "conversation session interaction",
 			loopsQuery:
 				(soRaw.loopsQuery as string) ??
 				"open tasks pending questions unfinished promised need to follow up",

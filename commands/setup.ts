@@ -345,7 +345,6 @@ async function runSetup(): Promise<void> {
           recentDays: 7,
           recentLimit: 5,
           loopsLimit: 3,
-          recentQuery: "conversation session interaction",
           loopsQuery: "open tasks pending questions unfinished promised need to follow up",
         },
       })
