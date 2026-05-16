@@ -24,13 +24,30 @@ interface MarkdownSection {
 }
 
 /**
- * Hash state file lives alongside the workspace memory dir.
- * Maps "filePath::sectionTitle" -> { hash, resourceId }
+ * Sync manifest persisted at <workspaceDir>/.hyperspell-sync-hashes.json.
+ *
+ * Keyed by workspace-RELATIVE file path so the manifest survives the workspace
+ * being mounted at a different absolute path (new host / container / $HOME).
+ * Each file tracks every section it has synced (title -> { hash, resourceId }),
+ * which lets re-sync detect renamed sections (same content hash resurfacing
+ * under a new title) and deleted sections (title gone from source) instead of
+ * leaking duplicate or orphaned memories into the retrieval layer.
  */
-interface SyncHashMap {
-  [key: string]: { hash: string; resourceId?: string }
+interface SectionRecord {
+  hash: string
+  resourceId?: string
 }
 
+interface FileManifest {
+  sections: Record<string, SectionRecord>
+}
+
+interface SyncManifest {
+  version: number
+  files: Record<string, FileManifest>
+}
+
+const MANIFEST_VERSION = 1
 const HASH_FILE_NAME = ".hyperspell-sync-hashes.json"
 
 // ---------------------------------------------------------------------------
@@ -187,37 +204,80 @@ export function parseMarkdownSections(
   return merged
 }
 
+/**
+ * Section titles key the manifest per file, so two sections sharing the same
+ * ## heading in one file would collide — one resourceId tracked, the other
+ * silently orphaned and re-uploaded on every sync. Disambiguate repeats so
+ * each section maps to a stable, unique key.
+ */
+export function dedupeTitles(sections: MarkdownSection[]): MarkdownSection[] {
+  const seen = new Map<string, number>()
+  return sections.map((s) => {
+    const n = (seen.get(s.title) ?? 0) + 1
+    seen.set(s.title, n)
+    return n === 1 ? s : { ...s, title: `${s.title} (${n})` }
+  })
+}
+
 // ---------------------------------------------------------------------------
-// Hash tracking (persisted to workspace)
+// Sync manifest (persisted to workspace, workspace-relative keys)
 // ---------------------------------------------------------------------------
 
-function hashFilePath(workspaceDir: string): string {
+function manifestPath(workspaceDir: string): string {
   return path.join(workspaceDir, HASH_FILE_NAME)
 }
 
-export function loadHashMap(workspaceDir: string): SyncHashMap {
-  const p = hashFilePath(workspaceDir)
+/** Workspace-relative, posix-normalized key so the manifest is portable. */
+export function fileKey(workspaceDir: string, filePath: string): string {
+  return path.relative(workspaceDir, filePath).split(path.sep).join("/")
+}
+
+function emptyManifest(): SyncManifest {
+  return { version: MANIFEST_VERSION, files: {} }
+}
+
+export function loadManifest(workspaceDir: string): SyncManifest {
+  const p = manifestPath(workspaceDir)
   try {
     if (fs.existsSync(p)) {
-      return JSON.parse(fs.readFileSync(p, "utf-8"))
+      const parsed = JSON.parse(fs.readFileSync(p, "utf-8")) as Partial<SyncManifest>
+      // Self-healing: an unrecognized/legacy shape is discarded. This feature
+      // has never shipped a released on-disk format, so nothing to migrate —
+      // a mismatch just triggers one re-sync, which is idempotent.
+      if (parsed && parsed.version === MANIFEST_VERSION && parsed.files) {
+        return { version: MANIFEST_VERSION, files: parsed.files }
+      }
     }
   } catch (err) {
-    log.error("Failed to read sync hash file", err)
+    log.error("Failed to read sync manifest", err)
   }
-  return {}
+  return emptyManifest()
 }
 
-export function saveHashMap(workspaceDir: string, map: SyncHashMap): void {
-  const p = hashFilePath(workspaceDir)
+export function saveManifest(workspaceDir: string, manifest: SyncManifest): void {
+  const p = manifestPath(workspaceDir)
   try {
-    fs.writeFileSync(p, JSON.stringify(map, null, 2))
+    fs.writeFileSync(p, JSON.stringify(manifest, null, 2))
   } catch (err) {
-    log.error("Failed to write sync hash file", err)
+    log.error("Failed to write sync manifest", err)
   }
 }
 
-function sectionKey(filePath: string, sectionTitle: string): string {
-  return `${filePath}::${sectionTitle}`
+/**
+ * Serializes manifest read-modify-write across the whole process. Startup bulk
+ * sync and the live file_changed handler (plus independent per-file debounce
+ * timers) would otherwise interleave load → await addMemory → save and lose
+ * resourceId entries, causing the next sync to re-upload sections as brand-new
+ * memories. Every load→sync→save runs inside this critical section.
+ */
+let syncChain: Promise<unknown> = Promise.resolve()
+export function withSyncLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = syncChain.then(fn, fn)
+  syncChain = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  return run
 }
 
 // ---------------------------------------------------------------------------
@@ -354,74 +414,158 @@ export async function syncMarkdownFileSectionized(
   filePath: string,
   workspaceDir: string,
   options?: { userId?: string },
-): Promise<{ synced: number; skipped: number; failed: number; errors: string[] }> {
-  const file = readMarkdownFile(filePath)
-  if (!file || !file.content) {
-    return { synced: 0, skipped: 0, failed: 0, errors: file ? [] : ["Failed to read file"] }
-  }
-
-  const sections = parseMarkdownSections(file.content, file.title)
-  if (sections.length === 0) {
-    return { synced: 0, skipped: 0, failed: 0, errors: [] }
-  }
-
-  const hashMap = loadHashMap(workspaceDir)
-  const fileName = path.basename(filePath, ".md")
-  let synced = 0
-  let skipped = 0
-  let failed = 0
-  const errors: string[] = []
-
-  for (const section of sections) {
-    const key = sectionKey(filePath, section.title)
-    const existing = hashMap[key]
-
-    // Skip if content hasn't changed
-    if (existing?.hash === section.contentHash) {
-      skipped++
-      continue
-    }
-
-    // Build a title that includes file-level context for retrieval
-    // e.g. "2026-05-09: The day David's mum got sick"
-    const memoryTitle = file.title !== section.title
-      ? `${file.title} — ${section.title}`
-      : section.title
-
+): Promise<{
+  synced: number
+  skipped: number
+  failed: number
+  removed: number
+  errors: string[]
+}> {
+  return withSyncLock(async () => {
+    const empty = { synced: 0, skipped: 0, failed: 0, removed: 0, errors: [] as string[] }
     try {
-      const result = await client.addMemory(section.content, {
-        title: memoryTitle,
-        resourceId: existing?.resourceId,
-        collection: "openclaw",
-        metadata: {
-          openclaw_source: "memory_sync_section",
-          file_path: filePath,
-          file_name: fileName,
-          section_title: section.title,
-          content_hash: section.contentHash,
-        },
-        userId: options?.userId,
-      })
-
-      hashMap[key] = {
-        hash: section.contentHash,
-        resourceId: result.resourceId,
+      const file = readMarkdownFile(filePath)
+      if (!file || !file.content) {
+        return file ? empty : { ...empty, errors: ["Failed to read file"] }
       }
-      synced++
-      log.info(`Synced section: ${memoryTitle} -> ${result.resourceId}`)
+
+      const sections = dedupeTitles(parseMarkdownSections(file.content, file.title))
+      if (sections.length === 0) {
+        return empty
+      }
+
+      const manifest = loadManifest(workspaceDir)
+      const key = fileKey(workspaceDir, filePath)
+      const prevSections = manifest.files[key]?.sections ?? {}
+      const fileName = path.basename(filePath, ".md")
+
+      let synced = 0
+      let skipped = 0
+      let failed = 0
+      let removed = 0
+      let dirty = false
+      const errors: string[] = []
+
+      const currentTitles = new Set(sections.map((s) => s.title))
+
+      // Sections in the manifest but absent from the current parse are either
+      // renames (same content hash resurfacing under a new title) or true
+      // deletions. Index leftovers by content hash so a renamed section can
+      // reclaim its existing Hyperspell resource instead of creating a
+      // duplicate + orphan. Hash collisions among removed sections are rare
+      // and resolved best-effort (last writer wins).
+      const orphanByHash = new Map<string, { title: string; resourceId?: string }>()
+      for (const [title, rec] of Object.entries(prevSections)) {
+        if (!currentTitles.has(title)) {
+          orphanByHash.set(rec.hash, { title, resourceId: rec.resourceId })
+        }
+      }
+
+      const newSections: Record<string, SectionRecord> = {}
+
+      for (const section of sections) {
+        const prev = prevSections[section.title]
+
+        // Unchanged: keep the record, skip the upload.
+        if (prev && prev.hash === section.contentHash) {
+          newSections[section.title] = prev
+          skipped++
+          continue
+        }
+
+        // New title: if identical content was just removed under a different
+        // heading, this is a rename — reuse the resource and claim it so it is
+        // not also deleted as an orphan below.
+        let reuseResourceId = prev?.resourceId
+        if (!prev) {
+          const renamedFrom = orphanByHash.get(section.contentHash)
+          if (renamedFrom) {
+            reuseResourceId = renamedFrom.resourceId
+            orphanByHash.delete(section.contentHash)
+            log.info(
+              `Section renamed: "${renamedFrom.title}" -> "${section.title}" (${fileName}) — updating in place`,
+            )
+          }
+        }
+
+        const memoryTitle =
+          file.title !== section.title ? `${file.title} — ${section.title}` : section.title
+
+        try {
+          const result = await client.addMemory(section.content, {
+            title: memoryTitle,
+            resourceId: reuseResourceId,
+            collection: "openclaw",
+            metadata: {
+              openclaw_source: "memory_sync_section",
+              file_path: filePath,
+              file_name: fileName,
+              section_title: section.title,
+              content_hash: section.contentHash,
+            },
+            userId: options?.userId,
+          })
+
+          newSections[section.title] = {
+            hash: section.contentHash,
+            resourceId: result.resourceId,
+          }
+          synced++
+          dirty = true
+          log.info(`Synced section: ${memoryTitle} -> ${result.resourceId}`)
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err)
+          errors.push(`${memoryTitle}: ${errorMsg}`)
+          failed++
+          // Preserve the prior record so a transient failure does not drop the
+          // resourceId and force a duplicate upload next run.
+          if (prev) newSections[section.title] = prev
+        }
+      }
+
+      // Whatever remains is a genuine deletion: gone from source, no rename
+      // reclaimed it. Delete the remote memory so retrieval does not keep
+      // serving content the user removed.
+      for (const { title, resourceId } of orphanByHash.values()) {
+        if (!resourceId) {
+          // Never got a resourceId — nothing to delete, just drop the record.
+          dirty = true
+          continue
+        }
+        const { deleted } = await client.deleteMemory(resourceId, {
+          userId: options?.userId,
+        })
+        if (deleted) {
+          removed++
+          dirty = true
+          log.info(`Removed deleted section "${title}" (${fileName}) -> ${resourceId}`)
+        } else {
+          // Keep the record so the delete is retried next run rather than
+          // silently leaking the orphan into the retrieval layer.
+          newSections[title] = prevSections[title]
+          errors.push(`delete "${title}": failed`)
+        }
+      }
+
+      if (Object.keys(newSections).length > 0) {
+        manifest.files[key] = { sections: newSections }
+      } else {
+        delete manifest.files[key]
+      }
+
+      if (dirty) {
+        saveManifest(workspaceDir, manifest)
+      }
+
+      return { synced, skipped, failed, removed, errors }
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err)
-      errors.push(`${memoryTitle}: ${errorMsg}`)
-      failed++
+      // The body is defensive everywhere above; this guards the lock chain
+      // against an unexpected throw so one bad file cannot wedge the queue.
+      const msg = err instanceof Error ? err.message : String(err)
+      log.error(`Sectionized sync crashed for ${filePath}`, err)
+      return { ...empty, errors: [msg] }
     }
-  }
-
-  // Persist updated hashes
-  if (synced > 0) {
-    saveHashMap(workspaceDir, hashMap)
-  }
-
-  return { synced, skipped, failed, errors }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -464,11 +608,18 @@ export async function syncAllFilesSectionized(
   client: HyperspellClient,
   workspaceDir: string,
   options?: { userId?: string; watchPaths?: string[] },
-): Promise<{ synced: number; skipped: number; failed: number; errors: string[] }> {
+): Promise<{
+  synced: number
+  skipped: number
+  failed: number
+  removed: number
+  errors: string[]
+}> {
   const files = getSyncableFiles(workspaceDir, options?.watchPaths)
   let totalSynced = 0
   let totalSkipped = 0
   let totalFailed = 0
+  let totalRemoved = 0
   const allErrors: string[] = []
 
   for (const filePath of files) {
@@ -478,8 +629,15 @@ export async function syncAllFilesSectionized(
     totalSynced += result.synced
     totalSkipped += result.skipped
     totalFailed += result.failed
+    totalRemoved += result.removed
     allErrors.push(...result.errors)
   }
 
-  return { synced: totalSynced, skipped: totalSkipped, failed: totalFailed, errors: allErrors }
+  return {
+    synced: totalSynced,
+    skipped: totalSkipped,
+    failed: totalFailed,
+    removed: totalRemoved,
+    errors: allErrors,
+  }
 }

@@ -392,6 +392,38 @@ export class HyperspellClient {
 		return raw;
 	}
 
+	/**
+	 * Delete a memory by resource id. Memory-sync uploads land in the "vault"
+	 * source (user-added documents), so that is the default. Best-effort: a
+	 * 404 (already gone) is treated as success so callers can prune their
+	 * local manifest unconditionally.
+	 */
+	async deleteMemory(
+		resourceId: string,
+		options?: { source?: HyperspellSource; userId?: string },
+	): Promise<{ deleted: boolean }> {
+		const source = options?.source ?? "vault";
+		log.debugRequest("memories.delete", { resourceId, source });
+
+		try {
+			await this.client.memories.delete(
+				resourceId,
+				{ source },
+				this.requestOptions(options?.userId),
+			);
+			log.debugResponse("memories.delete", { resourceId, deleted: true });
+			return { deleted: true };
+		} catch (err) {
+			const status = (err as { status?: number })?.status;
+			if (status === 404) {
+				log.debug(`Memory ${resourceId} already absent (404) — treating as deleted`);
+				return { deleted: true };
+			}
+			log.error(`Failed to delete memory ${resourceId}`, err);
+			return { deleted: false };
+		}
+	}
+
 	async sendTrace(
 		history: string,
 		options?: {

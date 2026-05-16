@@ -67,9 +67,9 @@ export function buildFileSyncHandler(client: HyperspellClient, cfg: HyperspellCo
           workspaceDir,
           { userId: syncUserId },
         )
-        if (result.synced > 0) {
+        if (result.synced > 0 || result.removed > 0) {
           log.info(
-            `Section-synced ${fileName}: ${result.synced} synced, ${result.skipped} unchanged`,
+            `Section-synced ${fileName}: ${result.synced} synced, ${result.skipped} unchanged, ${result.removed} removed`,
           )
         } else if (result.skipped > 0) {
           log.debug(`${fileName}: all ${result.skipped} sections unchanged`)
@@ -141,7 +141,7 @@ export async function syncMemoriesOnStartup(
     })
 
     log.info(
-      `Section sync complete: ${result.synced} synced, ${result.skipped} unchanged, ${result.failed} failed`,
+      `Section sync complete: ${result.synced} synced, ${result.skipped} unchanged, ${result.removed} removed, ${result.failed} failed`,
     )
     if (result.failed > 0) {
       for (const error of result.errors) {

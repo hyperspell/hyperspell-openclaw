@@ -410,6 +410,17 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 			? (smRaw as Record<string, unknown>)
 			: {};
 
+	// The rest of parseConfig is strict about unknown keys; the syncMemories
+	// object form must be too, or a typo (sectionise/debounceMS) is silently
+	// ignored and the user gets default behavior they didn't ask for.
+	if (typeof smRaw === "object" && smRaw !== null && !Array.isArray(smRaw)) {
+		assertAllowedKeys(
+			smObj,
+			["enabled", "sectionize", "watchPaths", "debounceMs"],
+			"hyperspell.syncMemories",
+		);
+	}
+
 	return {
 		apiKey,
 		userId: cfg.userId as string | undefined,
