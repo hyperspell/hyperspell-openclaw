@@ -71,7 +71,7 @@
 		},
 		"syncMemories": {
 			"label": "Sync Memory Files",
-			"help": "Automatically sync markdown files in workspace/memory/ to Hyperspell",
+			"help": "Automatically sync markdown files to Hyperspell. Set to true for defaults, or use an object for fine-grained control: { sectionize: true, watchPaths: ['MEMORY.md', 'notes/'], debounceMs: 2000 }",
 			"advanced": true
 		},
 		"knowledgeGraph": {
@@ -144,7 +144,30 @@
 				"type": "boolean"
 			},
 			"syncMemories": {
-				"type": "boolean"
+				"oneOf": [
+					{ "type": "boolean" },
+					{
+						"type": "object",
+						"properties": {
+							"enabled": { "type": "boolean" },
+							"sectionize": {
+								"type": "boolean",
+								"description": "Split files by ## headings into separate memories for better retrieval granularity (default: true)"
+							},
+							"watchPaths": {
+								"type": "array",
+								"items": { "type": "string" },
+								"description": "Additional paths to watch beyond memory/ (relative to workspace or absolute)"
+							},
+							"debounceMs": {
+								"type": "number",
+								"minimum": 0,
+								"maximum": 30000,
+								"description": "Debounce file changes in ms to avoid syncing mid-write (default: 2000)"
+							}
+						}
+					}
+				]
 			},
 			"knowledgeGraph": {
 				"type": "object",

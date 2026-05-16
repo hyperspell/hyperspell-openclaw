@@ -16,6 +16,12 @@ function cfg(overrides: Partial<HyperspellConfig["multiUser"]> = {}): Hyperspell
     autoTrace: { enabled: false, extract: ["procedure"] },
     emotionalContext: false,
     syncMemories: false,
+    syncMemoriesConfig: {
+      enabled: false,
+      sectionize: true,
+      watchPaths: [],
+      debounceMs: 2000,
+    },
     sources: [],
     maxResults: 5,
     relevanceThreshold: 0.6,

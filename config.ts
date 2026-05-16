@@ -86,6 +86,16 @@ export function normalizeScope(scope: ScopeName): string {
 	return scope.replace(/[^a-zA-Z0-9_]/g, "_");
 }
 
+export type SyncMemoriesConfig = {
+	enabled: boolean;
+	/** Split files by ## headings into separate memories (default: true) */
+	sectionize: boolean;
+	/** Additional paths to watch beyond memory/ (relative to workspace or absolute) */
+	watchPaths: string[];
+	/** Debounce file changes in ms to avoid syncing mid-write (default: 2000) */
+	debounceMs: number;
+};
+
 export type HyperspellConfig = {
 	apiKey: string;
 	userId?: string;
@@ -95,6 +105,7 @@ export type HyperspellConfig = {
 	relationshipId?: string;
 	startupOrientation: StartupOrientationConfig;
 	syncMemories: boolean;
+	syncMemoriesConfig: SyncMemoriesConfig;
 	sources: HyperspellSource[];
 	maxResults: number;
 	relevanceThreshold: number;
@@ -386,6 +397,19 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 	const atRaw = (cfg.autoTrace ?? {}) as Record<string, unknown>;
 	const soRaw = (cfg.startupOrientation ?? {}) as Record<string, unknown>;
 
+	// syncMemories can be a boolean (legacy) or an object (new)
+	const smRaw = cfg.syncMemories;
+	const syncMemoriesEnabled =
+		typeof smRaw === "boolean"
+			? smRaw
+			: typeof smRaw === "object" && smRaw !== null
+				? ((smRaw as Record<string, unknown>).enabled as boolean) ?? true
+				: false;
+	const smObj =
+		typeof smRaw === "object" && smRaw !== null
+			? (smRaw as Record<string, unknown>)
+			: {};
+
 	return {
 		apiKey,
 		userId: cfg.userId as string | undefined,
@@ -410,7 +434,15 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 				(soRaw.loopsQuery as string) ??
 				"open tasks pending questions unfinished promised need to follow up",
 		},
-		syncMemories: (cfg.syncMemories as boolean) ?? false,
+		syncMemories: syncMemoriesEnabled,
+		syncMemoriesConfig: {
+			enabled: syncMemoriesEnabled,
+			sectionize: (smObj.sectionize as boolean) ?? true,
+			watchPaths: Array.isArray(smObj.watchPaths)
+				? (smObj.watchPaths as string[])
+				: [],
+			debounceMs: (smObj.debounceMs as number) ?? 2000,
+		},
 		sources: parseSources(cfg.sources as string | string[] | undefined),
 		maxResults: (cfg.maxResults as number) ?? 10,
 		relevanceThreshold: (cfg.relevanceThreshold as number) ?? 0.6,

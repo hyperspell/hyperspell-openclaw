@@ -66,6 +66,12 @@ function makeCfg(overrides?: Partial<HyperspellConfig>): HyperspellConfig {
 			loopsQuery: "open tasks pending questions",
 		},
 		syncMemories: false,
+		syncMemoriesConfig: {
+			enabled: false,
+			sectionize: true,
+			watchPaths: [],
+			debounceMs: 2000,
+		},
 		sources: [],
 		maxResults: 10,
 		relevanceThreshold: 0.6,

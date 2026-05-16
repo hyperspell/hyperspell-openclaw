@@ -335,6 +335,12 @@ async function runSetup(): Promise<void> {
         autoTrace: { enabled: false, extract: ["procedure"] },
         emotionalContext: false,
         syncMemories: true,
+        syncMemoriesConfig: {
+          enabled: true,
+          sectionize: true,
+          watchPaths: [],
+          debounceMs: 2000,
+        },
         sources: [],
         maxResults: 10,
         relevanceThreshold: 0.6,
