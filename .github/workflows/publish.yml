@@ -1,12 +1,23 @@
 name: Publish Package
 
+# Releases are cut by pushing a version tag (e.g. v0.14.0), NOT by merging
+# to main. This makes every published version a deliberate, traceable act
+# and stops merges from triggering failed/duplicate publishes.
+#
+# To release:
+#   1. Land your changes on main (via PR as usual).
+#   2. Bump the version:  npm version <patch|minor|major>
+#      (this commits the bump and creates the matching vX.Y.Z tag locally)
+#   3. Push commit + tag:  git push origin main --follow-tags
+#   The tag push triggers this workflow.
 on:
   push:
-    branches: [main]
+    tags:
+      - 'v*'
 
 permissions:
-  id-token: write
-  contents: read
+  id-token: write # npm provenance / trusted publisher (OIDC)
+  contents: write # create the GitHub Release
 
 jobs:
   publish:
@@ -18,4 +29,27 @@ jobs:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
       - run: npm ci
+
+      # Fail loudly if the tag and package.json disagree, so a mistagged
+      # release never publishes the wrong version.
+      - name: Verify tag matches package.json version
+        run: |
+          PKG="$(node -p "require('./package.json').version")"
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$PKG" != "$TAG" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} (=${TAG}) != package.json version ${PKG}. Bump package.json or fix the tag."
+            exit 1
+          fi
+          echo "Releasing ${GITHUB_REF_NAME} (package.json ${PKG})"
+
+      # Release gates — this repo has no PR CI, so this is the one place
+      # broken code is caught before it ships.
+      - run: npm run check-types
+      - run: npm test
+
       - run: npm publish --access public
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --generate-notes
