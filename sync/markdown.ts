@@ -146,7 +146,7 @@ export function parseMarkdownSections(
     const line = lines[i]
 
     // Capture file-level title from # heading
-    if (/^# /.test(line) && !currentSection?.lines.length) {
+    if (/^# /.test(line) && currentSection === null) {
       fileTitle = line.replace(/^# /, "").trim()
       continue
     }
@@ -541,8 +541,11 @@ export async function syncMarkdownFileSectionized(
           log.info(`Removed deleted section "${title}" (${fileName}) -> ${resourceId}`)
         } else {
           // Keep the record so the delete is retried next run rather than
-          // silently leaking the orphan into the retrieval layer.
+          // silently leaking the orphan into the retrieval layer. Count it
+          // as a failure so the stats are consistent and callers that gate
+          // logging on `failed > 0` actually surface it.
           newSections[title] = prevSections[title]
+          failed++
           errors.push(`delete "${title}": failed`)
         }
       }

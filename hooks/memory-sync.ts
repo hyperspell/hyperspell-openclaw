@@ -43,7 +43,7 @@ export function buildFileSyncHandler(client: HyperspellClient, cfg: HyperspellCo
     if (!filePath.endsWith(".md")) return false
 
     // Always sync memory/ files
-    if (filePath.startsWith(memoryDir)) return true
+    if (filePath.startsWith(memoryDir + path.sep)) return true
 
     // Check additional watch paths
     for (const wp of resolvedWatchPaths) {

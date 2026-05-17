@@ -78,6 +78,17 @@ test("parseMarkdownSections — content hash is stable and change-sensitive", ()
   assert.notEqual(a.contentHash, aEdited.contentHash)
 })
 
+test("parseMarkdownSections — '# ' line inside a section is content, not the file title", () => {
+  const content = `## A\n# This is body text, not a file title — and well over eighty chars long.\n${BODY_A}\n## B\n${BODY_B}`
+  const sections = parseMarkdownSections(content, "note")
+  assert.deepEqual(
+    sections.map((s) => s.title),
+    ["A", "B"],
+  )
+  // The '# ' line must be preserved in section A, not swallowed as a title.
+  assert.match(sections[0].content, /# This is body text, not a file title/)
+})
+
 // ---------------------------------------------------------------------------
 // dedupeTitles
 // ---------------------------------------------------------------------------
@@ -330,6 +341,36 @@ test("syncMarkdownFileSectionized — deleted section is removed remotely and pr
 
     const sections = loadManifest(ws.dir).files["memory/note.md"].sections
     assert.deepEqual(Object.keys(sections), ["A"])
+  } finally {
+    ws.cleanup()
+  }
+})
+
+test("syncMarkdownFileSectionized — failed orphan delete counts as failed and retries", async () => {
+  const ws = workspace()
+  try {
+    const ok = makeClient()
+    fs.writeFileSync(ws.note, `## A\n${BODY_A}\n## B\n${BODY_B}`)
+    await syncMarkdownFileSectionized(ok.client, ws.note, ws.dir)
+
+    const failing = makeClient({ deleteOk: false })
+    fs.writeFileSync(ws.note, `## A\n${BODY_A}`) // B deleted, but delete will fail
+    const r = await syncMarkdownFileSectionized(failing.client, ws.note, ws.dir)
+
+    assert.equal(r.removed, 0)
+    assert.equal(r.failed, 1) // delete failure is now counted
+    assert.equal(r.errors.length, 1)
+    assert.match(r.errors[0], /delete "B": failed/)
+
+    // B's record is retained so the delete is retried next run.
+    const sections = loadManifest(ws.dir).files["memory/note.md"].sections
+    assert.deepEqual(Object.keys(sections).sort(), ["A", "B"])
+    assert.equal(sections.B.resourceId, "res-2")
+
+    const retry = makeClient() // delete succeeds this time
+    const r2 = await syncMarkdownFileSectionized(retry.client, ws.note, ws.dir)
+    assert.equal(r2.removed, 1)
+    assert.deepEqual(retry.deleteCalls, ["res-2"])
   } finally {
     ws.cleanup()
   }
