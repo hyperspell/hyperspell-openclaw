@@ -133,6 +133,9 @@ export default {
 		if (cfg.syncMemories) {
 			const fileSyncHandler = buildFileSyncHandler(client, cfg);
 			api.on("file_changed", fileSyncHandler);
+			api.logger.info(
+				`hyperspell: memory sync enabled (sectionize=${cfg.syncMemoriesConfig.sectionize}, watchPaths=${cfg.syncMemoriesConfig.watchPaths.length})`,
+			);
 		}
 
 		// Register memory network tools
@@ -154,6 +157,8 @@ export default {
 					const workspaceDir = getWorkspaceDir();
 					await syncMemoriesOnStartup(client, workspaceDir, {
 						userId: cfg.multiUser?.sharedUserId,
+						sectionize: cfg.syncMemoriesConfig.sectionize,
+						watchPaths: cfg.syncMemoriesConfig.watchPaths,
 					});
 				}
 			},

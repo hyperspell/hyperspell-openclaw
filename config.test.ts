@@ -227,3 +227,40 @@ test("parseConfig — startupOrientation accepts overrides", () => {
   assert.equal(cfg.startupOrientation.loopsLimit, 5)
   assert.equal(cfg.startupOrientation.loopsQuery, "custom loops")
 })
+
+test("parseConfig — syncMemories boolean true keeps legacy behavior, sectionize defaults on", () => {
+  const cfg = parseConfig({ ...base, syncMemories: true })
+  assert.equal(cfg.syncMemories, true)
+  assert.equal(cfg.syncMemoriesConfig.enabled, true)
+  assert.equal(cfg.syncMemoriesConfig.sectionize, true)
+  assert.deepEqual(cfg.syncMemoriesConfig.watchPaths, [])
+  assert.equal(cfg.syncMemoriesConfig.debounceMs, 2000)
+})
+
+test("parseConfig — syncMemories false disables sync", () => {
+  const cfg = parseConfig({ ...base, syncMemories: false })
+  assert.equal(cfg.syncMemories, false)
+  assert.equal(cfg.syncMemoriesConfig.enabled, false)
+})
+
+test("parseConfig — syncMemories object form parses and enables by default", () => {
+  const cfg = parseConfig({
+    ...base,
+    syncMemories: {
+      sectionize: false,
+      watchPaths: ["MEMORY.md", "notes/"],
+      debounceMs: 500,
+    },
+  })
+  assert.equal(cfg.syncMemories, true) // object without explicit enabled => on
+  assert.equal(cfg.syncMemoriesConfig.sectionize, false)
+  assert.deepEqual(cfg.syncMemoriesConfig.watchPaths, ["MEMORY.md", "notes/"])
+  assert.equal(cfg.syncMemoriesConfig.debounceMs, 500)
+})
+
+test("parseConfig — syncMemories object with a typo'd key throws", () => {
+  assert.throws(
+    () => parseConfig({ ...base, syncMemories: { sectionise: true } }),
+    /hyperspell\.syncMemories has unknown keys: sectionise/,
+  )
+})

@@ -38,7 +38,7 @@
     "check-types": "tsc --noEmit",
     "lint": "bunx @biomejs/biome ci .",
     "lint:fix": "bunx @biomejs/biome check --write .",
-    "test": "node --test --experimental-strip-types lib/sender.test.ts config.test.ts hooks/auto-trace.test.ts hooks/emotional-state.test.ts hooks/startup-orientation.test.ts"
+    "test": "node --test --experimental-strip-types lib/sender.test.ts config.test.ts sync/markdown.test.ts hooks/auto-trace.test.ts hooks/emotional-state.test.ts hooks/startup-orientation.test.ts"
   },
   "openclaw": {
     "extensions": [

@@ -3,63 +3,167 @@ import type { HyperspellClient } from "../client.ts"
 import type { HyperspellConfig } from "../config.ts"
 import { getWorkspaceDir } from "../config.ts"
 import { log } from "../logger.ts"
-import { syncMarkdownFile, syncAllMemoryFiles } from "../sync/markdown.ts"
+import {
+  syncMarkdownFile,
+  syncMarkdownFileSectionized,
+  syncAllMemoryFiles,
+  syncAllFilesSectionized,
+} from "../sync/markdown.ts"
 
 /**
- * Build a handler for file change events that syncs markdown files to Hyperspell
+ * Build a handler for file change events that syncs markdown files to Hyperspell.
+ *
+ * When `sectionize` is enabled (default for new config), files are split by
+ * ## headings and each section is synced as a separate memory. Unchanged
+ * sections (tracked by content hash) are skipped.
+ *
+ * When `sectionize` is false (legacy mode), entire files are uploaded as
+ * single memories.
  */
 export function buildFileSyncHandler(client: HyperspellClient, cfg: HyperspellConfig) {
   const workspaceDir = getWorkspaceDir()
   const memoryDir = path.join(workspaceDir, "memory")
   const syncUserId = cfg.multiUser?.sharedUserId
+  const sectionize = cfg.syncMemoriesConfig.sectionize
+  const watchPaths = cfg.syncMemoriesConfig.watchPaths
+  const debounceMs = cfg.syncMemoriesConfig.debounceMs
 
-  return async (event: Record<string, unknown>) => {
-    const filePath = event.file_path as string | undefined
-    if (!filePath) return
+  // Resolve additional watch paths to absolute paths for matching
+  const resolvedWatchPaths = (watchPaths ?? []).map((wp) =>
+    wp.startsWith("/") ? wp : path.join(workspaceDir, wp),
+  )
 
-    // Only process markdown files in the workspace's memory directory
-    if (!filePath.startsWith(memoryDir) || !filePath.endsWith(".md")) {
-      return
+  // Debounce map: filePath -> timeout handle
+  const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+  /**
+   * Check whether a file path is syncable (in memory/ or in a watchPath).
+   */
+  function isSyncable(filePath: string): boolean {
+    if (!filePath.endsWith(".md")) return false
+
+    // Always sync memory/ files
+    if (filePath.startsWith(memoryDir + path.sep)) return true
+
+    // Check additional watch paths
+    for (const wp of resolvedWatchPaths) {
+      if (filePath === wp || filePath.startsWith(wp + "/")) {
+        return true
+      }
     }
 
+    return false
+  }
+
+  async function doSync(filePath: string) {
     const fileName = path.basename(filePath)
     log.info(`Memory file changed: ${fileName}`)
 
     try {
-      const result = await syncMarkdownFile(client, filePath, { userId: syncUserId })
-      if (result.success) {
-        log.info(`Synced ${fileName} -> ${result.resourceId}`)
+      if (sectionize) {
+        const result = await syncMarkdownFileSectionized(
+          client,
+          filePath,
+          workspaceDir,
+          { userId: syncUserId },
+        )
+        if (result.synced > 0 || result.removed > 0) {
+          log.info(
+            `Section-synced ${fileName}: ${result.synced} synced, ${result.skipped} unchanged, ${result.removed} removed`,
+          )
+        } else if (result.skipped > 0) {
+          log.debug(`${fileName}: all ${result.skipped} sections unchanged`)
+        }
+        if (result.failed > 0) {
+          log.error(`${fileName}: ${result.failed} sections failed:`)
+          for (const err of result.errors) {
+            log.error(`  - ${err}`)
+          }
+        }
       } else {
-        log.error(`Failed to sync ${fileName}: ${result.error}`)
+        // Legacy whole-file sync
+        const result = await syncMarkdownFile(client, filePath, { userId: syncUserId })
+        if (result.success) {
+          log.info(`Synced ${fileName} -> ${result.resourceId}`)
+        } else {
+          log.error(`Failed to sync ${fileName}: ${result.error}`)
+        }
       }
     } catch (err) {
       log.error(`Error syncing ${fileName}`, err)
     }
   }
+
+  return async (event: Record<string, unknown>) => {
+    const filePath = event.file_path as string | undefined
+    if (!filePath) return
+
+    if (!isSyncable(filePath)) return
+
+    // Debounce: if the file changes rapidly (agent writing in chunks),
+    // wait until writes settle before syncing.
+    if (debounceMs > 0) {
+      const existing = debounceTimers.get(filePath)
+      if (existing) clearTimeout(existing)
+
+      debounceTimers.set(
+        filePath,
+        setTimeout(() => {
+          debounceTimers.delete(filePath)
+          doSync(filePath).catch((err) => log.error("Debounced sync failed", err))
+        }, debounceMs),
+      )
+    } else {
+      await doSync(filePath)
+    }
+  }
 }
 
 /**
- * Sync all existing memory files on startup
+ * Sync all existing memory files on startup.
+ * Uses section-level sync when sectionize is enabled.
  */
 export async function syncMemoriesOnStartup(
   client: HyperspellClient,
   workspaceDir: string,
-  options?: { userId?: string },
+  options?: {
+    userId?: string
+    sectionize?: boolean
+    watchPaths?: string[]
+  },
 ): Promise<void> {
   log.info("Syncing existing memory files...")
 
-  const result = await syncAllMemoryFiles(client, workspaceDir, { userId: options?.userId })
+  if (options?.sectionize) {
+    const result = await syncAllFilesSectionized(client, workspaceDir, {
+      userId: options.userId,
+      watchPaths: options.watchPaths,
+    })
 
-  if (result.synced > 0) {
-    log.info(`Synced ${result.synced} memory files`)
-  }
-  if (result.failed > 0) {
-    log.error(`Failed to sync ${result.failed} files:`)
-    for (const error of result.errors) {
-      log.error(`  - ${error}`)
+    log.info(
+      `Section sync complete: ${result.synced} synced, ${result.skipped} unchanged, ${result.removed} removed, ${result.failed} failed`,
+    )
+    if (result.failed > 0) {
+      for (const error of result.errors) {
+        log.error(`  - ${error}`)
+      }
     }
-  }
-  if (result.synced === 0 && result.failed === 0) {
-    log.info("No memory files found in memory/ directory")
+  } else {
+    const result = await syncAllMemoryFiles(client, workspaceDir, {
+      userId: options?.userId,
+    })
+
+    if (result.synced > 0) {
+      log.info(`Synced ${result.synced} memory files`)
+    }
+    if (result.failed > 0) {
+      log.error(`Failed to sync ${result.failed} files:`)
+      for (const error of result.errors) {
+        log.error(`  - ${error}`)
+      }
+    }
+    if (result.synced === 0 && result.failed === 0) {
+      log.info("No memory files found in memory/ directory")
+    }
   }
 }

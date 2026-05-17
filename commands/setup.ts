@@ -5,7 +5,11 @@ import { userInfo } from "node:os"
 import * as p from "@clack/prompts"
 import type { Command } from "commander"
 import Hyperspell from "hyperspell"
-import { syncAllMemoryFiles, getMemoryFiles } from "../sync/markdown.ts"
+import {
+  syncAllFilesSectionized,
+  syncAllMemoryFiles,
+  getMemoryFiles,
+} from "../sync/markdown.ts"
 import { openInBrowser } from "../lib/browser.ts"
 import { HyperspellClient } from "../client.ts"
 import { getWorkspaceDir, parseConfig, resolveConfigPath } from "../config.ts"
@@ -335,6 +339,12 @@ async function runSetup(): Promise<void> {
         autoTrace: { enabled: false, extract: ["procedure"] },
         emotionalContext: false,
         syncMemories: true,
+        syncMemoriesConfig: {
+          enabled: true,
+          sectionize: true,
+          watchPaths: [],
+          debounceMs: 2000,
+        },
         sources: [],
         maxResults: 10,
         relevanceThreshold: 0.6,
@@ -349,15 +359,20 @@ async function runSetup(): Promise<void> {
         },
       })
 
-      const result = await syncAllMemoryFiles(hyperspellClient, workspaceDir)
+      // Use the same sectionized path the runtime uses, so a fresh setup
+      // doesn't whole-file-upload everything and then get re-synced as
+      // sections on first gateway start (= duplicate memories).
+      const result = await syncAllFilesSectionized(hyperspellClient, workspaceDir)
 
       if (result.failed > 0) {
-        s3.stop(`Synced ${result.synced} files, ${result.failed} failed`)
+        s3.stop(
+          `Synced ${result.synced} section(s), ${result.skipped} unchanged, ${result.failed} failed`,
+        )
         for (const error of result.errors) {
           p.log.error(`  ${error}`)
         }
       } else {
-        s3.stop(`Synced ${result.synced} memory files`)
+        s3.stop(`Synced ${result.synced} section(s) (${result.skipped} unchanged)`)
       }
     } else {
       p.log.info("No memory files found in memory/ directory")
@@ -665,7 +680,12 @@ export function registerCliCommands(program: Command, pluginConfig: unknown): vo
         const client = new HyperspellClient(cfg)
         const workspaceDir = getWorkspaceDir()
 
-        const result = await syncAllMemoryFiles(client, workspaceDir)
+        // Mirror the runtime's sync mode so this manual command can't
+        // produce whole-file blobs that the gateway then re-syncs as
+        // sections (= duplicate memories).
+        const result = cfg.syncMemoriesConfig.sectionize
+          ? await syncAllFilesSectionized(client, workspaceDir)
+          : await syncAllMemoryFiles(client, workspaceDir)
         process.stdout.write(`Synced ${result.synced} files, ${result.failed} failed\n`)
         if (result.errors.length > 0) {
           for (const error of result.errors) {

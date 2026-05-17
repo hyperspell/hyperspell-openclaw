@@ -1,0 +1,427 @@
+import assert from "node:assert/strict"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
+import { test } from "node:test"
+import type { HyperspellClient } from "../client.ts"
+import {
+  dedupeTitles,
+  fileKey,
+  loadManifest,
+  parseMarkdownSections,
+  saveManifest,
+  syncMarkdownFileSectionized,
+  withSyncLock,
+} from "./markdown.ts"
+
+// Bodies must exceed the 80-char short-section merge threshold so each ##
+// stays its own section.
+const BODY_A =
+  "Section A body — long enough to clear the eighty character merge threshold for sure."
+const BODY_A2 =
+  "Section A REWRITTEN — still well past the eighty character threshold so it stays a section."
+const BODY_B =
+  "Section B body — also comfortably over the eighty character short-merge threshold here."
+
+// ---------------------------------------------------------------------------
+// parseMarkdownSections
+// ---------------------------------------------------------------------------
+
+test("parseMarkdownSections — splits on ## headings", () => {
+  const sections = parseMarkdownSections(`## A\n${BODY_A}\n## B\n${BODY_B}`, "note")
+  assert.equal(sections.length, 2)
+  assert.deepEqual(
+    sections.map((s) => s.title),
+    ["A", "B"],
+  )
+  assert.equal(sections[0].content, BODY_A)
+  assert.equal(sections[1].content, BODY_B)
+  // 16-hex content hash
+  assert.match(sections[0].contentHash, /^[0-9a-f]{16}$/)
+})
+
+test("parseMarkdownSections — short trailing section merges into previous", () => {
+  const content = [
+    "# 2026-05-09 — Saturday",
+    "",
+    "## The day David's mum got sick",
+    BODY_A,
+    "",
+    "## What I'm holding",
+    BODY_B,
+    "",
+    "## Short note",
+    "🖤",
+  ].join("\n")
+
+  const sections = parseMarkdownSections(content, "note")
+  assert.equal(sections.length, 2)
+  assert.deepEqual(
+    sections.map((s) => s.title),
+    ["The day David's mum got sick", "What I'm holding"],
+  )
+  // The < 80-char "Short note" folds into the previous section.
+  assert.match(sections[1].content, /### Short note/)
+  assert.match(sections[1].content, /🖤/)
+})
+
+test("parseMarkdownSections — empty/whitespace content yields no sections", () => {
+  assert.deepEqual(parseMarkdownSections("", "note"), [])
+  assert.deepEqual(parseMarkdownSections("   \n\n  ", "note"), [])
+})
+
+test("parseMarkdownSections — content hash is stable and change-sensitive", () => {
+  const a = parseMarkdownSections(`## A\n${BODY_A}`, "note")[0]
+  const aAgain = parseMarkdownSections(`## A\n${BODY_A}`, "note")[0]
+  const aEdited = parseMarkdownSections(`## A\n${BODY_A2}`, "note")[0]
+  assert.equal(a.contentHash, aAgain.contentHash)
+  assert.notEqual(a.contentHash, aEdited.contentHash)
+})
+
+test("parseMarkdownSections — '# ' line inside a section is content, not the file title", () => {
+  const content = `## A\n# This is body text, not a file title — and well over eighty chars long.\n${BODY_A}\n## B\n${BODY_B}`
+  const sections = parseMarkdownSections(content, "note")
+  assert.deepEqual(
+    sections.map((s) => s.title),
+    ["A", "B"],
+  )
+  // The '# ' line must be preserved in section A, not swallowed as a title.
+  assert.match(sections[0].content, /# This is body text, not a file title/)
+})
+
+// ---------------------------------------------------------------------------
+// dedupeTitles
+// ---------------------------------------------------------------------------
+
+test("dedupeTitles — disambiguates repeated section titles", () => {
+  const parsed = parseMarkdownSections(`## Dup\n${BODY_A}\n## Dup\n${BODY_B}`, "note")
+  const deduped = dedupeTitles(parsed)
+  assert.deepEqual(
+    deduped.map((s) => s.title),
+    ["Dup", "Dup (2)"],
+  )
+})
+
+// ---------------------------------------------------------------------------
+// fileKey — workspace-relative, posix-normalized, portable
+// ---------------------------------------------------------------------------
+
+test("fileKey — relative to workspace, never absolute", () => {
+  assert.equal(fileKey("/ws", "/ws/memory/2026-05-09.md"), "memory/2026-05-09.md")
+  assert.equal(fileKey("/ws", "/ws/MEMORY.md"), "MEMORY.md")
+})
+
+test("fileKey — files outside the workspace stay deterministic", () => {
+  assert.equal(fileKey("/ws/sub", "/ws/other.md"), "../other.md")
+})
+
+// ---------------------------------------------------------------------------
+// loadManifest / saveManifest — self-healing + roundtrip
+// ---------------------------------------------------------------------------
+
+function tmpDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "hs-sync-"))
+}
+
+test("loadManifest — missing file returns empty manifest", () => {
+  const dir = tmpDir()
+  try {
+    assert.deepEqual(loadManifest(dir), { version: 1, files: {} })
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("loadManifest — legacy flat / garbage / wrong version self-heals to empty", () => {
+  const dir = tmpDir()
+  const p = path.join(dir, ".hyperspell-sync-hashes.json")
+  try {
+    fs.writeFileSync(p, '{"/abs/file.md::A":{"hash":"x","resourceId":"r"}}')
+    assert.deepEqual(loadManifest(dir), { version: 1, files: {} })
+
+    fs.writeFileSync(p, "not json at all {")
+    assert.deepEqual(loadManifest(dir), { version: 1, files: {} })
+
+    fs.writeFileSync(p, '{"version":99,"files":{}}')
+    assert.deepEqual(loadManifest(dir), { version: 1, files: {} })
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("saveManifest/loadManifest — roundtrip", () => {
+  const dir = tmpDir()
+  try {
+    const manifest = {
+      version: 1,
+      files: { "memory/n.md": { sections: { A: { hash: "h", resourceId: "r" } } } },
+    }
+    saveManifest(dir, manifest)
+    assert.deepEqual(loadManifest(dir), manifest)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// withSyncLock — process-wide serialization
+// ---------------------------------------------------------------------------
+
+test("withSyncLock — serializes overlapping operations (no interleave)", async () => {
+  const events: string[] = []
+  const task = (id: number) =>
+    withSyncLock(async () => {
+      events.push(`s${id}`)
+      await new Promise((r) => setTimeout(r, 5))
+      events.push(`e${id}`)
+    })
+  await Promise.all([task(1), task(2), task(3)])
+  assert.deepEqual(events, ["s1", "e1", "s2", "e2", "s3", "e3"])
+})
+
+test("withSyncLock — a rejecting op does not wedge the chain", async () => {
+  await assert.rejects(
+    withSyncLock(async () => {
+      throw new Error("nope")
+    }),
+    /nope/,
+  )
+  const events: string[] = []
+  await withSyncLock(async () => {
+    events.push("ran")
+  })
+  assert.deepEqual(events, ["ran"])
+})
+
+// ---------------------------------------------------------------------------
+// syncMarkdownFileSectionized — incremental, rename, orphan, failure
+// ---------------------------------------------------------------------------
+
+type AddOptions = { resourceId?: string; title?: string }
+
+function makeClient(opts?: { failAddOn?: (text: string) => boolean; deleteOk?: boolean }) {
+  const addCalls: Array<{ text: string; options: AddOptions }> = []
+  const deleteCalls: string[] = []
+  let counter = 0
+  const client = {
+    async addMemory(text: string, options?: AddOptions) {
+      addCalls.push({ text, options: options ?? {} })
+      if (opts?.failAddOn?.(text)) throw new Error("addMemory boom")
+      return { resourceId: options?.resourceId ?? `res-${++counter}` }
+    },
+    async deleteMemory(resourceId: string) {
+      deleteCalls.push(resourceId)
+      return { deleted: opts?.deleteOk ?? true }
+    },
+  }
+  return { client: client as unknown as HyperspellClient, addCalls, deleteCalls }
+}
+
+function workspace(): { dir: string; note: string; cleanup: () => void } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hs-sync-"))
+  fs.mkdirSync(path.join(dir, "memory"))
+  return {
+    dir,
+    note: path.join(dir, "memory", "note.md"),
+    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+  }
+}
+
+test("syncMarkdownFileSectionized — first sync uploads every section, manifest keyed relative", async () => {
+  const ws = workspace()
+  const { client, addCalls } = makeClient()
+  try {
+    fs.writeFileSync(ws.note, `## A\n${BODY_A}\n## B\n${BODY_B}`)
+    const r = await syncMarkdownFileSectionized(client, ws.note, ws.dir)
+
+    assert.equal(r.synced, 2)
+    assert.equal(r.skipped, 0)
+    assert.equal(r.removed, 0)
+    assert.equal(addCalls.length, 2)
+
+    const manifest = loadManifest(ws.dir)
+    assert.deepEqual(Object.keys(manifest.files), ["memory/note.md"])
+    assert.deepEqual(
+      Object.keys(manifest.files["memory/note.md"].sections).sort(),
+      ["A", "B"],
+    )
+  } finally {
+    ws.cleanup()
+  }
+})
+
+test("syncMarkdownFileSectionized — unchanged re-sync skips everything (no uploads)", async () => {
+  const ws = workspace()
+  const { client, addCalls } = makeClient()
+  try {
+    fs.writeFileSync(ws.note, `## A\n${BODY_A}\n## B\n${BODY_B}`)
+    await syncMarkdownFileSectionized(client, ws.note, ws.dir)
+    const afterFirst = addCalls.length
+
+    const r = await syncMarkdownFileSectionized(client, ws.note, ws.dir)
+    assert.equal(r.synced, 0)
+    assert.equal(r.skipped, 2)
+    assert.equal(addCalls.length, afterFirst) // no further uploads
+  } finally {
+    ws.cleanup()
+  }
+})
+
+test("syncMarkdownFileSectionized — edited section upserts under the same resourceId", async () => {
+  const ws = workspace()
+  const { client, addCalls } = makeClient()
+  try {
+    fs.writeFileSync(ws.note, `## A\n${BODY_A}\n## B\n${BODY_B}`)
+    await syncMarkdownFileSectionized(client, ws.note, ws.dir)
+    const base = addCalls.length
+
+    fs.writeFileSync(ws.note, `## A\n${BODY_A2}\n## B\n${BODY_B}`)
+    const r = await syncMarkdownFileSectionized(client, ws.note, ws.dir)
+
+    assert.equal(r.synced, 1)
+    assert.equal(r.skipped, 1)
+    const reupload = addCalls.slice(base)
+    assert.equal(reupload.length, 1)
+    assert.equal(reupload[0].options.resourceId, "res-1") // reused, not new
+    assert.match(reupload[0].options.title ?? "", /A$/)
+
+    // Third sync with no change proves the new hash persisted.
+    const r3 = await syncMarkdownFileSectionized(client, ws.note, ws.dir)
+    assert.equal(r3.synced, 0)
+    assert.equal(r3.skipped, 2)
+  } finally {
+    ws.cleanup()
+  }
+})
+
+test("syncMarkdownFileSectionized — renamed heading reuses resource, no duplicate, no orphan", async () => {
+  const ws = workspace()
+  const { client, addCalls, deleteCalls } = makeClient()
+  try {
+    fs.writeFileSync(ws.note, `## A\n${BODY_A}\n## B\n${BODY_B}`)
+    await syncMarkdownFileSectionized(client, ws.note, ws.dir)
+    const base = addCalls.length
+
+    // Rename "A" -> "C", body byte-identical.
+    fs.writeFileSync(ws.note, `## C\n${BODY_A}\n## B\n${BODY_B}`)
+    const r = await syncMarkdownFileSectionized(client, ws.note, ws.dir)
+
+    assert.equal(r.synced, 1) // the rename, updated in place
+    assert.equal(r.skipped, 1) // B untouched
+    assert.equal(r.removed, 0)
+    assert.equal(deleteCalls.length, 0) // not treated as a deletion
+
+    const reupload = addCalls.slice(base)
+    assert.equal(reupload.length, 1)
+    assert.equal(reupload[0].options.resourceId, "res-1") // reclaimed
+    assert.match(reupload[0].options.title ?? "", /C$/)
+
+    const sections = loadManifest(ws.dir).files["memory/note.md"].sections
+    assert.deepEqual(Object.keys(sections).sort(), ["B", "C"]) // "A" gone
+    assert.equal(sections.C.resourceId, "res-1")
+  } finally {
+    ws.cleanup()
+  }
+})
+
+test("syncMarkdownFileSectionized — deleted section is removed remotely and pruned", async () => {
+  const ws = workspace()
+  const { client, deleteCalls } = makeClient()
+  try {
+    fs.writeFileSync(ws.note, `## A\n${BODY_A}\n## B\n${BODY_B}`)
+    await syncMarkdownFileSectionized(client, ws.note, ws.dir)
+
+    fs.writeFileSync(ws.note, `## A\n${BODY_A}`) // B deleted
+    const r = await syncMarkdownFileSectionized(client, ws.note, ws.dir)
+
+    assert.equal(r.removed, 1)
+    assert.equal(r.synced, 0)
+    assert.equal(r.skipped, 1)
+    assert.deepEqual(deleteCalls, ["res-2"])
+
+    const sections = loadManifest(ws.dir).files["memory/note.md"].sections
+    assert.deepEqual(Object.keys(sections), ["A"])
+  } finally {
+    ws.cleanup()
+  }
+})
+
+test("syncMarkdownFileSectionized — failed orphan delete counts as failed and retries", async () => {
+  const ws = workspace()
+  try {
+    const ok = makeClient()
+    fs.writeFileSync(ws.note, `## A\n${BODY_A}\n## B\n${BODY_B}`)
+    await syncMarkdownFileSectionized(ok.client, ws.note, ws.dir)
+
+    const failing = makeClient({ deleteOk: false })
+    fs.writeFileSync(ws.note, `## A\n${BODY_A}`) // B deleted, but delete will fail
+    const r = await syncMarkdownFileSectionized(failing.client, ws.note, ws.dir)
+
+    assert.equal(r.removed, 0)
+    assert.equal(r.failed, 1) // delete failure is now counted
+    assert.equal(r.errors.length, 1)
+    assert.match(r.errors[0], /delete "B": failed/)
+
+    // B's record is retained so the delete is retried next run.
+    const sections = loadManifest(ws.dir).files["memory/note.md"].sections
+    assert.deepEqual(Object.keys(sections).sort(), ["A", "B"])
+    assert.equal(sections.B.resourceId, "res-2")
+
+    const retry = makeClient() // delete succeeds this time
+    const r2 = await syncMarkdownFileSectionized(retry.client, ws.note, ws.dir)
+    assert.equal(r2.removed, 1)
+    assert.deepEqual(retry.deleteCalls, ["res-2"])
+  } finally {
+    ws.cleanup()
+  }
+})
+
+test("syncMarkdownFileSectionized — duplicate ## titles become distinct memories", async () => {
+  const ws = workspace()
+  const { client, addCalls } = makeClient()
+  try {
+    fs.writeFileSync(ws.note, `## Dup\n${BODY_A}\n## Dup\n${BODY_B}`)
+    const r = await syncMarkdownFileSectionized(client, ws.note, ws.dir)
+
+    assert.equal(r.synced, 2)
+    const titles = addCalls.map((c) => c.options.title)
+    assert.match(titles[0] ?? "", /Dup$/)
+    assert.match(titles[1] ?? "", /Dup \(2\)$/)
+
+    const sections = loadManifest(ws.dir).files["memory/note.md"].sections
+    assert.deepEqual(Object.keys(sections).sort(), ["Dup", "Dup (2)"])
+  } finally {
+    ws.cleanup()
+  }
+})
+
+test("syncMarkdownFileSectionized — failed upload preserves resourceId (no duplicate next run)", async () => {
+  const ws = workspace()
+  try {
+    const first = makeClient()
+    fs.writeFileSync(ws.note, `## A\n${BODY_A}\n## B\n${BODY_B}`)
+    await syncMarkdownFileSectionized(first.client, ws.note, ws.dir)
+
+    // Edit A; this client throws on the new A content.
+    const failing = makeClient({ failAddOn: (t) => t === BODY_A2 })
+    fs.writeFileSync(ws.note, `## A\n${BODY_A2}\n## B\n${BODY_B}`)
+    const r = await syncMarkdownFileSectionized(failing.client, ws.note, ws.dir)
+
+    assert.equal(r.failed, 1)
+    assert.equal(r.synced, 0)
+    assert.equal(r.skipped, 1)
+    assert.equal(r.errors.length, 1)
+
+    // Prior record (resourceId) survived the transient failure.
+    const sections = loadManifest(ws.dir).files["memory/note.md"].sections
+    assert.equal(sections.A.resourceId, "res-1")
+
+    // Recovery run reuses res-1 instead of minting a duplicate.
+    const recover = makeClient()
+    const r2 = await syncMarkdownFileSectionized(recover.client, ws.note, ws.dir)
+    assert.equal(r2.synced, 1)
+    assert.equal(recover.addCalls[0].options.resourceId, "res-1")
+  } finally {
+    ws.cleanup()
+  }
+})
