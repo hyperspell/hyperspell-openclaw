@@ -10,6 +10,7 @@ import {
   loadManifest,
   parseMarkdownSections,
   saveManifest,
+  syncAllFilesSectionized,
   syncMarkdownFileSectionized,
   withSyncLock,
 } from "./markdown.ts"
@@ -132,18 +133,36 @@ test("loadManifest — missing file returns empty manifest", () => {
   }
 })
 
-test("loadManifest — legacy flat / garbage / wrong version self-heals to empty", () => {
+test("loadManifest — unusable shapes self-heal to empty", () => {
   const dir = tmpDir()
   const p = path.join(dir, ".hyperspell-sync-hashes.json")
   try {
+    // Legacy flat shape: no `files` key -> unusable -> empty.
     fs.writeFileSync(p, '{"/abs/file.md::A":{"hash":"x","resourceId":"r"}}')
     assert.deepEqual(loadManifest(dir), { version: 1, files: {} })
 
+    // Corrupt JSON -> empty.
     fs.writeFileSync(p, "not json at all {")
     assert.deepEqual(loadManifest(dir), { version: 1, files: {} })
 
-    fs.writeFileSync(p, '{"version":99,"files":{}}')
+    // `files` present but null -> unusable -> empty.
+    fs.writeFileSync(p, '{"version":1,"files":null}')
     assert.deepEqual(loadManifest(dir), { version: 1, files: {} })
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("loadManifest — version mismatch with valid files is forward-migrated, not discarded", () => {
+  const dir = tmpDir()
+  const p = path.join(dir, ".hyperspell-sync-hashes.json")
+  try {
+    // A future/older version but a structurally valid files map must be
+    // preserved — discarding it would force a full re-ingest, the exact
+    // load this guard exists to prevent.
+    const files = { "memory/n.md": { sections: { A: { hash: "h", resourceId: "r" } } } }
+    fs.writeFileSync(p, JSON.stringify({ version: 99, files }))
+    assert.deepEqual(loadManifest(dir), { version: 1, files })
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
@@ -421,6 +440,55 @@ test("syncMarkdownFileSectionized — failed upload preserves resourceId (no dup
     const r2 = await syncMarkdownFileSectionized(recover.client, ws.note, ws.dir)
     assert.equal(r2.synced, 1)
     assert.equal(recover.addCalls[0].options.resourceId, "res-1")
+  } finally {
+    ws.cleanup()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// syncAllFilesSectionized — age pre-filter
+// ---------------------------------------------------------------------------
+
+test("syncAllFilesSectionized — old + already-manifested file is skipped (aged out)", async () => {
+  const ws = workspace()
+  try {
+    fs.writeFileSync(ws.note, `## A\n${BODY_A}\n## B\n${BODY_B}`)
+
+    // First pass with no cutoff: ingests and records in the manifest.
+    const first = makeClient()
+    const r1 = await syncAllFilesSectionized(first.client, ws.dir, { maxAgeDays: 0 })
+    assert.equal(r1.synced, 2)
+    assert.equal(r1.agedOut, 0)
+
+    // Backdate the file well past the cutoff.
+    const old = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000)
+    fs.utimesSync(ws.note, old, old)
+
+    // Second pass with a 30d cutoff: file is known + stale -> not even read.
+    const second = makeClient()
+    const r2 = await syncAllFilesSectionized(second.client, ws.dir, { maxAgeDays: 30 })
+    assert.equal(r2.agedOut, 1)
+    assert.equal(r2.synced, 0)
+    assert.equal(r2.skipped, 0)
+    assert.equal(second.addCalls.length, 0)
+  } finally {
+    ws.cleanup()
+  }
+})
+
+test("syncAllFilesSectionized — old but NOT-yet-manifested file still syncs once", async () => {
+  const ws = workspace()
+  try {
+    fs.writeFileSync(ws.note, `## A\n${BODY_A}\n## B\n${BODY_B}`)
+    const old = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000)
+    fs.utimesSync(ws.note, old, old)
+
+    // Cold manifest: age cutoff must not strand never-ingested content.
+    const { client, addCalls } = makeClient()
+    const r = await syncAllFilesSectionized(client, ws.dir, { maxAgeDays: 30 })
+    assert.equal(r.agedOut, 0)
+    assert.equal(r.synced, 2)
+    assert.equal(addCalls.length, 2)
   } finally {
     ws.cleanup()
   }

@@ -241,10 +241,14 @@ export function loadManifest(workspaceDir: string): SyncManifest {
   try {
     if (fs.existsSync(p)) {
       const parsed = JSON.parse(fs.readFileSync(p, "utf-8")) as Partial<SyncManifest>
-      // Self-healing: an unrecognized/legacy shape is discarded. This feature
-      // has never shipped a released on-disk format, so nothing to migrate —
-      // a mismatch just triggers one re-sync, which is idempotent.
-      if (parsed && parsed.version === MANIFEST_VERSION && parsed.files) {
+      // Forward-migrate rather than discard. Throwing the manifest away on a
+      // version bump means every section re-uploads on the next run — the
+      // exact full-re-ingest load this guard exists to prevent. As long as the
+      // `files` map is structurally a record we keep it: the per-section hash
+      // check still gates every upload, so a stale-but-readable manifest is
+      // strictly better than an empty one. Only a missing/corrupt `files`
+      // (truly unusable) falls back to empty.
+      if (parsed && typeof parsed.files === "object" && parsed.files !== null) {
         return { version: MANIFEST_VERSION, files: parsed.files }
       }
     }
@@ -256,10 +260,21 @@ export function loadManifest(workspaceDir: string): SyncManifest {
 
 export function saveManifest(workspaceDir: string, manifest: SyncManifest): void {
   const p = manifestPath(workspaceDir)
+  // Atomic write: a process killed mid-write (deploy/restart) would otherwise
+  // leave a truncated JSON file, which loadManifest can only treat as corrupt
+  // -> empty -> full re-ingest. Write to a temp sibling, then rename (atomic
+  // on the same filesystem) so readers only ever see a complete manifest.
+  const tmp = `${p}.${process.pid}.tmp`
   try {
-    fs.writeFileSync(p, JSON.stringify(manifest, null, 2))
+    fs.writeFileSync(tmp, JSON.stringify(manifest, null, 2))
+    fs.renameSync(tmp, p)
   } catch (err) {
     log.error("Failed to write sync manifest", err)
+    try {
+      if (fs.existsSync(tmp)) fs.unlinkSync(tmp)
+    } catch {
+      /* best-effort cleanup */
+    }
   }
 }
 
@@ -610,22 +625,56 @@ export async function syncAllMemoryFiles(
 export async function syncAllFilesSectionized(
   client: HyperspellClient,
   workspaceDir: string,
-  options?: { userId?: string; watchPaths?: string[] },
+  options?: { userId?: string; watchPaths?: string[]; maxAgeDays?: number },
 ): Promise<{
   synced: number
   skipped: number
   failed: number
   removed: number
+  agedOut: number
   errors: string[]
 }> {
   const files = getSyncableFiles(workspaceDir, options?.watchPaths)
+
+  // Age pre-filter: a file untouched for longer than maxAgeDays that is
+  // already recorded in the manifest has been ingested at least once and is
+  // not changing — re-parsing/hashing/diffing it every startup is pure churn.
+  // Files NOT yet in the manifest are always processed regardless of age, so
+  // a genuinely cold start (or a never-synced old file) still ingests once.
+  // The live file_changed handler is unaffected: an edit bumps mtime, so
+  // edited-but-old files re-enter the window naturally.
+  const maxAgeDays = options?.maxAgeDays ?? 0
+  let candidates = files
+  let agedOut = 0
+  if (maxAgeDays > 0) {
+    const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000
+    const manifest = loadManifest(workspaceDir)
+    candidates = files.filter((filePath) => {
+      const key = fileKey(workspaceDir, filePath)
+      const known = manifest.files[key] !== undefined
+      if (!known) return true
+      try {
+        if (fs.statSync(filePath).mtimeMs >= cutoff) return true
+      } catch {
+        return true // stat failed — be safe, process it
+      }
+      agedOut++
+      return false
+    })
+    if (agedOut > 0) {
+      log.info(
+        `Skipping ${agedOut} unchanged file(s) older than ${maxAgeDays}d (already synced)`,
+      )
+    }
+  }
+
   let totalSynced = 0
   let totalSkipped = 0
   let totalFailed = 0
   let totalRemoved = 0
   const allErrors: string[] = []
 
-  for (const filePath of files) {
+  for (const filePath of candidates) {
     const result = await syncMarkdownFileSectionized(client, filePath, workspaceDir, {
       userId: options?.userId,
     })
@@ -641,6 +690,7 @@ export async function syncAllFilesSectionized(
     skipped: totalSkipped,
     failed: totalFailed,
     removed: totalRemoved,
+    agedOut,
     errors: allErrors,
   }
 }

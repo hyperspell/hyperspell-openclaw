@@ -152,13 +152,22 @@ export default {
 			start: async () => {
 				api.logger.info("hyperspell: connected");
 
-				// Sync memories on startup if enabled
+				// Sync memories on startup if enabled.
+				//
+				// Deliberately NOT awaited: the bulk sync is sequential and
+				// network-bound (one request per changed section), so awaiting
+				// it here stalls the agent's startup until the entire corpus
+				// has been processed. Run it in the background and let the
+				// agent come up immediately; failures are logged, not fatal.
 				if (cfg.syncMemories) {
 					const workspaceDir = getWorkspaceDir();
-					await syncMemoriesOnStartup(client, workspaceDir, {
+					void syncMemoriesOnStartup(client, workspaceDir, {
 						userId: cfg.multiUser?.sharedUserId,
 						sectionize: cfg.syncMemoriesConfig.sectionize,
 						watchPaths: cfg.syncMemoriesConfig.watchPaths,
+						maxAgeDays: cfg.syncMemoriesConfig.maxAgeDays,
+					}).catch((err) => {
+						api.logger.error("hyperspell: background memory sync failed", err);
 					});
 				}
 			},
