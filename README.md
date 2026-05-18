@@ -151,6 +151,22 @@ When `syncMemories: true`, the plugin syncs markdown files from your agent's wor
 - The returned `resource_id` is stored in the file's YAML frontmatter as `hyperspell_id`
 - On subsequent syncs, files with an existing `hyperspell_id` are updated rather than duplicated
 - Files are synced automatically on startup and when they change
+- Startup sync runs in the **background** — the agent boots immediately and sync proceeds without blocking it
+- A per-section content hash is tracked in `<workspace>/.hyperspell-sync-hashes.json`, so unchanged sections are skipped on subsequent syncs (no re-ingestion)
+
+**Tuning sync (object form):**
+
+```jsonc
+"syncMemories": {
+  "enabled": true,
+  "sectionize": true,     // split files on ## headings into separate memories
+  "watchPaths": [],        // extra files/dirs to sync beyond memory/
+  "debounceMs": 2000,      // wait for writes to settle before syncing
+  "maxAgeDays": 30          // startup skips already-synced files older than this
+}
+```
+
+`maxAgeDays` bounds steady-state load: on startup, files whose mtime is older than the cutoff **and** already recorded in the sync manifest are skipped without re-reading. Files not yet in the manifest are always synced once regardless of age, and editing an old file bumps its mtime back into the window. Set to `0` to disable the cutoff.
 
 **Example frontmatter after sync:**
 

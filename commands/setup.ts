@@ -344,6 +344,7 @@ async function runSetup(): Promise<void> {
           sectionize: true,
           watchPaths: [],
           debounceMs: 2000,
+          maxAgeDays: 30,
         },
         sources: [],
         maxResults: 10,

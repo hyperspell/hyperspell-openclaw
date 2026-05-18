@@ -94,6 +94,13 @@ export type SyncMemoriesConfig = {
 	watchPaths: string[];
 	/** Debounce file changes in ms to avoid syncing mid-write (default: 2000) */
 	debounceMs: number;
+	/**
+	 * Startup bulk sync skips files whose mtime is older than this many days
+	 * AND that are already recorded in the sync manifest (i.e. ingested at
+	 * least once). Bounds steady-state re-ingest load on large/old corpora.
+	 * 0 disables the cutoff (always consider every file). Default: 30.
+	 */
+	maxAgeDays: number;
 };
 
 export type HyperspellConfig = {
@@ -416,7 +423,7 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 	if (typeof smRaw === "object" && smRaw !== null && !Array.isArray(smRaw)) {
 		assertAllowedKeys(
 			smObj,
-			["enabled", "sectionize", "watchPaths", "debounceMs"],
+			["enabled", "sectionize", "watchPaths", "debounceMs", "maxAgeDays"],
 			"hyperspell.syncMemories",
 		);
 	}
@@ -453,6 +460,7 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 				? (smObj.watchPaths as string[])
 				: [],
 			debounceMs: (smObj.debounceMs as number) ?? 2000,
+			maxAgeDays: (smObj.maxAgeDays as number) ?? 30,
 		},
 		sources: parseSources(cfg.sources as string | string[] | undefined),
 		maxResults: (cfg.maxResults as number) ?? 10,

@@ -235,6 +235,7 @@ test("parseConfig — syncMemories boolean true keeps legacy behavior, sectioniz
   assert.equal(cfg.syncMemoriesConfig.sectionize, true)
   assert.deepEqual(cfg.syncMemoriesConfig.watchPaths, [])
   assert.equal(cfg.syncMemoriesConfig.debounceMs, 2000)
+  assert.equal(cfg.syncMemoriesConfig.maxAgeDays, 30)
 })
 
 test("parseConfig — syncMemories false disables sync", () => {
@@ -250,12 +251,14 @@ test("parseConfig — syncMemories object form parses and enables by default", (
       sectionize: false,
       watchPaths: ["MEMORY.md", "notes/"],
       debounceMs: 500,
+      maxAgeDays: 7,
     },
   })
   assert.equal(cfg.syncMemories, true) // object without explicit enabled => on
   assert.equal(cfg.syncMemoriesConfig.sectionize, false)
   assert.deepEqual(cfg.syncMemoriesConfig.watchPaths, ["MEMORY.md", "notes/"])
   assert.equal(cfg.syncMemoriesConfig.debounceMs, 500)
+  assert.equal(cfg.syncMemoriesConfig.maxAgeDays, 7)
 })
 
 test("parseConfig — syncMemories object with a typo'd key throws", () => {

@@ -21,6 +21,7 @@ function cfg(overrides: Partial<HyperspellConfig["multiUser"]> = {}): Hyperspell
       sectionize: true,
       watchPaths: [],
       debounceMs: 2000,
+      maxAgeDays: 30,
     },
     sources: [],
     maxResults: 5,

@@ -71,6 +71,7 @@ function makeCfg(overrides?: Partial<HyperspellConfig>): HyperspellConfig {
 			sectionize: true,
 			watchPaths: [],
 			debounceMs: 2000,
+			maxAgeDays: 30,
 		},
 		sources: [],
 		maxResults: 10,

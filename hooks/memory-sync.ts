@@ -130,6 +130,7 @@ export async function syncMemoriesOnStartup(
     userId?: string
     sectionize?: boolean
     watchPaths?: string[]
+    maxAgeDays?: number
   },
 ): Promise<void> {
   log.info("Syncing existing memory files...")
@@ -138,10 +139,11 @@ export async function syncMemoriesOnStartup(
     const result = await syncAllFilesSectionized(client, workspaceDir, {
       userId: options.userId,
       watchPaths: options.watchPaths,
+      maxAgeDays: options.maxAgeDays,
     })
 
     log.info(
-      `Section sync complete: ${result.synced} synced, ${result.skipped} unchanged, ${result.removed} removed, ${result.failed} failed`,
+      `Section sync complete: ${result.synced} synced, ${result.skipped} unchanged, ${result.agedOut} aged-out, ${result.removed} removed, ${result.failed} failed`,
     )
     if (result.failed > 0) {
       for (const error of result.errors) {
