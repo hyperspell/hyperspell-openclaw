@@ -7,6 +7,8 @@ import type { HyperspellClient } from "../client.ts"
 import {
   dedupeTitles,
   fileKey,
+  getMemoryFiles,
+  getSyncableFiles,
   loadManifest,
   parseMarkdownSections,
   saveManifest,
@@ -123,6 +125,57 @@ test("fileKey — files outside the workspace stay deterministic", () => {
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "hs-sync-"))
 }
+
+// ---------------------------------------------------------------------------
+// getMemoryFiles / getSyncableFiles — ignore dot-dirs + configured paths
+// ---------------------------------------------------------------------------
+
+function seedMemoryTree(ws: string): void {
+  const mem = path.join(ws, "memory")
+  fs.mkdirSync(path.join(mem, ".dreams"), { recursive: true })
+  fs.mkdirSync(path.join(mem, "dreaming", "rem"), { recursive: true })
+  fs.mkdirSync(path.join(mem, "topics"), { recursive: true })
+  fs.writeFileSync(path.join(mem, "2026-06-19.md"), "# Real memory\n")
+  fs.writeFileSync(path.join(mem, "topics", "work.md"), "# Nested real memory\n")
+  fs.writeFileSync(path.join(mem, ".dreams", "2026-06-14.md"), "# Dream\n")
+  fs.writeFileSync(path.join(mem, "dreaming", "rem", "2026-06-14.md"), "# REM\n")
+}
+
+test("getMemoryFiles — skips .dreams (dot-dir) and dreaming/ by default", () => {
+  const ws = tmpDir()
+  seedMemoryTree(ws)
+  const got = getMemoryFiles(ws).map((f) => fileKey(ws, f)).sort()
+  assert.deepEqual(got, ["memory/2026-06-19.md", "memory/topics/work.md"])
+})
+
+test("getMemoryFiles — dot-dirs stay excluded even when ignorePaths is emptied", () => {
+  const ws = tmpDir()
+  seedMemoryTree(ws)
+  // Empty list re-enables dreaming/, but dot-directories are ALWAYS skipped.
+  const got = getMemoryFiles(ws, []).map((f) => fileKey(ws, f)).sort()
+  assert.deepEqual(got, [
+    "memory/2026-06-19.md",
+    "memory/dreaming/rem/2026-06-14.md",
+    "memory/topics/work.md",
+  ])
+})
+
+test("getSyncableFiles — applies the same ignore to walked watchPaths", () => {
+  const ws = tmpDir()
+  seedMemoryTree(ws)
+  const extra = path.join(ws, "extra")
+  fs.mkdirSync(path.join(extra, "dreaming"), { recursive: true })
+  fs.mkdirSync(path.join(extra, ".hidden"), { recursive: true })
+  fs.writeFileSync(path.join(extra, "keep.md"), "# Keep\n")
+  fs.writeFileSync(path.join(extra, "dreaming", "drop.md"), "# Drop\n")
+  fs.writeFileSync(path.join(extra, ".hidden", "drop.md"), "# Drop\n")
+  const got = getSyncableFiles(ws, [extra]).map((f) => fileKey(ws, f)).sort()
+  assert.deepEqual(got, [
+    "extra/keep.md",
+    "memory/2026-06-19.md",
+    "memory/topics/work.md",
+  ])
+})
 
 test("loadManifest — missing file returns empty manifest", () => {
   const dir = tmpDir()

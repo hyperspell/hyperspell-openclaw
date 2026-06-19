@@ -299,18 +299,43 @@ export function withSyncLock<T>(fn: () => Promise<T>): Promise<T> {
 // Public API — file-level sync (original, kept for backward compat)
 // ---------------------------------------------------------------------------
 
-export function getMemoryFiles(workspaceDir: string): string[] {
+/**
+ * Directory names skipped by default when walking memory/. The dreaming engine
+ * writes first-person dream journals under memory/dreaming/ that are not user
+ * memories; ingesting them pollutes retrieval (they score highly on emotional/
+ * associative queries and crowd out real memories). Configurable via
+ * `syncMemories.ignorePaths`.
+ */
+export const DEFAULT_IGNORE_DIRS = ["dreaming"]
+
+/**
+ * Skip a directory entry during the walk when it is a dot-directory/file
+ * (e.g. `.dreams`, engine scaffolding) or a directory named in `ignore`.
+ * Dot-entries are always skipped regardless of the configured list.
+ */
+function isIgnoredEntry(entry: fs.Dirent, ignore: Set<string>): boolean {
+  if (entry.name.startsWith(".")) return true
+  if (entry.isDirectory() && ignore.has(entry.name)) return true
+  return false
+}
+
+export function getMemoryFiles(
+  workspaceDir: string,
+  ignorePaths?: string[],
+): string[] {
   const memoryDir = path.join(workspaceDir, "memory")
 
   if (!fs.existsSync(memoryDir)) {
     return []
   }
 
+  const ignore = new Set(ignorePaths ?? DEFAULT_IGNORE_DIRS)
   const results: string[] = []
 
   function walk(dir: string): void {
     try {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (isIgnoredEntry(entry, ignore)) continue
         const fullPath = path.join(dir, entry.name)
         if (entry.isDirectory()) {
           walk(fullPath)
@@ -334,8 +359,10 @@ export function getMemoryFiles(workspaceDir: string): string[] {
 export function getSyncableFiles(
   workspaceDir: string,
   watchPaths?: string[],
+  ignorePaths?: string[],
 ): string[] {
-  const files = getMemoryFiles(workspaceDir)
+  const ignore = new Set(ignorePaths ?? DEFAULT_IGNORE_DIRS)
+  const files = getMemoryFiles(workspaceDir, ignorePaths)
 
   if (watchPaths) {
     for (const wp of watchPaths) {
@@ -353,6 +380,7 @@ export function getSyncableFiles(
         const walk = (dir: string) => {
           try {
             for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+              if (isIgnoredEntry(entry, ignore)) continue
               const fullPath = path.join(dir, entry.name)
               if (entry.isDirectory()) {
                 walk(fullPath)
@@ -625,7 +653,12 @@ export async function syncAllMemoryFiles(
 export async function syncAllFilesSectionized(
   client: HyperspellClient,
   workspaceDir: string,
-  options?: { userId?: string; watchPaths?: string[]; maxAgeDays?: number },
+  options?: {
+    userId?: string
+    watchPaths?: string[]
+    maxAgeDays?: number
+    ignorePaths?: string[]
+  },
 ): Promise<{
   synced: number
   skipped: number
@@ -634,7 +667,11 @@ export async function syncAllFilesSectionized(
   agedOut: number
   errors: string[]
 }> {
-  const files = getSyncableFiles(workspaceDir, options?.watchPaths)
+  const files = getSyncableFiles(
+    workspaceDir,
+    options?.watchPaths,
+    options?.ignorePaths,
+  )
 
   // Age pre-filter: a file untouched for longer than maxAgeDays that is
   // already recorded in the manifest has been ingested at least once and is

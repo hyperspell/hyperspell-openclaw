@@ -101,6 +101,15 @@ export type SyncMemoriesConfig = {
 	 * 0 disables the cutoff (always consider every file). Default: 30.
 	 */
 	maxAgeDays: number;
+	/**
+	 * Directory names (not paths) skipped when walking memory/ for syncable
+	 * files. Dot-directories (e.g. `.dreams`) are ALWAYS skipped regardless of
+	 * this list. Default: `["dreaming"]` — the dreaming engine writes
+	 * first-person dream journals under memory/dreaming/ that would otherwise
+	 * be ingested as user memories and pollute retrieval. Set `[]` to sync
+	 * everything except dot-directories.
+	 */
+	ignorePaths: string[];
 };
 
 export type HyperspellConfig = {
@@ -423,7 +432,14 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 	if (typeof smRaw === "object" && smRaw !== null && !Array.isArray(smRaw)) {
 		assertAllowedKeys(
 			smObj,
-			["enabled", "sectionize", "watchPaths", "debounceMs", "maxAgeDays"],
+			[
+				"enabled",
+				"sectionize",
+				"watchPaths",
+				"debounceMs",
+				"maxAgeDays",
+				"ignorePaths",
+			],
 			"hyperspell.syncMemories",
 		);
 	}
@@ -461,6 +477,9 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 				: [],
 			debounceMs: (smObj.debounceMs as number) ?? 2000,
 			maxAgeDays: (smObj.maxAgeDays as number) ?? 30,
+			ignorePaths: Array.isArray(smObj.ignorePaths)
+				? (smObj.ignorePaths as string[])
+				: ["dreaming"],
 		},
 		sources: parseSources(cfg.sources as string | string[] | undefined),
 		maxResults: (cfg.maxResults as number) ?? 10,

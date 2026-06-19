@@ -22,6 +22,7 @@ function cfg(overrides: Partial<HyperspellConfig["multiUser"]> = {}): Hyperspell
       watchPaths: [],
       debounceMs: 2000,
       maxAgeDays: 30,
+      ignorePaths: ["dreaming"],
     },
     sources: [],
     maxResults: 5,
