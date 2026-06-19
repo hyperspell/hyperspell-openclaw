@@ -27,11 +27,25 @@ export function buildFileSyncHandler(client: HyperspellClient, cfg: HyperspellCo
   const sectionize = cfg.syncMemoriesConfig.sectionize
   const watchPaths = cfg.syncMemoriesConfig.watchPaths
   const debounceMs = cfg.syncMemoriesConfig.debounceMs
+  const ignoreDirs = new Set(cfg.syncMemoriesConfig.ignorePaths)
 
   // Resolve additional watch paths to absolute paths for matching
   const resolvedWatchPaths = (watchPaths ?? []).map((wp) =>
     wp.startsWith("/") ? wp : path.join(workspaceDir, wp),
   )
+
+  /**
+   * Mirror the bulk walk's exclusions on the live path: a file under a
+   * dot-directory (e.g. .dreams) or an ignored directory (e.g. dreaming) must
+   * not live-sync either, or an edit would re-ingest exactly what the walk
+   * skips.
+   */
+  function isIgnoredPath(filePath: string): boolean {
+    const rel = path.relative(memoryDir, filePath)
+    if (rel.startsWith("..") || path.isAbsolute(rel)) return false
+    const segments = rel.split(path.sep).slice(0, -1) // directory segments only
+    return segments.some((seg) => seg.startsWith(".") || ignoreDirs.has(seg))
+  }
 
   // Debounce map: filePath -> timeout handle
   const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -41,6 +55,7 @@ export function buildFileSyncHandler(client: HyperspellClient, cfg: HyperspellCo
    */
   function isSyncable(filePath: string): boolean {
     if (!filePath.endsWith(".md")) return false
+    if (isIgnoredPath(filePath)) return false
 
     // Always sync memory/ files
     if (filePath.startsWith(memoryDir + path.sep)) return true
@@ -131,6 +146,7 @@ export async function syncMemoriesOnStartup(
     sectionize?: boolean
     watchPaths?: string[]
     maxAgeDays?: number
+    ignorePaths?: string[]
   },
 ): Promise<void> {
   log.info("Syncing existing memory files...")
@@ -140,6 +156,7 @@ export async function syncMemoriesOnStartup(
       userId: options.userId,
       watchPaths: options.watchPaths,
       maxAgeDays: options.maxAgeDays,
+      ignorePaths: options.ignorePaths,
     })
 
     log.info(

@@ -1,6 +1,7 @@
 import { Type } from "@sinclair/typebox"
 import type { HyperspellClient } from "../client.ts"
 import type { CanReadScope, HyperspellConfig } from "../config.ts"
+import { mergeWithExclude } from "../lib/filters.ts"
 import { buildScopeFilter, getCanReadScopes, resolveUser } from "../lib/sender.ts"
 import { log } from "../logger.ts"
 
@@ -66,6 +67,10 @@ export function createSearchToolFactory(
           : canRead
         filter = buildScopeFilter(allowed, resolved?.userId ?? "")
       }
+
+      // Keep session-end trace memories out of agent-facing search, matching
+      // the auto-context hook so both retrieval paths filter identically.
+      filter = mergeWithExclude(filter)
 
       log.debug(
         `search tool: query="${params.query}" limit=${limit} after=${params.after ?? "none"} before=${params.before ?? "none"} userId=${userId} scope=${params.scope ?? "any"}`,

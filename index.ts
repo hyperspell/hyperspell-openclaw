@@ -166,6 +166,7 @@ export default {
 						sectionize: cfg.syncMemoriesConfig.sectionize,
 						watchPaths: cfg.syncMemoriesConfig.watchPaths,
 						maxAgeDays: cfg.syncMemoriesConfig.maxAgeDays,
+						ignorePaths: cfg.syncMemoriesConfig.ignorePaths,
 					}).catch((err) => {
 						api.logger.error("hyperspell: background memory sync failed", err);
 					});

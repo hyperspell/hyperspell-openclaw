@@ -345,6 +345,7 @@ async function runSetup(): Promise<void> {
           watchPaths: [],
           debounceMs: 2000,
           maxAgeDays: 30,
+          ignorePaths: ["dreaming"],
         },
         sources: [],
         maxResults: 10,

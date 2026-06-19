@@ -72,6 +72,7 @@ function makeCfg(overrides?: Partial<HyperspellConfig>): HyperspellConfig {
 			watchPaths: [],
 			debounceMs: 2000,
 			maxAgeDays: 30,
+			ignorePaths: ["dreaming"],
 		},
 		sources: [],
 		maxResults: 10,
