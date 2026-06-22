@@ -474,6 +474,67 @@ export class HyperspellClient {
 		return { resourceId: result.resource_id, status: result.status };
 	}
 
+	/**
+	 * POST /messages — the real-time hot buffer. Rows are full-text searchable
+	 * the instant they're inserted (a Postgres GENERATED tsvector, no embedding
+	 * wait) and auto-consolidated server-side into vault Resources within ~60s.
+	 * The existing search path already unions this buffer with vector results,
+	 * so once we write here our turns become searchable immediately.
+	 *
+	 * Auth: api key + `X-As-User` (REQUIRED — the endpoint 422s without it).
+	 * Upsert key is (app_id, user_id, resource_id, message_id), so re-posting an
+	 * identical message_id updates `content` only — safe to retry, no duplicates.
+	 *
+	 * Server-side limits (return 422): per-message content 1..512,000 chars;
+	 * batch 1..1,000 messages. Callers should pre-enforce these.
+	 */
+	async sendMessages(
+		messages: Array<{ resourceId: string; messageId: string; content: string }>,
+		options?: { userId?: string; source?: string },
+	): Promise<{ count: number }> {
+		const userId = options?.userId ?? this.config.userId;
+		if (!userId) {
+			// X-As-User is mandatory for /messages. Fail loud rather than firing a
+			// request we know will 422.
+			throw new Error(
+				"sendMessages requires a userId (X-As-User) — none configured",
+			);
+		}
+		if (messages.length === 0) return { count: 0 };
+
+		const source = (options?.source ?? "vault").toLowerCase();
+		const body = {
+			source,
+			messages: messages.map((m) => ({
+				resource_id: m.resourceId,
+				message_id: m.messageId,
+				content: m.content,
+			})),
+		};
+
+		log.debugRequest("messages.create", {
+			source,
+			count: messages.length,
+			userId,
+		});
+
+		const res = await fetch(`${API_BASE_URL}/messages`, {
+			method: "POST",
+			headers: { ...this.rawHeaders(), "X-As-User": userId },
+			body: JSON.stringify(body),
+		});
+
+		if (!res.ok) {
+			const text = await res.text().catch(() => "");
+			throw new Error(`POST /messages failed (${res.status}): ${text}`);
+		}
+
+		const data = await res.json();
+		const count = (data?.count as number) ?? messages.length;
+		log.debugResponse("messages.create", { count });
+		return { count };
+	}
+
 	async listConnections(options?: {
 		userId?: string;
 	}): Promise<Connection[]> {

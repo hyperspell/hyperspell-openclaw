@@ -29,6 +29,26 @@ export type AutoTraceConfig = {
 	metadata?: Record<string, string | number | boolean>;
 };
 
+/**
+ * Real-time hot buffer (`POST /messages`). When enabled, each completed agent
+ * turn is written to Hyperspell's transient message buffer, which is full-text
+ * searchable in the same transaction (no embedding wait) and auto-consolidated
+ * server-side into normal vault Resources. This is a different, faster entry
+ * point than `autoTrace` (which targets the slow `/memories` embedding path).
+ *
+ * Requires a resolvable `userId` — `POST /messages` mandates the `X-As-User`
+ * header and returns 422 without it.
+ */
+export type HotBufferConfig = {
+	enabled: boolean;
+	/** DocumentProviders enum value for the rows. "vault" = our own turns. */
+	source: HyperspellSource;
+	/** Write the user side of each turn. */
+	writeUser: boolean;
+	/** Write the assistant side of each turn. */
+	writeAssistant: boolean;
+};
+
 export type StartupOrientationConfig = {
 	enabled: boolean;
 	recentDays: number;
@@ -117,6 +137,7 @@ export type HyperspellConfig = {
 	userId?: string;
 	autoContext: boolean;
 	autoTrace: AutoTraceConfig;
+	hotBuffer: HotBufferConfig;
 	emotionalContext: boolean;
 	relationshipId?: string;
 	startupOrientation: StartupOrientationConfig;
@@ -135,6 +156,7 @@ const ALLOWED_KEYS = [
 	"userId",
 	"autoContext",
 	"autoTrace",
+	"hotBuffer",
 	"emotionalContext",
 	"relationshipId",
 	"startupOrientation",
@@ -413,6 +435,16 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 	const atRaw = (cfg.autoTrace ?? {}) as Record<string, unknown>;
 	const soRaw = (cfg.startupOrientation ?? {}) as Record<string, unknown>;
 
+	const hbRaw = (cfg.hotBuffer ?? {}) as Record<string, unknown>;
+	if (cfg.hotBuffer && typeof cfg.hotBuffer === "object" && !Array.isArray(cfg.hotBuffer)) {
+		assertAllowedKeys(
+			hbRaw,
+			["enabled", "source", "writeUser", "writeAssistant"],
+			"hyperspell.hotBuffer",
+		);
+	}
+	const hbSource = parseSources(hbRaw.source as string | undefined)[0] ?? "vault";
+
 	// syncMemories can be a boolean (legacy) or an object (new)
 	const smRaw = cfg.syncMemories;
 	const syncMemoriesEnabled =
@@ -456,6 +488,14 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 			metadata: atRaw.metadata as
 				| Record<string, string | number | boolean>
 				| undefined,
+		},
+		hotBuffer: {
+			// Default OFF so shipping the plugin never changes existing installs'
+			// behavior; opt in per-install via plugin config.
+			enabled: (hbRaw.enabled as boolean) ?? false,
+			source: hbSource,
+			writeUser: (hbRaw.writeUser as boolean) ?? true,
+			writeAssistant: (hbRaw.writeAssistant as boolean) ?? true,
 		},
 		emotionalContext: (cfg.emotionalContext as boolean) ?? false,
 		relationshipId: cfg.relationshipId as string | undefined,
