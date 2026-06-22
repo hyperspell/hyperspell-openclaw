@@ -13,6 +13,10 @@ import {
 } from "./hooks/emotional-state.ts"
 import { buildFileSyncHandler, syncMemoriesOnStartup } from "./hooks/memory-sync.ts"
 import {
+	buildHotBufferHandler,
+	buildHotBufferSessionCleanupHandler,
+} from "./hooks/hot-buffer.ts"
+import {
 	buildStartupOrientationCompactionHandler,
 	buildStartupOrientationHandler,
 	buildStartupOrientationSessionCleanupHandler,
@@ -127,6 +131,13 @@ export default {
 		// Register auto-trace hook (send conversations to Hyperspell on session end)
 		if (cfg.autoTrace.enabled) {
 			api.on("agent_end", buildAutoTraceHandler(client, cfg));
+		}
+
+		// Register hot-buffer hook: write each turn to POST /messages so it's
+		// instantly full-text searchable (vs. the slow /memories embedding path).
+		if (cfg.hotBuffer.enabled) {
+			api.on("agent_end", buildHotBufferHandler(client, cfg));
+			api.on("session_end", buildHotBufferSessionCleanupHandler());
 		}
 
 		// Register memory sync hook

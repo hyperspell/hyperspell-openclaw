@@ -270,3 +270,39 @@ test("parseConfig — syncMemories object with a typo'd key throws", () => {
     /hyperspell\.syncMemories has unknown keys: sectionise/,
   )
 })
+
+test("parseConfig — hotBuffer defaults to disabled with safe defaults", () => {
+  const cfg = parseConfig(base)
+  assert.equal(cfg.hotBuffer.enabled, false)
+  assert.equal(cfg.hotBuffer.source, "vault")
+  assert.equal(cfg.hotBuffer.writeUser, true)
+  assert.equal(cfg.hotBuffer.writeAssistant, true)
+})
+
+test("parseConfig — hotBuffer honors explicit settings", () => {
+  const cfg = parseConfig({
+    ...base,
+    hotBuffer: {
+      enabled: true,
+      source: "vault",
+      writeUser: true,
+      writeAssistant: false,
+    },
+  })
+  assert.equal(cfg.hotBuffer.enabled, true)
+  assert.equal(cfg.hotBuffer.writeAssistant, false)
+})
+
+test("parseConfig — hotBuffer with an unknown key throws", () => {
+  assert.throws(
+    () => parseConfig({ ...base, hotBuffer: { enbaled: true } }),
+    /hyperspell\.hotBuffer has unknown keys: enbaled/,
+  )
+})
+
+test("parseConfig — hotBuffer with an invalid source throws", () => {
+  assert.throws(
+    () => parseConfig({ ...base, hotBuffer: { source: "nonsense" } }),
+    /Invalid source/,
+  )
+})

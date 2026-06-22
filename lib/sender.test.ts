@@ -14,6 +14,7 @@ function cfg(overrides: Partial<HyperspellConfig["multiUser"]> = {}): Hyperspell
     apiKey: "test",
     autoContext: false,
     autoTrace: { enabled: false, extract: ["procedure"] },
+    hotBuffer: { enabled: false, source: "vault", writeUser: true, writeAssistant: true },
     emotionalContext: false,
     syncMemories: false,
     syncMemoriesConfig: {

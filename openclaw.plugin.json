@@ -36,6 +36,11 @@
 			"help": "Automatically send conversation traces to Hyperspell for memory extraction (procedural, mood) at the end of each session",
 			"advanced": true
 		},
+		"hotBuffer": {
+			"label": "Hot Buffer",
+			"help": "Write each turn to the realtime message buffer (POST /messages) so it is instantly full-text searchable, then auto-consolidated into vault Resources. Requires userId. { enabled, source, writeUser, writeAssistant }",
+			"advanced": true
+		},
 		"emotionalContext": {
 			"label": "Emotional Context",
 			"help": "Maintain emotional continuity across sessions — remembers not just what happened, but how it felt",
@@ -114,6 +119,15 @@
 						}
 					},
 					"metadata": { "type": "object" }
+				}
+			},
+			"hotBuffer": {
+				"type": "object",
+				"properties": {
+					"enabled": { "type": "boolean" },
+					"source": { "type": "string" },
+					"writeUser": { "type": "boolean" },
+					"writeAssistant": { "type": "boolean" }
 				}
 			},
 			"emotionalContext": {

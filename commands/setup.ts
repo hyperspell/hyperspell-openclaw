@@ -337,6 +337,12 @@ async function runSetup(): Promise<void> {
         userId,
         autoContext: true,
         autoTrace: { enabled: false, extract: ["procedure"] },
+        hotBuffer: {
+          enabled: false,
+          source: "vault",
+          writeUser: true,
+          writeAssistant: true,
+        },
         emotionalContext: false,
         syncMemories: true,
         syncMemoriesConfig: {
