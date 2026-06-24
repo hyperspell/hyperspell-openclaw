@@ -56,7 +56,9 @@ function makeCfg(overrides?: Partial<HyperspellConfig>): HyperspellConfig {
 	return {
 		apiKey: "k",
 		autoContext: false,
-		autoTrace: { enabled: false, extract: ["procedure"] },
+		// Recent-interactions are agent_end traces, fetched only when auto-trace
+		// is on — so the recent-path tests below run with it enabled.
+		autoTrace: { enabled: true, extract: ["procedure"] },
 		hotBuffer: { enabled: false, source: "vault", writeUser: true, writeAssistant: true },
 		emotionalContext: false,
 		startupOrientation: {
@@ -232,6 +234,21 @@ test("startup-orientation — list call passes source:trace and userId", async (
 		undefined,
 		"single-user mode passes undefined",
 	);
+});
+
+test("startup-orientation — auto-trace OFF skips the trace listMemories (perf), still runs loops", async () => {
+	// agent_end traces exist only when auto-trace is on. With it off, the trace
+	// list is guaranteed-empty AND expensive (~12s + failures observed live), so
+	// it must be skipped entirely — but the unfinished-loops search still runs.
+	const client = makeClient({ traces: [makeTrace({})], loops: [{ resourceId: "r", title: "t", source: "vault", score: 0.9, url: null, createdAt: null, highlights: [] }] });
+	const handler = buildStartupOrientationHandler(
+		client as unknown as HyperspellClient,
+		makeCfg({ autoTrace: { enabled: false, extract: ["procedure"] } }),
+	);
+	await handler({}, { sessionKey: "s-no-autotrace" });
+
+	assert.equal(client.listCalls.length, 0, "trace listMemories must NOT be called when auto-trace is off");
+	assert.equal(client.searchCalls.length, 1, "loops search still runs");
 });
 
 test("startup-orientation — compaction clears cache, next turn re-fetches", async () => {
