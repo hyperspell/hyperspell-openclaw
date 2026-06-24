@@ -21,7 +21,7 @@ import {
 	buildStartupOrientationHandler,
 	buildStartupOrientationSessionCleanupHandler,
 } from "./hooks/startup-orientation.ts"
-import { initLogger } from "./logger.ts"
+import { initLogger, log } from "./logger.ts"
 import { createRememberToolFactory } from "./tools/remember.ts"
 import { createSearchToolFactory } from "./tools/search.ts"
 import { registerNetworkTools } from "./graph/index.ts"
@@ -123,6 +123,16 @@ export default {
 		// Register startup-orientation hooks: recent-interactions + unfinished-loops
 		// injected once per session on first turn. Lifecycle mirrors emotional-context.
 		if (cfg.startupOrientation.enabled) {
+			// The recent-interactions half reads source:"trace" / openclaw_source:"agent_end"
+			// memories, which are ONLY written by the auto-trace hook. With auto-trace off,
+			// that half silently injects nothing forever (recent=0). Warn so the operator
+			// knows the configured feature is half-inert rather than wondering why their
+			// agent has no recent continuity.
+			if (!cfg.autoTrace.enabled) {
+				log.warn(
+					"startup-orientation is enabled but autoTrace is disabled; recent-interactions injection will be empty (no traces are written). Enable autoTrace to restore recent-conversation continuity.",
+				);
+			}
 			api.on("before_agent_start", buildStartupOrientationHandler(client, cfg));
 			api.on("after_compaction", buildStartupOrientationCompactionHandler());
 			api.on("session_end", buildStartupOrientationSessionCleanupHandler());
