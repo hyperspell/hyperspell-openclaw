@@ -6,7 +6,7 @@ import {
   resolveUser,
   type ResolvedUser,
 } from "../lib/sender.ts"
-import { EXCLUDE_SESSION_END_FILTER, mergeWithExclude } from "../lib/filters.ts"
+import { excludeFilterFor, mergeWithExclude } from "../lib/filters.ts"
 import { log } from "../logger.ts"
 
 function formatRelativeTime(isoTimestamp: string): string {
@@ -63,9 +63,9 @@ function formatHighlightBullets(
 }
 
 const INTRO =
-  "The following is context from the user's connected sources. Reference it only when relevant to the conversation."
+  "The following is surfaced from the user's memory and connected sources, including past conversations. Reference it as recalled context, only when relevant to the conversation."
 const DISCLAIMER =
-  "Use this context naturally when relevant — including indirect connections — but don't force it into every response or make assumptions beyond what's stated."
+  "Draw on it when relevant — including indirect connections — but don't force it into every response or make assumptions beyond what's stated."
 
 function wrapSingle(body: string): string {
   return `<hyperspell-context>\n${INTRO}\n\n${body}\n\n${DISCLAIMER}\n</hyperspell-context>`
@@ -94,7 +94,7 @@ export function buildAutoContextHandler(
     try {
       const results = await client.search(prompt, {
         limit: cfg.maxResults,
-        filter: EXCLUDE_SESSION_END_FILTER,
+        filter: excludeFilterFor(cfg),
       })
       const formatted = formatHighlightBullets(
         results,
@@ -145,7 +145,7 @@ async function multiUserSearch(
     ? client.search(prompt, {
         limit: cfg.maxResults,
         userId: resolved!.userId,
-        filter: EXCLUDE_SESSION_END_FILTER,
+        filter: excludeFilterFor(cfg),
       })
     : null
 
@@ -158,7 +158,7 @@ async function multiUserSearch(
       ? client.search(prompt, {
           limit: sharedLimit,
           userId: multiUser.sharedUserId,
-          filter: mergeWithExclude(scopeFilter),
+          filter: mergeWithExclude(scopeFilter, cfg),
         })
       : null
 
