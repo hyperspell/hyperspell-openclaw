@@ -65,6 +65,17 @@ function messagesToTranscript(messages: unknown[]): string {
 }
 
 /**
+ * True if a fetched emotional-state `summary` is actually the raw transcript
+ * placeholder returned during the async extraction window (status=pending),
+ * rather than a distilled emotional register. Real summaries are second-person
+ * prose ("Your relationship with this user…"); the placeholder echoes the input
+ * conversation, which has role-prefixed lines.
+ */
+export function looksLikeRawTranscript(summary: string): boolean {
+	return /(^|\n)\s*(user|assistant)\s*:/i.test(summary);
+}
+
+/**
  * Fetch emotional state on the first agent turn of a session and inject into
  * context. On later turns of the same session, return undefined — the
  * injection from the first turn is already in the conversation history.
@@ -87,6 +98,21 @@ export function buildEmotionalStateFetchHandler(
 			if (!state) {
 				log.debug("emotional-context: no prior emotional state found");
 				if (sessionKey) injectedSessions.add(sessionKey);
+				return;
+			}
+
+			// Extraction is async: for ~10s after a store, GET /emotional-state
+			// returns status=pending with `summary` set to the RAW transcript (the
+			// input), not the distilled register — and the response carries no
+			// status field to check. Detect that placeholder structurally (a real
+			// summary is second-person prose; a raw transcript has role-prefixed
+			// lines) and DON'T inject it: handing back the raw transcript as
+			// "feeling" is useless and pollutes tone. Don't cache, so a later turn
+			// re-fetches once extraction has completed.
+			if (looksLikeRawTranscript(state.summary)) {
+				log.debug(
+					"emotional-context: state still extracting (raw-transcript placeholder) — skipping injection this turn",
+				);
 				return;
 			}
 

@@ -4,6 +4,7 @@ import {
 	buildEmotionalStateCompactionHandler,
 	buildEmotionalStateFetchHandler,
 	buildEmotionalStateSessionCleanupHandler,
+	looksLikeRawTranscript,
 } from "./emotional-state.ts";
 
 type FakeClient = {
@@ -157,4 +158,33 @@ test("emotional-state fetch — missing sessionKey still fetches (fallback)", as
 		2,
 		"without sessionKey we can't cache — fetch each call",
 	);
+});
+
+test("looksLikeRawTranscript — detects the pending raw-transcript placeholder, not real summaries", () => {
+	assert.equal(looksLikeRawTranscript("user: hi\nassistant: hey there"), true);
+	assert.equal(looksLikeRawTranscript("assistant: I think we left things tender"), true);
+	assert.equal(
+		looksLikeRawTranscript(
+			"Your relationship with this user currently feels warm and steady; they leaned on you and felt met.",
+		),
+		false,
+	);
+});
+
+test("emotional-state fetch — skips injecting a raw-transcript placeholder (pending), does NOT cache (retries next turn)", async () => {
+	// During the ~10s extraction window the GET returns the raw transcript. We
+	// must not inject it; and we must not cache, so a later turn re-fetches once
+	// extraction completes.
+	const { client } = makeClient("user: rough day\nassistant: I'm here");
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		cfg,
+	);
+	const ctx = { sessionKey: "session-pending" };
+
+	const first = await handler({}, ctx);
+	assert.equal(first, undefined, "no injection while still extracting");
+	const second = await handler({}, ctx);
+	assert.equal(second, undefined);
+	assert.equal(client.callCount, 2, "not cached — re-fetched on the next turn");
 });
