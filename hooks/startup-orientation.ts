@@ -8,6 +8,10 @@ type AgentContext = Record<string, unknown> & { sessionKey?: string };
 const MAX_ATTEMPTS = 2;
 const RECENT_BUFFER_LIMIT = 100;
 
+/** Hot-buffer conversation resources are keyed by the session id (a UUID). */
+const UUID_RE =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
  * Sessions where the orientation block was already injected (or where we
  * deliberately decided not to inject — unknown sender, exhausted retries).
@@ -147,6 +151,58 @@ async function fetchRecentTraces(
 	return buffer.slice(0, limit);
 }
 
+/**
+ * Pull recent conversation sessions from the hot buffer's vault resources — the
+ * modern source of "recent interactions" (the agent_end-trace path only works
+ * when auto-trace is on, which it usually isn't). The hot buffer writes one
+ * session-grouped Resource per conversation: `resource_id` = the session id (a
+ * UUID), untagged (no `openclaw_source`), with a generated title. We rely on
+ * `listMemories` returning resources newest-first (verified live) and take the
+ * newest `limit` conversation resources — their metadata carries no date to
+ * filter on, so order is our recency signal.
+ *
+ * Excludes: tagged rows (memory_sync_section / command / agent_end), non-UUID
+ * resources (synced docs), automated cron sessions, and untitled rows.
+ */
+async function fetchRecentConversations(
+	client: HyperspellClient,
+	limit: number,
+	userId: string | undefined,
+): Promise<SearchResult[]> {
+	const out: SearchResult[] = [];
+	const seenTitles = new Set<string>();
+	let scanned = 0;
+	for await (const memory of client.listMemories({
+		source: "vault",
+		userId,
+		pageSize: 50,
+	})) {
+		scanned++;
+		if (scanned > RECENT_BUFFER_LIMIT) break;
+		if (!UUID_RE.test(memory.resourceId)) continue;
+		if (memory.metadata?.openclaw_source) continue;
+		const title = memory.title ?? "";
+		if (title.length === 0 || /^\[cron:/i.test(title)) continue;
+		// The backend sometimes generates the same title for distinct sessions
+		// (e.g. repeated daily-summary chats); collapse those so the block isn't
+		// padded with duplicates.
+		const titleKey = title.trim().toLowerCase();
+		if (seenTitles.has(titleKey)) continue;
+		seenTitles.add(titleKey);
+		out.push({
+			resourceId: memory.resourceId,
+			title: memory.title,
+			source: memory.source,
+			score: null,
+			url: null,
+			createdAt: null,
+			highlights: [],
+		});
+		if (out.length >= limit) break; // newest-first → first N are most recent
+	}
+	return out;
+}
+
 export function buildStartupOrientationHandler(
 	client: HyperspellClient,
 	cfg: HyperspellConfig,
@@ -177,21 +233,26 @@ export function buildStartupOrientationHandler(
 			return;
 		}
 
-		const cutoff = isoDaysAgo(so.recentDays);
-
-		// Recent-interactions are `agent_end` traces, which exist ONLY when
-		// auto-trace is enabled. When it's off there are none to fetch, and the
-		// trace-source `listMemories` is not merely empty but EXPENSIVE — observed
-		// taking ~12s and failing on every turn (it blocks before_agent_start, so
-		// it directly slows the agent's reply). Skip it entirely in that case and
-		// keep just the unfinished-loops search (a normal query that works
-		// regardless). Mirrors the warning logged at startup.
-		const wantRecent = cfg.autoTrace.enabled;
+		// Source recent-interactions from wherever the session record actually
+		// lives. Prefer the hot buffer (modern path: clean session-grouped vault
+		// resources, present whenever the hot buffer is on — including auto-trace-
+		// off agents). Fall back to agent_end traces only when there's no hot
+		// buffer but auto-trace is on. Otherwise skip: there's nothing to fetch,
+		// and the trace-source list is expensive (observed ~12s + failing/turn),
+		// blocking before_agent_start and slowing the reply.
+		const recentFetch = cfg.hotBuffer.enabled
+			? fetchRecentConversations(client, so.recentLimit, userId)
+			: cfg.autoTrace.enabled
+				? fetchRecentTraces(
+						client,
+						isoDaysAgo(so.recentDays),
+						so.recentLimit,
+						userId,
+					)
+				: Promise.resolve([] as SearchResult[]);
 
 		const [recentSettled, loopsSettled] = await Promise.allSettled([
-			wantRecent
-				? fetchRecentTraces(client, cutoff, so.recentLimit, userId)
-				: Promise.resolve([] as SearchResult[]),
+			recentFetch,
 			client.search(so.loopsQuery, {
 				limit: so.loopsLimit,
 				userId,

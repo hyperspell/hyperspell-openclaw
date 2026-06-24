@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import type { HyperspellClient, SearchResult } from "../client.ts";
-import type { HyperspellConfig } from "../config.ts";
+import type { HyperspellConfig, HyperspellSource } from "../config.ts";
 import {
 	buildStartupOrientationCompactionHandler,
 	buildStartupOrientationHandler,
@@ -15,7 +15,7 @@ type SearchCall = {
 type ListCall = { options?: Parameters<HyperspellClient["listMemories"]>[0] };
 type ListedMemory = {
 	resourceId: string;
-	source: "trace";
+	source: HyperspellSource;
 	title: string | null;
 	metadata: Record<string, unknown>;
 };
@@ -236,19 +236,52 @@ test("startup-orientation — list call passes source:trace and userId", async (
 	);
 });
 
-test("startup-orientation — auto-trace OFF skips the trace listMemories (perf), still runs loops", async () => {
-	// agent_end traces exist only when auto-trace is on. With it off, the trace
-	// list is guaranteed-empty AND expensive (~12s + failures observed live), so
-	// it must be skipped entirely — but the unfinished-loops search still runs.
+test("startup-orientation — neither hot-buffer nor auto-trace: skips recent fetch (perf), still runs loops", async () => {
+	// No session record source available → nothing to fetch, and the trace-source
+	// list is expensive (~12s + failures observed live), so skip it entirely.
 	const client = makeClient({ traces: [makeTrace({})], loops: [{ resourceId: "r", title: "t", source: "vault", score: 0.9, url: null, createdAt: null, highlights: [] }] });
 	const handler = buildStartupOrientationHandler(
 		client as unknown as HyperspellClient,
-		makeCfg({ autoTrace: { enabled: false, extract: ["procedure"] } }),
+		makeCfg({
+			hotBuffer: { enabled: false, source: "vault", writeUser: true, writeAssistant: true },
+			autoTrace: { enabled: false, extract: ["procedure"] },
+		}),
 	);
-	await handler({}, { sessionKey: "s-no-autotrace" });
+	await handler({}, { sessionKey: "s-neither" });
 
-	assert.equal(client.listCalls.length, 0, "trace listMemories must NOT be called when auto-trace is off");
+	assert.equal(client.listCalls.length, 0, "no listMemories when there's no recent source");
 	assert.equal(client.searchCalls.length, 1, "loops search still runs");
+});
+
+test("startup-orientation — hot-buffer source: recent comes from vault session resources (UUID+untagged), cron/tagged excluded", async () => {
+	// The modern path (e.g. auto-trace OFF + hot buffer ON, like a real agent):
+	// recent-interactions is sourced from the hot buffer's session-grouped vault
+	// resources, not agent_end traces.
+	const conv = (id: string, title: string): ListedMemory => ({ resourceId: id, source: "vault", title, metadata: {} });
+	const client = makeClient({
+		traces: [
+			conv("0471aa5b-2c34-43d0-a810-3bd846076e43", "Talked about dinner"),
+			{ resourceId: "note-readme.md", source: "vault", title: "synced doc", metadata: { openclaw_source: "memory_sync_section" } },
+			conv("11111111-2222-3333-4444-555555555555", "[cron:abc] heartbeat run"),
+			conv("22222222-2222-3333-4444-555555555555", "Morning check-in"),
+		],
+		loops: [],
+	});
+	const handler = buildStartupOrientationHandler(
+		client as unknown as HyperspellClient,
+		makeCfg({
+			hotBuffer: { enabled: true, source: "vault", writeUser: true, writeAssistant: true },
+			autoTrace: { enabled: false, extract: ["procedure"] },
+		}),
+	);
+	const out = await handler({}, { sessionKey: "s-hotbuf" });
+
+	assert.equal(client.listCalls[0]?.options?.source, "vault", "lists vault, not trace");
+	const ctx = (out as { prependContext?: string })?.prependContext ?? "";
+	assert.match(ctx, /Talked about dinner/);
+	assert.match(ctx, /Morning check-in/);
+	assert.doesNotMatch(ctx, /cron/, "automated cron sessions excluded");
+	assert.doesNotMatch(ctx, /synced doc/, "tagged sync rows excluded");
 });
 
 test("startup-orientation — compaction clears cache, next turn re-fetches", async () => {
