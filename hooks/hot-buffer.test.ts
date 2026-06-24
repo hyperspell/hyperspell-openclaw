@@ -73,6 +73,62 @@ test("hot-buffer — tags writes with openclaw_source=hot_buffer (Hyperspell #19
 	);
 });
 
+test("hot-buffer — resourceId comes from ctx.sessionId (agent_end event has none)", async () => {
+	// Regression for issue #42: PluginHookAgentEndEvent carries no sessionId —
+	// it lives on the hook ctx. Reading event.sessionId yielded a fresh random
+	// resourceId every turn. The realistic shape is: no sessionId on the event,
+	// sessionId on ctx.
+	const { client, calls } = makeClient();
+	const handler = buildHotBufferHandler(client, cfg);
+	await handler(
+		{ success: true, messages: [{ role: "user", content: "anchor" }] },
+		{ sessionId: "ctx-sess" },
+	);
+	assert.equal(calls[0][0].resourceId, "ctx-sess");
+});
+
+test("hot-buffer — ctx.sessionId takes precedence over event.sessionId", async () => {
+	const { client, calls } = makeClient();
+	const handler = buildHotBufferHandler(client, cfg);
+	await handler(
+		{ success: true, sessionId: "evt", messages: [{ role: "user", content: "x" }] },
+		{ sessionId: "ctx-wins" },
+	);
+	assert.equal(calls[0][0].resourceId, "ctx-wins");
+});
+
+test("hot-buffer — stable ctx.sessionId dedups across turns (no whole-transcript re-post)", async () => {
+	const { client, calls } = makeClient();
+	const handler = buildHotBufferHandler(client, cfg);
+	const ctx = { sessionId: "stable-sess" };
+	await handler(
+		{ success: true, messages: [{ role: "user", content: "turn-1" }] },
+		ctx,
+	);
+	// agent_end fires again with the full history + one new line, same ctx.
+	await handler(
+		{
+			success: true,
+			messages: [
+				{ role: "user", content: "turn-1" },
+				{ role: "assistant", content: "reply-1" },
+				{ role: "user", content: "turn-2" },
+			],
+		},
+		ctx,
+	);
+	// Only the 2 NEW lines are sent the second turn — not the whole transcript.
+	assert.equal(calls.length, 2);
+	assert.equal(calls[1].length, 2);
+	assert.deepEqual(
+		calls[1].map((m) => m.content),
+		["reply-1", "turn-2"],
+	);
+	// All rows share the stable resourceId.
+	for (const batch of calls)
+		for (const m of batch) assert.equal(m.resourceId, "stable-sess");
+});
+
 test("hot-buffer — idempotent: re-firing the same turn sends nothing new", async () => {
 	const { client, calls } = makeClient();
 	const handler = buildHotBufferHandler(client, cfg);

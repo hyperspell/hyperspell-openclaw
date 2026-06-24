@@ -8,6 +8,7 @@ import {
 } from "../lib/sender.ts"
 import { excludeFilterFor, mergeWithExclude } from "../lib/filters.ts"
 import { classifySearchError, logSearchError } from "../lib/search-error.ts"
+import { resolveCurrentSessionId } from "../lib/session.ts"
 import { log } from "../logger.ts"
 
 function formatRelativeTime(isoTimestamp: string): string {
@@ -72,6 +73,32 @@ function wrapSingle(body: string): string {
   return `<hyperspell-context>\n${INTRO}\n\n${body}\n\n${DISCLAIMER}\n</hyperspell-context>`
 }
 
+/**
+ * Drop results belonging to the CURRENT session. The hot buffer writes the live
+ * conversation to the vault every turn (`resourceId = sessionId`), and those
+ * rows are the highest-scoring matches for whatever the agent is currently
+ * saying — so without this the agent gets its own just-written turns injected
+ * back as "recalled memory," crowding out older context (issue #42).
+ *
+ * Purely subtractive: with no resolvable session id we return results unchanged,
+ * and a wrong id can only fail to hide the echo — never hide genuine
+ * cross-session memories, which live under a different `resource_id`.
+ */
+export function dropCurrentSession(
+  results: SearchResult[],
+  currentSessionId: string | undefined,
+): SearchResult[] {
+  if (!currentSessionId) return results
+  const kept = results.filter((r) => r.resourceId !== currentSessionId)
+  const dropped = results.length - kept.length
+  if (dropped > 0) {
+    log.debug(
+      `auto-context: excluded ${dropped} result(s) from current session ${currentSessionId}`,
+    )
+  }
+  return kept
+}
+
 export function buildAutoContextHandler(
   client: HyperspellClient,
   cfg: HyperspellConfig,
@@ -83,20 +110,27 @@ export function buildAutoContextHandler(
     const prompt = event.prompt as string | undefined
     if (!prompt || prompt.length < 5) return
 
+    // The live session's own just-written turns must not be surfaced back as
+    // "recalled memory" (issue #42) — resolve its id once and exclude it below.
+    const currentSessionId = resolveCurrentSessionId(event, ctx)
+
     // Multi-user path
     if (cfg.multiUser) {
       const resolved = resolveUser(ctx, cfg)
-      return multiUserSearch(client, cfg, prompt, resolved)
+      return multiUserSearch(client, cfg, prompt, resolved, currentSessionId)
     }
 
     // Single-user path — preserves main's highlights + threshold behavior
     log.debug(`auto-context: searching for "${prompt.slice(0, 50)}..."`)
 
     try {
-      const results = await client.search(prompt, {
-        limit: cfg.maxResults,
-        filter: excludeFilterFor(cfg),
-      })
+      const results = dropCurrentSession(
+        await client.search(prompt, {
+          limit: cfg.maxResults,
+          filter: excludeFilterFor(cfg),
+        }),
+        currentSessionId,
+      )
       const formatted = formatHighlightBullets(
         results,
         cfg.maxResults,
@@ -126,6 +160,7 @@ async function multiUserSearch(
   cfg: HyperspellConfig,
   prompt: string,
   resolved: ResolvedUser | undefined,
+  currentSessionId: string | undefined,
 ) {
   const multiUser = cfg.multiUser!
   const isKnownSender = !!resolved?.resolved
@@ -179,7 +214,7 @@ async function multiUserSearch(
   if (personalSearch) {
     const r = settled[idx++]
     if (r.status === "fulfilled") {
-      personalResults = r.value
+      personalResults = dropCurrentSession(r.value, currentSessionId)
     } else {
       logSearchError(
         log,
@@ -192,7 +227,7 @@ async function multiUserSearch(
   if (sharedSearch) {
     const r = settled[idx++]
     if (r.status === "fulfilled") {
-      sharedResults = r.value
+      sharedResults = dropCurrentSession(r.value, currentSessionId)
     } else {
       logSearchError(
         log,
