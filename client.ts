@@ -490,7 +490,11 @@ export class HyperspellClient {
 	 */
 	async sendMessages(
 		messages: Array<{ resourceId: string; messageId: string; content: string }>,
-		options?: { userId?: string; source?: string },
+		options?: {
+			userId?: string;
+			source?: string;
+			metadata?: Record<string, string | number | boolean>;
+		},
 	): Promise<{ count: number }> {
 		const userId = options?.userId ?? this.config.userId;
 		if (!userId) {
@@ -503,12 +507,17 @@ export class HyperspellClient {
 		if (messages.length === 0) return { count: 0 };
 
 		const source = (options?.source ?? "vault").toLowerCase();
+		const metadata = options?.metadata;
 		const body = {
 			source,
 			messages: messages.map((m) => ({
 				resource_id: m.resourceId,
 				message_id: m.messageId,
 				content: m.content,
+				// Per-message metadata (Hyperspell #1921): tags hot-buffer rows so
+				// retrieval can identify/filter them like /memories/add rows. Persists
+				// on the live hot row and is unioned onto the consolidated Resource.
+				...(metadata ? { metadata } : {}),
 			})),
 		};
 

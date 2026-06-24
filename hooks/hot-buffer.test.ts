@@ -15,13 +15,15 @@ type SentBatch = Array<{
 
 function makeClient() {
 	const calls: SentBatch[] = [];
+	const optionsList: Array<Record<string, unknown> | undefined> = [];
 	const client = {
-		async sendMessages(messages: SentBatch) {
+		async sendMessages(messages: SentBatch, options?: Record<string, unknown>) {
 			calls.push(messages);
+			optionsList.push(options);
 			return { count: messages.length };
 		},
 	} as unknown as HyperspellClient;
-	return { client, calls };
+	return { client, calls, optionsList };
 }
 
 const cfg = parseConfig({
@@ -51,6 +53,24 @@ test("hot-buffer — writes user and assistant turns with stable ids", async () 
 	assert.equal(calls[0][0].content, "hello violet-anchor-123");
 	// distinct ids per role
 	assert.notEqual(calls[0][0].messageId, calls[0][1].messageId);
+});
+
+test("hot-buffer — tags writes with openclaw_source=hot_buffer (Hyperspell #1921)", async () => {
+	const { client, calls, optionsList } = makeClient();
+	const handler = buildHotBufferHandler(client, cfg);
+	await handler(
+		{
+			success: true,
+			sessionId: "s-tag",
+			messages: [{ role: "user", content: "tag me please" }],
+		},
+		{},
+	);
+	assert.equal(calls.length, 1);
+	assert.deepEqual(
+		(optionsList[0] as { metadata?: unknown }).metadata,
+		{ openclaw_source: "hot_buffer" },
+	);
 });
 
 test("hot-buffer — idempotent: re-firing the same turn sends nothing new", async () => {
