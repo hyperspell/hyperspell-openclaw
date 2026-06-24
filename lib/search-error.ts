@@ -61,17 +61,28 @@ function retryAfterSecondsOf(err: unknown): number | undefined {
     const obj = headers as Record<string, string>
     raw = obj["retry-after"] ?? obj["Retry-After"]
   }
-  if (!raw) return undefined
+  const trimmed = raw?.trim()
+  if (!trimmed) return undefined
 
-  const asSeconds = Number(raw)
+  const asSeconds = Number(trimmed)
   if (Number.isFinite(asSeconds)) return Math.max(0, Math.round(asSeconds))
 
-  const asDate = Date.parse(raw)
+  const asDate = Date.parse(trimmed)
   if (!Number.isNaN(asDate)) {
     return Math.max(0, Math.round((asDate - Date.now()) / 1000))
   }
   return undefined
 }
+
+/**
+ * Cap, in seconds, beyond which we will NOT echo a literal Retry-After value to
+ * the agent. A backend advertising minutes is plausible; one advertising
+ * "~99999999999s" (or a far-future HTTP-date) is not, and interpolating it
+ * verbatim next to "try again shortly" is exactly the misleading signal #39
+ * exists to avoid. Above this we fall back to generic wording. The accurate
+ * value is still logged.
+ */
+const MAX_SURFACED_RETRY_SECONDS = 600
 
 export function classifySearchError(err: unknown): SearchErrorInfo {
   const status = statusOf(err)
@@ -102,11 +113,12 @@ export function classifySearchError(err: unknown): SearchErrorInfo {
 export function searchErrorToolText(info: SearchErrorInfo): string {
   switch (info.kind) {
     case "throttled": {
-      const when =
-        info.retryAfterSeconds !== undefined
-          ? ` (retry in ~${info.retryAfterSeconds}s)`
-          : ""
-      return `Memory search is temporarily rate-limited by the backend${when}. This is a transient throttle, NOT an empty memory — do not conclude nothing was found; try again shortly.`
+      const s = info.retryAfterSeconds
+      if (s !== undefined && s <= MAX_SURFACED_RETRY_SECONDS) {
+        return `Memory search is temporarily rate-limited by the backend (retry in ~${s}s). This is a transient throttle, NOT an empty memory — do not conclude nothing was found; try again shortly.`
+      }
+      // Unknown or implausibly long cooldown — don't echo an absurd number.
+      return `Memory search is temporarily rate-limited by the backend. This is a transient throttle, NOT an empty memory — do not conclude nothing was found; retry later rather than assuming nothing exists.`
     }
     case "transient":
       return `Memory search hit a transient backend error (HTTP ${info.status}) and automatic retries were exhausted. This is NOT an empty memory — do not conclude nothing was found; try again shortly.`

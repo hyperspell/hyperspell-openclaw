@@ -106,6 +106,57 @@ test("toolText — client/unknown surface the raw detail", () => {
   )
 })
 
+test("classify — Retry-After '0' is throttled with retryAfterSeconds 0", () => {
+  const info = classifySearchError(apiError(429, { "retry-after": "0" }))
+  assert.equal(info.kind, "throttled")
+  assert.equal(info.retryAfterSeconds, 0)
+})
+
+test("classify — past HTTP-date clamps to 0 (never negative)", () => {
+  const past = new Date(Date.now() - 60_000).toUTCString()
+  const info = classifySearchError(apiError(503, { "retry-after": past }))
+  assert.equal(info.kind, "throttled")
+  assert.equal(info.retryAfterSeconds, 0)
+})
+
+test("classify — whitespace Retry-After on a 503 is transient (not a 0s throttle)", () => {
+  // The defensive plain-object path could carry whitespace; trimming to empty
+  // means "no Retry-After", so a 503 stays transient rather than throttled-0s.
+  const info = classifySearchError({ status: 503, headers: { "retry-after": "   " } })
+  assert.equal(info.kind, "transient")
+  assert.equal(info.retryAfterSeconds, undefined)
+})
+
+test("classify — whitespace Retry-After on a 429 is still throttled (status wins), no seconds", () => {
+  const info = classifySearchError({ status: 429, headers: { "retry-after": "   " } })
+  assert.equal(info.kind, "throttled")
+  assert.equal(info.retryAfterSeconds, undefined)
+})
+
+test("toolText — implausibly long Retry-After is NOT echoed verbatim", () => {
+  const text = searchErrorToolText({
+    kind: "throttled",
+    status: 429,
+    retryAfterSeconds: 99_999_999_999,
+    detail: "x",
+  })
+  assert.doesNotMatch(text, /99999999999/)
+  assert.doesNotMatch(text, /try again shortly/)
+  assert.match(text, /rate-limited/)
+  assert.match(text, /NOT an empty memory/)
+})
+
+test("toolText — a plausible cooldown (<=600s) is still echoed with the number", () => {
+  const text = searchErrorToolText({
+    kind: "throttled",
+    status: 429,
+    retryAfterSeconds: 55,
+    detail: "x",
+  })
+  assert.match(text, /~55s/)
+  assert.match(text, /try again shortly/)
+})
+
 test("logSearchError — throttle/transient log at warn, real errors at error", () => {
   const warns: string[] = []
   const errors: string[] = []
