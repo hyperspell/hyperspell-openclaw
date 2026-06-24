@@ -6,7 +6,7 @@ import {
   resolveUser,
   type ResolvedUser,
 } from "../lib/sender.ts"
-import { excludeFilterFor, mergeWithExclude } from "../lib/filters.ts"
+import { EXCLUDE_SESSION_END_FILTER, mergeWithExclude } from "../lib/filters.ts"
 import { log } from "../logger.ts"
 
 function formatRelativeTime(isoTimestamp: string): string {
@@ -94,7 +94,7 @@ export function buildAutoContextHandler(
     try {
       const results = await client.search(prompt, {
         limit: cfg.maxResults,
-        filter: excludeFilterFor(cfg),
+        filter: EXCLUDE_SESSION_END_FILTER,
       })
       const formatted = formatHighlightBullets(
         results,
@@ -145,7 +145,7 @@ async function multiUserSearch(
     ? client.search(prompt, {
         limit: cfg.maxResults,
         userId: resolved!.userId,
-        filter: excludeFilterFor(cfg),
+        filter: EXCLUDE_SESSION_END_FILTER,
       })
     : null
 
@@ -158,7 +158,7 @@ async function multiUserSearch(
       ? client.search(prompt, {
           limit: sharedLimit,
           userId: multiUser.sharedUserId,
-          filter: mergeWithExclude(scopeFilter, cfg),
+          filter: mergeWithExclude(scopeFilter),
         })
       : null
 
