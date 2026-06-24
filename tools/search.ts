@@ -19,7 +19,7 @@ export function createSearchToolFactory(
     name: "hyperspell_search",
     label: "Memory Search",
     description:
-      "Search through the user's connected sources (Notion, Slack, Gmail, Google Drive, etc.) for relevant information.",
+      "Search the user's long-term memory and connected sources for anything not already in the current conversation. Covers: saved memories and notes; past conversations — including ones from earlier or parallel sessions you have no transcript for; and connected sources (Notion, Slack, Gmail, Google Drive, etc.). Reach for this whenever the user refers to something from before, asks what was said / decided / remembered, or when relevant context likely exists but isn't in front of you — search before concluding you don't know.",
     parameters: Type.Object({
       query: Type.String({ description: "Search query" }),
       limit: Type.Optional(
@@ -70,7 +70,7 @@ export function createSearchToolFactory(
 
       // Keep session-end trace memories out of agent-facing search, matching
       // the auto-context hook so both retrieval paths filter identically.
-      filter = mergeWithExclude(filter)
+      filter = mergeWithExclude(filter, cfg)
 
       log.debug(
         `search tool: query="${params.query}" limit=${limit} after=${params.after ?? "none"} before=${params.before ?? "none"} userId=${userId} scope=${params.scope ?? "any"}`,
