@@ -7,64 +7,40 @@
  * convention `buildScopeFilter` uses (`openclaw_scope`, `openclaw_user`).
  */
 
-/** Minimal slice of config the exclude logic needs (avoids a config-module cycle). */
-type ExcludeCfg = { autoTrace: { enabled: boolean } }
-
 /**
  * Memories produced by the auto-trace session-end hook are tagged in metadata
  * as `openclaw_source: "agent_end"` (see `sendTrace` in client.ts). Those should
  * NOT surface via generic retrieval — replaying whole sanitized transcripts back
- * into context creates a self-amplifying pollution loop. Exclude them here.
+ * into context creates a self-amplifying pollution loop. Exclude them here,
+ * UNCONDITIONALLY.
  *
- * THE #40 TENSION: hot-buffer rows written via `POST /messages` carry NO
- * `openclaw_source`, and the backend evaluates absent-field metadata predicates
- * in SQL three-valued logic — `metadata->>'openclaw_source'` is NULL for a
- * missing key, and `NULL != 'agent_end'` is NULL (not TRUE) — so this filter
- * also drops every untagged hot-buffer row. We could not work around that at the
- * filter layer: `docs/filter-dialect-test.mjs` against the live backend showed
- * that NO `openclaw_source` predicate returns untagged rows ($exists/$or/$nin/
- * $not all fail), AND that `POST /messages` silently ignores a `metadata` field,
- * so the rows can't be positively tagged either. See `excludeFilterFor` for the
- * fix we ship (gate on auto-trace), and issue #40 for the backend follow-up
- * (make `/messages` accept metadata, or make the filter NULL-tolerant).
+ * History (issue #40): before the backend honored MongoDB absent-field
+ * semantics, `metadata->>'openclaw_source'` was SQL NULL for a missing key and
+ * `NULL != 'agent_end'` evaluated to NULL (not TRUE), so this `$ne` filter also
+ * silently dropped every untagged hot-buffer row. Plugin 0.15.0 worked around
+ * that by gating the filter on `autoTrace.enabled` (Option 4) — which left a
+ * known hole: auto-trace-ON installs still dropped untagged hot rows.
  *
- * NOTE: an earlier version checked the top-level `source` field for
- * "openclaw_agent_end" — wrong on BOTH counts (the tag lives in metadata under
- * `openclaw_source`, value `"agent_end"`), so it silently matched nothing.
+ * Backend Hyperspell #1921 fixed this: `$ne` now follows MongoDB semantics and
+ * KEEPS rows whose `openclaw_source` is absent (verified live — untagged hot
+ * rows survive `{$ne:"agent_end"}` while `agent_end` rows are dropped). So the
+ * gate is unnecessary and removed: the filter applies unconditionally again,
+ * which also fixes the auto-trace-ON case. Hot-buffer rows are additionally
+ * tagged `openclaw_source: "hot_buffer"` (≠ `"agent_end"`), so they survive on
+ * either path.
  */
 export const EXCLUDE_SESSION_END_FILTER: Record<string, unknown> = {
   openclaw_source: { $ne: "agent_end" },
 }
 
 /**
- * The exclude clause to apply for a given config — or `undefined` to skip
- * filtering entirely (issue #40, Option 4 — the only viable plugin-side fix).
- * `openclaw_source: "agent_end"` rows are written ONLY by the auto-trace hook;
- * when auto-trace is disabled there are none to hide, so we skip the filter
- * entirely — which is also the ONLY way to keep untagged hot-buffer rows
- * visible, since (per the dialect test) no filter and no write-tag can do it.
- *
- * LIMITATION: when auto-trace IS enabled, this still applies `$ne agent_end`,
- * which drops untagged hot-buffer rows along with the traces. There is no
- * plugin-side fix for that combination today; it needs the backend change
- * tracked in #40. (The common single-feature install has auto-trace off.)
- */
-export function excludeFilterFor(
-  cfg: ExcludeCfg,
-): Record<string, unknown> | undefined {
-  return cfg.autoTrace.enabled ? EXCLUDE_SESSION_END_FILTER : undefined
-}
-
-/**
  * Combine a caller-supplied filter with the session-end exclude via `$and`.
- * Returns `undefined` when neither a base filter nor an exclude applies.
+ * The exclude is applied unconditionally (see above); pass a base filter to
+ * intersect it (e.g. a scope clause), or omit it for the exclude alone.
  */
 export function mergeWithExclude(
-  base: Record<string, unknown> | undefined,
-  cfg: ExcludeCfg,
-): Record<string, unknown> | undefined {
-  const exclude = excludeFilterFor(cfg)
-  if (!exclude) return base
-  if (!base) return exclude
-  return { $and: [base, exclude] }
+  base?: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!base) return EXCLUDE_SESSION_END_FILTER
+  return { $and: [base, EXCLUDE_SESSION_END_FILTER] }
 }

@@ -75,7 +75,7 @@ export function createSearchToolFactory(
 
       // Keep session-end trace memories out of agent-facing search, matching
       // the auto-context hook so both retrieval paths filter identically.
-      filter = mergeWithExclude(filter, cfg)
+      filter = mergeWithExclude(filter)
 
       log.debug(
         `search tool: query="${params.query}" limit=${limit} after=${params.after ?? "none"} before=${params.before ?? "none"} userId=${userId} scope=${params.scope ?? "any"}`,
