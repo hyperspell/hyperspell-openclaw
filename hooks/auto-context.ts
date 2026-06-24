@@ -7,6 +7,7 @@ import {
   type ResolvedUser,
 } from "../lib/sender.ts"
 import { excludeFilterFor, mergeWithExclude } from "../lib/filters.ts"
+import { classifySearchError, logSearchError } from "../lib/search-error.ts"
 import { log } from "../logger.ts"
 
 function formatRelativeTime(isoTimestamp: string): string {
@@ -110,7 +111,11 @@ export function buildAutoContextHandler(
       log.debug(`auto-context: injecting ${results.length} memories`)
       return { prependContext: wrapSingle(formatted) }
     } catch (err) {
-      log.error("auto-context failed", err)
+      // A transient backend throttle (429 / Retry-After) must not be swallowed
+      // as a generic failure — log it at warn, distinguished from real errors,
+      // so the degraded auto-context is observable (issue #39). The hook stays
+      // silent (no injection) either way; the agent didn't explicitly ask.
+      logSearchError(log, "auto-context", classifySearchError(err), err)
       return
     }
   }
@@ -176,7 +181,12 @@ async function multiUserSearch(
     if (r.status === "fulfilled") {
       personalResults = r.value
     } else {
-      log.error("auto-context: personal search failed", r.reason)
+      logSearchError(
+        log,
+        "auto-context: personal search",
+        classifySearchError(r.reason),
+        r.reason,
+      )
     }
   }
   if (sharedSearch) {
@@ -184,7 +194,12 @@ async function multiUserSearch(
     if (r.status === "fulfilled") {
       sharedResults = r.value
     } else {
-      log.error("auto-context: shared search failed", r.reason)
+      logSearchError(
+        log,
+        "auto-context: shared search",
+        classifySearchError(r.reason),
+        r.reason,
+      )
     }
   }
 
