@@ -179,8 +179,19 @@ export function buildStartupOrientationHandler(
 
 		const cutoff = isoDaysAgo(so.recentDays);
 
+		// Recent-interactions are `agent_end` traces, which exist ONLY when
+		// auto-trace is enabled. When it's off there are none to fetch, and the
+		// trace-source `listMemories` is not merely empty but EXPENSIVE — observed
+		// taking ~12s and failing on every turn (it blocks before_agent_start, so
+		// it directly slows the agent's reply). Skip it entirely in that case and
+		// keep just the unfinished-loops search (a normal query that works
+		// regardless). Mirrors the warning logged at startup.
+		const wantRecent = cfg.autoTrace.enabled;
+
 		const [recentSettled, loopsSettled] = await Promise.allSettled([
-			fetchRecentTraces(client, cutoff, so.recentLimit, userId),
+			wantRecent
+				? fetchRecentTraces(client, cutoff, so.recentLimit, userId)
+				: Promise.resolve([] as SearchResult[]),
 			client.search(so.loopsQuery, {
 				limit: so.loopsLimit,
 				userId,
