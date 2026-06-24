@@ -6,7 +6,7 @@ import {
   resolveUser,
   type ResolvedUser,
 } from "../lib/sender.ts"
-import { EXCLUDE_SESSION_END_FILTER, mergeWithExclude } from "../lib/filters.ts"
+import { excludeFilterFor, mergeWithExclude } from "../lib/filters.ts"
 import { classifySearchError, logSearchError } from "../lib/search-error.ts"
 import { resolveCurrentSessionId } from "../lib/session.ts"
 import { log } from "../logger.ts"
@@ -127,7 +127,7 @@ export function buildAutoContextHandler(
       const results = dropCurrentSession(
         await client.search(prompt, {
           limit: cfg.maxResults,
-          filter: EXCLUDE_SESSION_END_FILTER,
+          filter: excludeFilterFor(cfg),
         }),
         currentSessionId,
       )
@@ -185,7 +185,7 @@ async function multiUserSearch(
     ? client.search(prompt, {
         limit: cfg.maxResults,
         userId: resolved!.userId,
-        filter: EXCLUDE_SESSION_END_FILTER,
+        filter: excludeFilterFor(cfg),
       })
     : null
 
@@ -198,7 +198,7 @@ async function multiUserSearch(
       ? client.search(prompt, {
           limit: sharedLimit,
           userId: multiUser.sharedUserId,
-          filter: mergeWithExclude(scopeFilter),
+          filter: mergeWithExclude(scopeFilter, cfg),
         })
       : null
 
