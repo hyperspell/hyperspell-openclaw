@@ -16,34 +16,38 @@ type ExcludeCfg = { autoTrace: { enabled: boolean } }
  * NOT surface via generic retrieval — replaying whole sanitized transcripts back
  * into context creates a self-amplifying pollution loop. Exclude them here.
  *
- * TOLERANT FORM (issue #40): hot-buffer rows written via `POST /messages` carry
- * NO `openclaw_source`. A bare `{ openclaw_source: { $ne: "agent_end" } }`
- * silently drops them: the backend evaluates the JSONB predicate in SQL
- * three-valued logic — `metadata->>'openclaw_source'` is NULL for an absent key,
- * and `NULL != 'agent_end'` is NULL (not TRUE), so the row fails to match and is
- * excluded. This is the OPPOSITE of MongoDB `$ne` (which matches missing fields)
- * — do not "correct" it back. `$or`-ing an explicit `$exists: false` branch
- * re-admits untagged rows while still hiding the real `agent_end` traces.
+ * THE #40 TENSION: hot-buffer rows written via `POST /messages` carry NO
+ * `openclaw_source`, and the backend evaluates absent-field metadata predicates
+ * in SQL three-valued logic — `metadata->>'openclaw_source'` is NULL for a
+ * missing key, and `NULL != 'agent_end'` is NULL (not TRUE) — so this filter
+ * also drops every untagged hot-buffer row. We could not work around that at the
+ * filter layer: `docs/filter-dialect-test.mjs` against the live backend showed
+ * that NO `openclaw_source` predicate returns untagged rows ($exists/$or/$nin/
+ * $not all fail), AND that `POST /messages` silently ignores a `metadata` field,
+ * so the rows can't be positively tagged either. See `excludeFilterFor` for the
+ * fix we ship (gate on auto-trace), and issue #40 for the backend follow-up
+ * (make `/messages` accept metadata, or make the filter NULL-tolerant).
  *
  * NOTE: an earlier version checked the top-level `source` field for
  * "openclaw_agent_end" — wrong on BOTH counts (the tag lives in metadata under
  * `openclaw_source`, value `"agent_end"`), so it silently matched nothing.
  */
 export const EXCLUDE_SESSION_END_FILTER: Record<string, unknown> = {
-  $or: [
-    { openclaw_source: { $exists: false } },
-    { openclaw_source: { $ne: "agent_end" } },
-  ],
+  openclaw_source: { $ne: "agent_end" },
 }
 
 /**
  * The exclude clause to apply for a given config — or `undefined` to skip
- * filtering entirely (issue #40, Option 4). `openclaw_source: "agent_end"` rows
- * are written ONLY by the auto-trace hook; when auto-trace is disabled no such
- * rows exist, so the exclude is pure cost — and skipping it keeps untagged
- * hot-buffer rows visible without depending on the backend's `$exists`/null
- * handling at all. Auto-trace-on installs still get the tolerant clause above
- * (validate `$exists` support via `hotbuffer-verify.mjs --filter-probe`).
+ * filtering entirely (issue #40, Option 4 — the only viable plugin-side fix).
+ * `openclaw_source: "agent_end"` rows are written ONLY by the auto-trace hook;
+ * when auto-trace is disabled there are none to hide, so we skip the filter
+ * entirely — which is also the ONLY way to keep untagged hot-buffer rows
+ * visible, since (per the dialect test) no filter and no write-tag can do it.
+ *
+ * LIMITATION: when auto-trace IS enabled, this still applies `$ne agent_end`,
+ * which drops untagged hot-buffer rows along with the traces. There is no
+ * plugin-side fix for that combination today; it needs the backend change
+ * tracked in #40. (The common single-feature install has auto-trace off.)
  */
 export function excludeFilterFor(
   cfg: ExcludeCfg,
