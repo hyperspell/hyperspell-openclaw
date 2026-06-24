@@ -84,7 +84,7 @@ function wrapSingle(body: string): string {
  * and a wrong id can only fail to hide the echo — never hide genuine
  * cross-session memories, which live under a different `resource_id`.
  */
-function dropCurrentSession(
+export function dropCurrentSession(
   results: SearchResult[],
   currentSessionId: string | undefined,
 ): SearchResult[] {
