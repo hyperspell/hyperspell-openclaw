@@ -102,40 +102,73 @@ export default {
 			name: "hyperspell_remember",
 		});
 
-		// Register emotional context hooks.
-		// - fetch: inject once per session on first turn (cached thereafter)
-		// - compaction: clear cache so the next turn re-injects after trim
-		// - session cleanup: drop Set entry on session end
-		// - store: extract new emotional state from the finished session
+		// Session-start context injectors (emotional fetch, auto-context,
+		// startup-orientation) all run on `before_agent_start`. The host awaits
+		// before_agent_start hooks SEQUENTIALLY, so registering them separately
+		// stacked their backend searches — making the first message of a session
+		// roughly 2x slower than necessary. Instead we collect them and run them
+		// in PARALLEL under a single hook, merging prependContext in registration
+		// order (so injection layout is unchanged). Their non-start lifecycle
+		// hooks (compaction/session_end/agent_end) stay registered separately.
+		type StartHandler = (
+			event: Record<string, unknown>,
+			ctx?: Record<string, unknown>,
+		) =>
+			| Promise<{ prependContext?: string } | undefined>
+			| { prependContext?: string }
+			| undefined;
+		const startHandlers: StartHandler[] = [];
+
 		if (cfg.emotionalContext) {
-			api.on("before_agent_start", buildEmotionalStateFetchHandler(client, cfg));
+			startHandlers.push(
+				buildEmotionalStateFetchHandler(client, cfg) as StartHandler,
+			);
 			api.on("after_compaction", buildEmotionalStateCompactionHandler());
 			api.on("session_end", buildEmotionalStateSessionCleanupHandler());
 			api.on("agent_end", buildEmotionalStateStoreHandler(client, cfg));
 		}
 
-		// Register auto-context hook
 		if (cfg.autoContext) {
-			const autoContextHandler = buildAutoContextHandler(client, cfg);
-			api.on("before_agent_start", autoContextHandler);
+			startHandlers.push(buildAutoContextHandler(client, cfg) as StartHandler);
 		}
 
-		// Register startup-orientation hooks: recent-interactions + unfinished-loops
-		// injected once per session on first turn. Lifecycle mirrors emotional-context.
 		if (cfg.startupOrientation.enabled) {
-			// The recent-interactions half reads source:"trace" / openclaw_source:"agent_end"
-			// memories, which are ONLY written by the auto-trace hook. With auto-trace off,
-			// that half silently injects nothing forever (recent=0). Warn so the operator
-			// knows the configured feature is half-inert rather than wondering why their
-			// agent has no recent continuity.
-			if (!cfg.autoTrace.enabled) {
+			// recent-interactions reads conversation sessions from the hot buffer
+			// when it's on, else falls back to auto-trace's agent_end traces. With
+			// BOTH off there's no source to read — warn so the operator knows the
+			// block will be empty rather than wondering why there's no continuity.
+			if (!cfg.hotBuffer.enabled && !cfg.autoTrace.enabled) {
 				log.warn(
-					"startup-orientation is enabled but autoTrace is disabled; recent-interactions injection will be empty (no traces are written). Enable autoTrace to restore recent-conversation continuity.",
+					"startup-orientation is enabled but neither hotBuffer nor autoTrace is on — recent-interactions will be empty (no conversation source to read).",
 				);
 			}
-			api.on("before_agent_start", buildStartupOrientationHandler(client, cfg));
+			startHandlers.push(
+				buildStartupOrientationHandler(client, cfg) as StartHandler,
+			);
 			api.on("after_compaction", buildStartupOrientationCompactionHandler());
 			api.on("session_end", buildStartupOrientationSessionCleanupHandler());
+		}
+
+		if (startHandlers.length > 0) {
+			api.on("before_agent_start", async (event, ctx) => {
+				const results = await Promise.all(
+					startHandlers.map((h) =>
+						Promise.resolve()
+							.then(() => h(event, ctx))
+							.catch((err) => {
+								// One injector failing must not break the others or the turn.
+								log.error("session-start handler failed", err);
+								return undefined;
+							}),
+					),
+				);
+				const parts = results
+					.map((r) => r?.prependContext)
+					.filter((p): p is string => typeof p === "string" && p.length > 0);
+				return parts.length > 0
+					? { prependContext: parts.join("\n\n") }
+					: undefined;
+			});
 		}
 
 		// Register auto-trace hook (send conversations to Hyperspell on session end)
