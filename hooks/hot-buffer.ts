@@ -161,13 +161,17 @@ export function buildHotBufferHandler(
 		try {
 			let total = 0;
 			for (const b of batches) {
+				// Do NOT tag hot rows with metadata: a POST /messages write that
+				// carries `metadata` is accepted (200) but the row never becomes
+				// retrievable (verified live, post-Hyperspell #1921) — tagging
+				// silently breaks hot-buffer recall. The tag isn't needed anyway:
+				// untagged rows survive the unconditional {$ne:"agent_end"} exclude
+				// (absent-field semantics, #1921) AND are full-text searchable. So
+				// we write content only. (Backend follow-up: make /messages metadata
+				// not suppress indexing, then this can be reinstated.)
 				const result = await client.sendMessages(b, {
 					userId,
 					source: cfg.hotBuffer.source,
-					// Tag hot rows so retrieval can distinguish them (Hyperspell #1921).
-					// Value differs from "agent_end", so they survive the session-end
-					// exclude filter while staying positively identifiable.
-					metadata: { openclaw_source: "hot_buffer" },
 				});
 				total += result.count;
 			}

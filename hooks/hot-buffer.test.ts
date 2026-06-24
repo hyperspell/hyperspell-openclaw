@@ -55,21 +55,25 @@ test("hot-buffer — writes user and assistant turns with stable ids", async () 
 	assert.notEqual(calls[0][0].messageId, calls[0][1].messageId);
 });
 
-test("hot-buffer — tags writes with openclaw_source=hot_buffer (Hyperspell #1921)", async () => {
+test("hot-buffer — does NOT send metadata (a /messages write with metadata is not retrievable post-#1921)", async () => {
+	// Regression guard: tagging hot rows via POST /messages metadata is accepted
+	// (200) but makes the row non-retrievable (verified live). Untagged rows are
+	// searchable and survive the unconditional {$ne:"agent_end"} exclude, so we
+	// must write content only — no metadata.
 	const { client, calls, optionsList } = makeClient();
 	const handler = buildHotBufferHandler(client, cfg);
 	await handler(
 		{
 			success: true,
 			sessionId: "s-tag",
-			messages: [{ role: "user", content: "tag me please" }],
+			messages: [{ role: "user", content: "do not tag me" }],
 		},
 		{},
 	);
 	assert.equal(calls.length, 1);
-	assert.deepEqual(
+	assert.equal(
 		(optionsList[0] as { metadata?: unknown }).metadata,
-		{ openclaw_source: "hot_buffer" },
+		undefined,
 	);
 });
 
