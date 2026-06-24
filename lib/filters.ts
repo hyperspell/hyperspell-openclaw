@@ -16,17 +16,21 @@ type ExcludeCfg = { autoTrace: { enabled: boolean } }
  * NOT surface via generic retrieval — replaying whole sanitized transcripts back
  * into context creates a self-amplifying pollution loop. Exclude them here.
  *
- * THE #40 TENSION: hot-buffer rows written via `POST /messages` carry NO
- * `openclaw_source`, and the backend evaluates absent-field metadata predicates
- * in SQL three-valued logic — `metadata->>'openclaw_source'` is NULL for a
- * missing key, and `NULL != 'agent_end'` is NULL (not TRUE) — so this filter
- * also drops every untagged hot-buffer row. We could not work around that at the
- * filter layer: `docs/filter-dialect-test.mjs` against the live backend showed
- * that NO `openclaw_source` predicate returns untagged rows ($exists/$or/$nin/
- * $not all fail), AND that `POST /messages` silently ignores a `metadata` field,
- * so the rows can't be positively tagged either. See `excludeFilterFor` for the
- * fix we ship (gate on auto-trace), and issue #40 for the backend follow-up
- * (make `/messages` accept metadata, or make the filter NULL-tolerant).
+ * Since backend Hyperspell #1921, `$ne` follows MongoDB absent-field semantics:
+ * it KEEPS rows whose `openclaw_source` is absent (untagged hot-buffer rows) and
+ * drops only `agent_end`. So applying this filter is now SAFE for hot rows — the
+ * old #40 tension (where `NULL != 'agent_end'` dropped untagged rows) is resolved
+ * at the backend.
+ *
+ * We nonetheless GATE the filter on auto-trace (see `excludeFilterFor`) for
+ * PERFORMANCE, not correctness: a `{$ne}` predicate measurably slows the vector
+ * search (~1s observed live), and when auto-trace is off there are no `agent_end`
+ * rows to hide, so the filter would cost latency on every turn for zero benefit.
+ *
+ * Do NOT instead try to positively tag hot rows via `POST /messages` metadata to
+ * identify them: a `/messages` write carrying `metadata` is accepted (200) but
+ * the row becomes NON-retrievable (verified live, post-#1921) — see the
+ * hot-buffer hook, which writes content only.
  *
  * NOTE: an earlier version checked the top-level `source` field for
  * "openclaw_agent_end" — wrong on BOTH counts (the tag lives in metadata under
@@ -37,17 +41,15 @@ export const EXCLUDE_SESSION_END_FILTER: Record<string, unknown> = {
 }
 
 /**
- * The exclude clause to apply for a given config — or `undefined` to skip
- * filtering entirely (issue #40, Option 4 — the only viable plugin-side fix).
- * `openclaw_source: "agent_end"` rows are written ONLY by the auto-trace hook;
- * when auto-trace is disabled there are none to hide, so we skip the filter
- * entirely — which is also the ONLY way to keep untagged hot-buffer rows
- * visible, since (per the dialect test) no filter and no write-tag can do it.
+ * The exclude clause to apply for a given config — or `undefined` to skip the
+ * filter. `agent_end` rows are written ONLY by the auto-trace hook, so when
+ * auto-trace is OFF there are none to hide and we skip the filter to avoid its
+ * ~1s/search latency cost (pure overhead otherwise — verified live against an
+ * auto-trace-off agent with zero `agent_end` rows).
  *
- * LIMITATION: when auto-trace IS enabled, this still applies `$ne agent_end`,
- * which drops untagged hot-buffer rows along with the traces. There is no
- * plugin-side fix for that combination today; it needs the backend change
- * tracked in #40. (The common single-feature install has auto-trace off.)
+ * When auto-trace is ON we apply `{$ne:"agent_end"}`, which post-#1921 drops the
+ * traces while KEEPING untagged hot-buffer rows — so that path is correct now
+ * (the old #40 hot-row-drop is fixed by the backend, not by gating).
  */
 export function excludeFilterFor(
   cfg: ExcludeCfg,
