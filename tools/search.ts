@@ -2,6 +2,11 @@ import { Type } from "@sinclair/typebox"
 import type { HyperspellClient } from "../client.ts"
 import type { CanReadScope, HyperspellConfig } from "../config.ts"
 import { mergeWithExclude } from "../lib/filters.ts"
+import {
+  classifySearchError,
+  logSearchError,
+  searchErrorToolText,
+} from "../lib/search-error.ts"
 import { buildScopeFilter, getCanReadScopes, resolveUser } from "../lib/sender.ts"
 import { log } from "../logger.ts"
 
@@ -121,14 +126,13 @@ export function createSearchToolFactory(
           details: { count: documents.length, documents },
         }
       } catch (err) {
-        log.error("search tool failed", err)
+        // Distinguish a transient backend throttle (429 / Retry-After) from a
+        // real failure and surface it explicitly, so the agent doesn't read a
+        // backend hiccup as "no memories" and confabulate around it (issue #39).
+        const info = classifySearchError(err)
+        logSearchError(log, "search tool", info, err)
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Search failed: ${err instanceof Error ? err.message : String(err)}`,
-            },
-          ],
+          content: [{ type: "text" as const, text: searchErrorToolText(info) }],
         }
       }
     },
