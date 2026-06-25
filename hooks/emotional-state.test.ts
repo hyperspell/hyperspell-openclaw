@@ -8,32 +8,58 @@ import {
 	looksLikeRawTranscript,
 } from "./emotional-state.ts";
 
+type State = {
+	resourceId: string;
+	summary: string;
+	extractedAt: string;
+	sessionId: string | null;
+	relationshipId: string | null;
+};
 type FakeClient = {
-	getEmotionalState: (relId?: string) => Promise<{
-		resourceId: string;
-		summary: string;
-		extractedAt: string;
-		sessionId: string | null;
-		relationshipId: string | null;
-	} | null>;
+	getEmotionalState: (relId?: string) => Promise<State | null>;
+	getRecentEmotionalStates: (relId?: string, limit?: number) => Promise<State[] | null>;
 	callCount: number;
 };
+
+const st = (summary: string, extractedAt = "2026-04-17T00:00:00Z"): State => ({
+	resourceId: `es-${summary.slice(0, 4)}`,
+	summary,
+	extractedAt,
+	sessionId: null,
+	relationshipId: "rel-x",
+});
 
 function makeClient(
 	summary: string | null,
 ): { client: FakeClient } {
 	const client: FakeClient = {
 		callCount: 0,
+		// Default mock: /recent unavailable (null) → handler falls back to getEmotionalState.
+		async getRecentEmotionalStates() {
+			return null;
+		},
 		async getEmotionalState() {
 			client.callCount++;
-			if (summary === null) return null;
-			return {
-				resourceId: "es-test",
-				summary,
-				extractedAt: "2026-04-17T00:00:00Z",
-				sessionId: null,
-				relationshipId: "rel-x",
-			};
+			return summary === null ? null : st(summary);
+		},
+	};
+	return { client };
+}
+
+/** Mock where /emotional-state/recent IS available and returns the given arc. */
+function makeArcClient(states: State[] | null): {
+	client: FakeClient & { recentCalls: number };
+} {
+	const client = {
+		callCount: 0,
+		recentCalls: 0,
+		async getRecentEmotionalStates() {
+			client.recentCalls++;
+			return states;
+		},
+		async getEmotionalState() {
+			client.callCount++;
+			return null;
 		},
 	};
 	return { client };
@@ -253,4 +279,56 @@ test("emotional-state store — debounces repeated stores within the window", as
 	await handler({ success: true, messages: richMessages }, { trigger: "user" });
 	await handler({ success: true, messages: richMessages }, { trigger: "user" });
 	assert.equal(stores.length, 1, "second store within the debounce window is skipped");
+});
+
+// ---- the arc: inject last N via /emotional-state/recent --------------------
+
+test("emotional-state fetch — injects the recent ARC (multiple registers, most recent first)", async () => {
+	const { client } = makeArcClient([
+		st("Warm and close right now.", "2026-06-24T20:00:00Z"),
+		st("Tender after a hard day.", "2026-06-24T18:00:00Z"),
+		st("Playful and light.", "2026-06-23T12:00:00Z"),
+	]);
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		cfg,
+	);
+	const out = await handler({}, { sessionKey: "arc-1" });
+	const ctx = (out as { prependContext?: string })?.prependContext ?? "";
+	assert.match(ctx, /Warm and close/);
+	assert.match(ctx, /Tender after a hard day/);
+	assert.match(ctx, /Playful and light/);
+	assert.match(ctx, /most recent first/);
+	assert.equal(client.recentCalls, 1);
+	assert.equal(client.callCount, 0, "uses /recent — no fallback to single getEmotionalState");
+});
+
+test("emotional-state fetch — filters raw-transcript placeholders out of the arc", async () => {
+	const { client } = makeArcClient([
+		st("Warm and steady."),
+		st("user: hey\nassistant: hi"), // pending placeholder — must be dropped
+		st("Grateful and close."),
+	]);
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		cfg,
+	);
+	const out = await handler({}, { sessionKey: "arc-2" });
+	const ctx = (out as { prependContext?: string })?.prependContext ?? "";
+	assert.match(ctx, /Warm and steady/);
+	assert.match(ctx, /Grateful and close/);
+	assert.doesNotMatch(ctx, /user: hey/);
+});
+
+test("emotional-state fetch — falls back to single latest when /recent is unavailable (404 → null)", async () => {
+	// makeClient's getRecentEmotionalStates returns null → fallback path.
+	const { client } = makeClient("Just the latest register.");
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		cfg,
+	);
+	const out = await handler({}, { sessionKey: "arc-fallback" });
+	const ctx = (out as { prependContext?: string })?.prependContext ?? "";
+	assert.match(ctx, /Just the latest register/);
+	assert.equal(client.callCount, 1, "fell back to getEmotionalState");
 });
