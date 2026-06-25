@@ -643,6 +643,50 @@ export class HyperspellClient {
 		return result;
 	}
 
+	/**
+	 * The most recent emotional states (newest first), up to `limit` — for
+	 * surfacing the recent ARC of how a relationship has felt, not just one
+	 * snapshot. Returns `null` when the backend doesn't expose
+	 * `/emotional-state/recent` yet (404) so callers can fall back to
+	 * `getEmotionalState`. Other non-OK responses throw.
+	 */
+	async getRecentEmotionalStates(
+		relationshipId?: string,
+		limit = 3,
+	): Promise<EmotionalStateLatest[] | null> {
+		log.debugRequest("emotional-state.recent", { relationshipId, limit });
+
+		const url = new URL(`${API_BASE_URL}/emotional-state/recent`);
+		if (relationshipId) url.searchParams.set("relationship_id", relationshipId);
+		url.searchParams.set("limit", String(limit));
+
+		const res = await fetch(url.toString(), {
+			method: "GET",
+			headers: this.rawHeaders(),
+		});
+
+		if (res.status === 404) {
+			// Endpoint not deployed yet — signal the caller to fall back.
+			log.debug("emotional-state.recent unavailable (404) — caller falls back to latest");
+			return null;
+		}
+		if (!res.ok) {
+			const text = await res.text().catch(() => "");
+			throw new Error(`GET /emotional-state/recent failed (${res.status}): ${text}`);
+		}
+
+		const data = (await res.json()) as Array<Record<string, unknown>> | null;
+		const list: EmotionalStateLatest[] = (data ?? []).map((d) => ({
+			resourceId: d.resource_id as string,
+			summary: (d.summary as string) ?? "",
+			extractedAt: (d.extracted_at as string) ?? "",
+			sessionId: (d.session_id as string | null) ?? null,
+			relationshipId: (d.relationship_id as string | null) ?? null,
+		}));
+		log.debugResponse("emotional-state.recent", { count: list.length });
+		return list;
+	}
+
 	async deleteEmotionalState(relationshipId?: string): Promise<{ deletedCount: number }> {
 		log.debugRequest("emotional-state.delete", { relationshipId });
 

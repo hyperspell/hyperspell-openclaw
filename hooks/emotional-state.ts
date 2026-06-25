@@ -1,7 +1,10 @@
-import type { HyperspellClient } from "../client.ts";
+import type { EmotionalStateLatest, HyperspellClient } from "../client.ts";
 import type { HyperspellConfig } from "../config.ts";
 import { log } from "../logger.ts";
 import { sanitizeTraceText } from "./auto-trace.ts";
+
+/** How many recent registers to surface as the "arc" at session start. */
+const EMOTIONAL_ARC_LIMIT = 3;
 
 type Message = { role?: string; content?: string | unknown };
 type AgentContext = { sessionKey?: string; trigger?: string };
@@ -95,6 +98,66 @@ export function looksLikeRawTranscript(summary: string): boolean {
 	return /(^|\n)\s*(user|assistant)\s*:/i.test(summary);
 }
 
+/** Compact relative time for the arc labels (e.g. "just now", "3h ago", "2d ago"). */
+function relativeWhen(iso: string): string {
+	if (!iso) return "";
+	try {
+		const mins = (Date.now() - new Date(iso).getTime()) / 60000;
+		if (Number.isNaN(mins)) return "";
+		if (mins < 2) return "just now";
+		if (mins < 60) return `${Math.floor(mins)}m ago`;
+		const hrs = mins / 60;
+		if (hrs < 24) return `${Math.floor(hrs)}h ago`;
+		const days = hrs / 24;
+		if (days < 7) return `${Math.floor(days)}d ago`;
+		return new Date(iso).toLocaleDateString("en", { month: "short", day: "numeric" });
+	} catch {
+		return "";
+	}
+}
+
+/**
+ * Prefer the recent ARC (last N registers) so a single shallow read can't
+ * misrepresent the relationship. Falls back to the single latest when the
+ * backend doesn't expose `/emotional-state/recent` yet (returns null) or errors
+ * — so this works before AND after that endpoint deploys.
+ */
+async function fetchRecentOrLatest(
+	client: HyperspellClient,
+	cfg: HyperspellConfig,
+): Promise<EmotionalStateLatest[]> {
+	try {
+		const recent = await client.getRecentEmotionalStates(
+			cfg.relationshipId,
+			EMOTIONAL_ARC_LIMIT,
+		);
+		if (recent !== null) return recent; // endpoint available (may be empty)
+	} catch (err) {
+		log.debug("emotional-context: /recent unavailable — falling back to latest", err);
+	}
+	const single = await client.getEmotionalState(cfg.relationshipId);
+	return single ? [single] : [];
+}
+
+/** Build the injected emotional-context block from one or more registers. */
+function buildEmotionalContext(states: EmotionalStateLatest[]): string {
+	const intro =
+		states.length > 1
+			? "How your relationship with this user has felt across your recent conversations, most recent first. Let the trajectory inform your tone — don't reference it explicitly."
+			: "The emotional register of your relationship with this user from your last interaction. Let it inform your tone — don't reference it explicitly.";
+	const lines = states.map((s) => {
+		const when = relativeWhen(s.extractedAt);
+		return when ? `- [${when}] ${s.summary}` : `- ${s.summary}`;
+	});
+	return [
+		"<hyperspell-emotional-context>",
+		intro,
+		"",
+		...lines,
+		"</hyperspell-emotional-context>",
+	].join("\n");
+}
+
 /**
  * Fetch emotional state on the first agent turn of a session and inject into
  * context. On later turns of the same session, return undefined — the
@@ -113,38 +176,33 @@ export function buildEmotionalStateFetchHandler(
 		}
 
 		try {
-			const state = await client.getEmotionalState(cfg.relationshipId);
+			const states = await fetchRecentOrLatest(client, cfg);
 
-			if (!state) {
+			// Drop raw-transcript placeholders: extraction is async, so for ~10s
+			// after a store the register can be the RAW input transcript, not the
+			// distilled feeling. Injecting that is useless and pollutes tone.
+			const usable = states.filter(
+				(s) => s.summary && !looksLikeRawTranscript(s.summary),
+			);
+
+			if (usable.length === 0) {
+				if (states.length > 0) {
+					// State(s) exist but are all still extracting — don't cache, so a
+					// later turn re-fetches once extraction completes.
+					log.debug(
+						"emotional-context: state(s) still extracting — skipping injection this turn",
+					);
+					return;
+				}
 				log.debug("emotional-context: no prior emotional state found");
 				if (sessionKey) injectedSessions.add(sessionKey);
 				return;
 			}
 
-			// Extraction is async: for ~10s after a store, GET /emotional-state
-			// returns status=pending with `summary` set to the RAW transcript (the
-			// input), not the distilled register — and the response carries no
-			// status field to check. Detect that placeholder structurally (a real
-			// summary is second-person prose; a raw transcript has role-prefixed
-			// lines) and DON'T inject it: handing back the raw transcript as
-			// "feeling" is useless and pollutes tone. Don't cache, so a later turn
-			// re-fetches once extraction has completed.
-			if (looksLikeRawTranscript(state.summary)) {
-				log.debug(
-					"emotional-context: state still extracting (raw-transcript placeholder) — skipping injection this turn",
-				);
-				return;
-			}
-
-			log.debug(`emotional-context: injecting state from ${state.extractedAt}`);
-
-			const context = [
-				"<hyperspell-emotional-context>",
-				"The following captures the emotional register of your relationship with this user from your last interaction. Let it inform your tone — don't reference it explicitly.",
-				"",
-				state.summary,
-				"</hyperspell-emotional-context>",
-			].join("\n");
+			log.debug(
+				`emotional-context: injecting ${usable.length} recent register(s)`,
+			);
+			const context = buildEmotionalContext(usable);
 
 			if (sessionKey) injectedSessions.add(sessionKey);
 			return { prependContext: context };
