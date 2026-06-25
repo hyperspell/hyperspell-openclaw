@@ -154,6 +154,19 @@
 				"minimum": 1,
 				"maximum": 20
 			},
+			"ranking": {
+				"type": "object",
+				"additionalProperties": false,
+				"description": "Composite retrieval ranking — rank memories by more than raw relevance so kept memory (notes, journals, the active story) surfaces above auto-saved conversation fragments.",
+				"properties": {
+					"enabled": { "type": "boolean" },
+					"curationBoost": { "type": "number", "minimum": 0, "maximum": 1 },
+					"chatterPenalty": { "type": "number", "minimum": 0, "maximum": 1 },
+					"storyBoost": { "type": "number", "minimum": 0, "maximum": 1 },
+					"storyTerms": { "type": "array", "items": { "type": "string" } },
+					"candidateMultiplier": { "type": "number", "minimum": 1, "maximum": 10 }
+				}
+			},
 			"debug": {
 				"type": "boolean"
 			},

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import type { HyperspellConfig } from "../config.ts"
+import { DEFAULT_RANKING } from "./ranking.ts"
 import {
   buildScopeFilter,
   getCanReadScopes,
@@ -28,6 +29,7 @@ function cfg(overrides: Partial<HyperspellConfig["multiUser"]> = {}): Hyperspell
     sources: [],
     maxResults: 5,
     relevanceThreshold: 0.6,
+    ranking: DEFAULT_RANKING,
     debug: false,
     knowledgeGraph: { enabled: false, scanIntervalMinutes: 60, batchSize: 20 },
     startupOrientation: {

@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { DEFAULT_RANKING, type RankingWeights } from "./lib/ranking.ts";
 
 export type HyperspellSource =
 	| "reddit"
@@ -146,6 +147,7 @@ export type HyperspellConfig = {
 	sources: HyperspellSource[];
 	maxResults: number;
 	relevanceThreshold: number;
+	ranking: RankingWeights;
 	debug: boolean;
 	knowledgeGraph: KnowledgeGraphConfig;
 	multiUser?: MultiUserConfig;
@@ -164,6 +166,7 @@ const ALLOWED_KEYS = [
 	"sources",
 	"maxResults",
 	"relevanceThreshold",
+	"ranking",
 	"debug",
 	"knowledgeGraph",
 	"multiUser",
@@ -205,6 +208,24 @@ function resolveEnvVars(value: string): string {
 		}
 		return envValue;
 	});
+}
+
+function parseRanking(raw: unknown): RankingWeights {
+	const r = (raw ?? {}) as Record<string, unknown>;
+	const num = (v: unknown, d: number) => (typeof v === "number" ? v : d);
+	return {
+		enabled: (r.enabled as boolean) ?? DEFAULT_RANKING.enabled,
+		curationBoost: num(r.curationBoost, DEFAULT_RANKING.curationBoost),
+		chatterPenalty: num(r.chatterPenalty, DEFAULT_RANKING.chatterPenalty),
+		storyBoost: num(r.storyBoost, DEFAULT_RANKING.storyBoost),
+		storyTerms: Array.isArray(r.storyTerms)
+			? (r.storyTerms as unknown[]).map((t) => String(t)).filter((t) => t.length > 0)
+			: DEFAULT_RANKING.storyTerms,
+		candidateMultiplier: Math.max(
+			1,
+			num(r.candidateMultiplier, DEFAULT_RANKING.candidateMultiplier),
+		),
+	};
 }
 
 function parseSources(raw: string | string[] | undefined): HyperspellSource[] {
@@ -524,6 +545,7 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 		sources: parseSources(cfg.sources as string | string[] | undefined),
 		maxResults: (cfg.maxResults as number) ?? 10,
 		relevanceThreshold: (cfg.relevanceThreshold as number) ?? 0.6,
+		ranking: parseRanking(cfg.ranking),
 		debug: (cfg.debug as boolean) ?? false,
 		knowledgeGraph: {
 			enabled: (kgRaw.enabled as boolean) ?? false,
