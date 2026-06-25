@@ -4,6 +4,7 @@ import {
 	buildEmotionalStateCompactionHandler,
 	buildEmotionalStateFetchHandler,
 	buildEmotionalStateSessionCleanupHandler,
+	buildEmotionalStateStoreHandler,
 	looksLikeRawTranscript,
 } from "./emotional-state.ts";
 
@@ -187,4 +188,69 @@ test("emotional-state fetch — skips injecting a raw-transcript placeholder (pe
 	const second = await handler({}, ctx);
 	assert.equal(second, undefined);
 	assert.equal(client.callCount, 2, "not cached — re-fetched on the next turn");
+});
+
+// ---- store handler: cron-gate + debounce (the cadence fix) ----------------
+
+function makeStoreClient() {
+	const stores: Array<{ transcript: string; opts: { relationshipId?: string } }> = [];
+	const client = {
+		async storeEmotionalState(transcript: string, opts: { relationshipId?: string }) {
+			stores.push({ transcript, opts });
+			return { resourceId: "es-x", status: "pending", summary: "", extractedAt: "", sessionId: null, relationshipId: opts?.relationshipId ?? null };
+		},
+	};
+	return { client, stores };
+}
+
+const richMessages = [
+	{ role: "user", content: "hey, I had a really rough day and wanted to talk it through with you" },
+	{ role: "assistant", content: "I'm here. Tell me what happened — take your time." },
+	{ role: "user", content: "the deploy broke and I felt awful, but you always help me feel better" },
+];
+const storeCfg = (relationshipId: string) =>
+	({ relationshipId }) as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[1];
+
+test("emotional-state store — skips automated triggers (cron/heartbeat/memory don't count)", async () => {
+	for (const trigger of ["cron", "heartbeat", "memory"]) {
+		const { client, stores } = makeStoreClient();
+		const handler = buildEmotionalStateStoreHandler(
+			client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
+			storeCfg(`rel-${trigger}`),
+		);
+		await handler({ success: true, messages: richMessages }, { trigger });
+		assert.equal(stores.length, 0, `should NOT store for trigger=${trigger}`);
+	}
+});
+
+test("emotional-state store — stores for a real user conversation", async () => {
+	const { client, stores } = makeStoreClient();
+	const handler = buildEmotionalStateStoreHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
+		storeCfg("rel-user-store"),
+	);
+	await handler({ success: true, messages: richMessages }, { trigger: "user" });
+	assert.equal(stores.length, 1);
+	assert.equal(stores[0].opts.relationshipId, "rel-user-store");
+});
+
+test("emotional-state store — undefined trigger still stores (don't skip when unknown)", async () => {
+	const { client, stores } = makeStoreClient();
+	const handler = buildEmotionalStateStoreHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
+		storeCfg("rel-undef"),
+	);
+	await handler({ success: true, messages: richMessages }, {});
+	assert.equal(stores.length, 1);
+});
+
+test("emotional-state store — debounces repeated stores within the window", async () => {
+	const { client, stores } = makeStoreClient();
+	const handler = buildEmotionalStateStoreHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
+		storeCfg("rel-debounce"),
+	);
+	await handler({ success: true, messages: richMessages }, { trigger: "user" });
+	await handler({ success: true, messages: richMessages }, { trigger: "user" });
+	assert.equal(stores.length, 1, "second store within the debounce window is skipped");
 });
