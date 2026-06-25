@@ -1,7 +1,14 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import type { SearchResult } from "../client.ts";
-import { classifyResult, DEFAULT_RANKING, rerank, scoreResult } from "./ranking.ts";
+import {
+	classifyResult,
+	DEFAULT_RANKING,
+	rerank,
+	type RankedResult,
+	scoreResult,
+	selectRanked,
+} from "./ranking.ts";
 
 const mk = (over: Partial<SearchResult>): SearchResult => ({
 	resourceId: "r1",
@@ -74,4 +81,33 @@ test("rerank — the story gets the strongest lift", () => {
 	const { kind, composite } = scoreResult(story, { ...DEFAULT_RANKING, storyTerms: ["lady of storms"] });
 	assert.equal(kind, "story");
 	assert.ok(composite >= 0.5 + DEFAULT_RANKING.storyBoost);
+});
+
+const ranked = (kind: RankedResult["_kind"], composite: number, id: string): RankedResult => ({
+	...mk({ resourceId: id }),
+	_kind: kind,
+	_base: composite,
+	_composite: composite,
+});
+
+test("selectRanked — caps chatter at the quota regardless of score, keeps real memory", () => {
+	// 4 high-scoring echoes + 1 curated; quota=2 must let only 2 echoes through.
+	const list = [
+		ranked("chatter", 0.9, "c1"),
+		ranked("chatter", 0.85, "c2"),
+		ranked("chatter", 0.8, "c3"),
+		ranked("curated", 0.7, "k1"),
+		ranked("chatter", 0.65, "c4"),
+	];
+	const sel = selectRanked(list, 10, 0.6, 2);
+	assert.equal(sel.filter((r) => r._kind === "chatter").length, 2, "no more than 2 chatter");
+	assert.ok(sel.some((r) => r._kind === "curated"), "real memory still surfaces");
+	assert.deepEqual(sel.map((r) => r.resourceId), ["c1", "c2", "k1"]);
+});
+
+test("selectRanked — drops below-threshold and honors maxResults", () => {
+	const list = [ranked("curated", 0.9, "a"), ranked("curated", 0.8, "c"), ranked("other", 0.5, "b")];
+	const sel = selectRanked(list, 1, 0.6, 2);
+	assert.equal(sel.length, 1, "maxResults respected");
+	assert.equal(sel[0].resourceId, "a");
 });

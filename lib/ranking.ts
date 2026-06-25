@@ -26,6 +26,11 @@ export type RankingWeights = {
 	/** Fetch this many × maxResults as candidates, so true-but-quiet memory is
 	 * in the pool to be re-ranked rather than cut off below the fetch limit. */
 	candidateMultiplier: number;
+	/** Hard cap on how many CHATTER (auto-saved conversation echo) results may be
+	 * injected, regardless of score. A high-similarity echo can clear any penalty;
+	 * the quota guarantees it can inform but never flood, keeping slots for real
+	 * memory. Penalty alone can't bound the count. */
+	chatterQuota: number;
 };
 
 export const DEFAULT_RANKING: RankingWeights = {
@@ -35,6 +40,7 @@ export const DEFAULT_RANKING: RankingWeights = {
 	storyBoost: 0.15,
 	storyTerms: [],
 	candidateMultiplier: 3,
+	chatterQuota: 2,
 };
 
 const UUID_RE =
@@ -111,4 +117,30 @@ export function rerank(
 			}) as RankedResult;
 		})
 		.sort((a, b) => b._composite - a._composite);
+}
+
+/**
+ * Choose which ranked results to inject: keep those clearing `threshold` on
+ * their composite, cap CHATTER at `chatterQuota` regardless of score (so a
+ * high-similarity echo can inform but never flood — the penalty bounds rank,
+ * the quota bounds count), and stop at `maxResults`.
+ */
+export function selectRanked(
+	ranked: RankedResult[],
+	maxResults: number,
+	threshold: number,
+	chatterQuota: number,
+): RankedResult[] {
+	const out: RankedResult[] = [];
+	let chatter = 0;
+	for (const r of ranked) {
+		if (r._composite < threshold) continue;
+		if (r._kind === "chatter") {
+			if (chatter >= chatterQuota) continue;
+			chatter++;
+		}
+		out.push(r);
+		if (out.length >= maxResults) break;
+	}
+	return out;
 }
