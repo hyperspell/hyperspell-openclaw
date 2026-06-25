@@ -4,10 +4,30 @@ import { log } from "../logger.ts";
 import { sanitizeTraceText } from "./auto-trace.ts";
 
 type Message = { role?: string; content?: string | unknown };
-type AgentContext = { sessionKey?: string };
+type AgentContext = { sessionKey?: string; trigger?: string };
 
 const MIN_MESSAGES = 3;
 const MIN_CONVERSATION_LENGTH = 100;
+
+/**
+ * Only REAL human conversations should shape her emotional register. Automated
+ * runs — cron check-ins, heartbeats, internal memory passes — are not "how the
+ * relationship feels"; counting them lets a throwaway "how's your afternoon?"
+ * heartbeat overwrite the register from a deep conversation (the whipsaw).
+ * `ctx.trigger` is one of cron|heartbeat|manual|memory|overflow|user; we store
+ * only for user-driven turns (and `overflow`, a continuation of a user run).
+ */
+const NON_CONVERSATIONAL_TRIGGERS = new Set(["cron", "heartbeat", "memory"]);
+
+/**
+ * Debounce window: don't re-extract the register on every turn of an active
+ * conversation (each store is a backend LLM call, and the latest already carries
+ * the full transcript). One snapshot per ~few minutes of real talk is plenty.
+ */
+const STORE_DEBOUNCE_MS = 3 * 60 * 1000;
+
+/** relationshipId → last successful store time (ms). Module-scoped, per process. */
+const lastStoreAt = new Map<string, number>();
 
 /**
  * Sessions where emotional context has already been injected this run.
@@ -169,9 +189,17 @@ export function buildEmotionalStateStoreHandler(
 	client: HyperspellClient,
 	cfg: HyperspellConfig,
 ) {
-	return async (event: Record<string, unknown>) => {
+	return async (event: Record<string, unknown>, ctx?: AgentContext) => {
 		if (event.success === false) {
 			log.debug("emotional-state: skipping — agent ended with error");
+			return;
+		}
+
+		// Only real human conversations count — skip cron/heartbeat/memory runs so
+		// an automated check-in can't overwrite the register from a real talk.
+		const trigger = ctx?.trigger;
+		if (trigger && NON_CONVERSATIONAL_TRIGGERS.has(trigger)) {
+			log.debug(`emotional-state: skipping — non-conversational trigger (${trigger})`);
 			return;
 		}
 
@@ -191,11 +219,22 @@ export function buildEmotionalStateStoreHandler(
 			return;
 		}
 
+		// Debounce: at most one snapshot per STORE_DEBOUNCE_MS of active talk.
+		const relId = cfg.relationshipId ?? "";
+		const since = Date.now() - (lastStoreAt.get(relId) ?? 0);
+		if (since < STORE_DEBOUNCE_MS) {
+			log.debug(
+				`emotional-state: skipping — debounced (${Math.round(since / 1000)}s since last store)`,
+			);
+			return;
+		}
+
 		try {
 			const result = await client.storeEmotionalState(transcript, {
 				relationshipId: cfg.relationshipId,
 				metadata: { source: "openclaw_agent_end" },
 			});
+			lastStoreAt.set(relId, Date.now());
 			log.info(`emotional-state: stored ${result.resourceId}`);
 		} catch (err) {
 			// Fire-and-forget — never let this break the session
