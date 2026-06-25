@@ -11,6 +11,7 @@ import {
   getMemoryFiles,
 } from "../sync/markdown.ts"
 import { openInBrowser } from "../lib/browser.ts"
+import { DEFAULT_RANKING } from "../lib/ranking.ts"
 import { HyperspellClient } from "../client.ts"
 import { getWorkspaceDir, parseConfig, resolveConfigPath } from "../config.ts"
 import { buildExtractionPrompt, CRON_JOB_NAME } from "../graph/cron.ts"
@@ -356,6 +357,7 @@ async function runSetup(): Promise<void> {
         sources: [],
         maxResults: 10,
         relevanceThreshold: 0.6,
+        ranking: DEFAULT_RANKING,
         debug: false,
         knowledgeGraph: { enabled: false, scanIntervalMinutes: 60, batchSize: 20 },
         startupOrientation: {

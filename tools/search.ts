@@ -24,7 +24,7 @@ export function createSearchToolFactory(
     name: "hyperspell_search",
     label: "Memory Search",
     description:
-      "Search the user's long-term memory and connected sources for anything not already in the current conversation. Covers: saved memories and notes; past conversations — including ones from earlier or parallel sessions you have no transcript for; and connected sources (Notion, Slack, Gmail, Google Drive, etc.). Reach for this whenever the user refers to something from before, asks what was said / decided / remembered, or when relevant context likely exists but isn't in front of you — search before concluding you don't know.",
+      "Search the user's long-term memory and connected sources: saved memories and notes; past conversations — including earlier or parallel sessions you have no transcript for; and connected sources (Notion, Slack, Gmail, Google Drive, etc.). Use this PROACTIVELY and by default, as a routine step — not only when asked. Before answering anything that touches the user's history, a past decision, a name, a promise, or something you might have recorded, search FIRST with a specific query and look. Don't answer from impression when you can check. If a search comes back empty, say so plainly — never fill the gap with something invented.",
     parameters: Type.Object({
       query: Type.String({ description: "Search query" }),
       limit: Type.Optional(

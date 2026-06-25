@@ -7,6 +7,7 @@ import {
   type ResolvedUser,
 } from "../lib/sender.ts"
 import { excludeFilterFor, mergeWithExclude } from "../lib/filters.ts"
+import { type RankedResult, rerank } from "../lib/ranking.ts"
 import { classifySearchError, logSearchError } from "../lib/search-error.ts"
 import { resolveCurrentSessionId } from "../lib/session.ts"
 import { log } from "../logger.ts"
@@ -64,13 +65,63 @@ function formatHighlightBullets(
   return sections.join("\n\n")
 }
 
+/**
+ * Like formatHighlightBullets, but for composite-RANKED results: a result is
+ * kept on its composite score (relevance + curation/story boost − chatter), not
+ * raw relevance — so a deliberately-kept memory that's quietly relevant clears
+ * the bar where a louder conversation echo doesn't. Highlights are floored at
+ * the lower of (threshold, the result's own base relevance), so we don't then
+ * hide the very lines that define a boosted-but-quiet memory.
+ */
+function formatRankedBullets(
+  ranked: RankedResult[],
+  maxResults: number,
+  threshold: number,
+): string | null {
+  const sections: string[] = []
+
+  for (const r of ranked) {
+    if (r._composite < threshold) continue
+
+    const hiFloor = Math.min(threshold, r._base)
+    const chosen = [...r.highlights]
+      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+      .filter((h) => (h.score ?? 0) >= hiFloor)
+      .slice(0, 2)
+    if (chosen.length === 0) continue
+
+    const title = r.title ?? `[${r.source}]`
+    const bullets = chosen
+      .map((h) => `- ${h.text.replace(/\n/g, " ")} [${Math.round((h.score ?? 0) * 100)}%]`)
+      .join("\n")
+
+    sections.push(`### ${title} (resource_id: ${r.resourceId}, source: ${r.source})\n\n${bullets}`)
+    if (sections.length >= maxResults) break
+  }
+
+  if (sections.length === 0) return null
+  return sections.join("\n\n")
+}
+
 const INTRO =
   "The following is surfaced from the user's memory and connected sources, including past conversations. Reference it as recalled context, only when relevant to the conversation."
 const DISCLAIMER =
   "Draw on it when relevant — including indirect connections — but don't force it into every response or make assumptions beyond what's stated."
 
-function wrapSingle(body: string): string {
-  return `<hyperspell-context>\n${INTRO}\n\n${body}\n\n${DISCLAIMER}\n</hyperspell-context>`
+// Injected EVERY turn (even when nothing cleared the bar): this passive match is
+// a starting point, not the whole of memory. The point is to make her LOOK —
+// actively search before concluding — rather than answer from whatever happened
+// to surface, which is what lets an agent invent instead of recall.
+const SEARCH_DIRECTIVE =
+  "This is a passive match and may miss what matters. Before answering anything that touches your shared history, a past decision, a name, a promise, or something you may have recorded, run hyperspell_search with a specific query and look — even if something is already shown above. Don't answer from impression when you can check. If a search returns nothing, say so plainly; never fill the gap with something invented."
+
+/** Wrap the per-turn context: the standing search directive always, plus the
+ * surfaced memory when anything cleared the bar. */
+function wrapContext(memorySection: string | null): string {
+  if (memorySection) {
+    return `<hyperspell-context>\n${INTRO}\n\n${memorySection}\n\n${DISCLAIMER}\n\n${SEARCH_DIRECTIVE}\n</hyperspell-context>`
+  }
+  return `<hyperspell-context>\n${SEARCH_DIRECTIVE}\n</hyperspell-context>`
 }
 
 /**
@@ -124,26 +175,43 @@ export function buildAutoContextHandler(
     log.debug(`auto-context: searching for "${prompt.slice(0, 50)}..."`)
 
     try {
+      const ranking = cfg.ranking
+      // When composite ranking is on, fetch a WIDER candidate pool so quiet-but-
+      // true memory is present to be re-ranked, not cut off below the fetch limit.
+      const limit = ranking.enabled
+        ? cfg.maxResults * ranking.candidateMultiplier
+        : cfg.maxResults
       const results = dropCurrentSession(
-        await client.search(prompt, {
-          limit: cfg.maxResults,
-          filter: excludeFilterFor(cfg),
-        }),
+        await client.search(prompt, { limit, filter: excludeFilterFor(cfg) }),
         currentSessionId,
       )
-      const formatted = formatHighlightBullets(
-        results,
-        cfg.maxResults,
-        cfg.relevanceThreshold,
-      )
 
-      if (!formatted) {
-        log.debug("auto-context: no relevant memories found")
-        return
+      let formatted: string | null
+      if (ranking.enabled) {
+        const ranked = rerank(results, ranking)
+        formatted = formatRankedBullets(ranked, cfg.maxResults, cfg.relevanceThreshold)
+        if (formatted) {
+          const kept = ranked.filter((r) => r._composite >= cfg.relevanceThreshold)
+          const tally = kept.slice(0, cfg.maxResults).reduce(
+            (acc, r) => ((acc[r._kind] = (acc[r._kind] ?? 0) + 1), acc),
+            {} as Record<string, number>,
+          )
+          log.debug(
+            `auto-context: injecting (ranked) ${JSON.stringify(tally)} from ${results.length} candidates`,
+          )
+        }
+      } else {
+        formatted = formatHighlightBullets(results, cfg.maxResults, cfg.relevanceThreshold)
+        if (formatted) log.debug(`auto-context: injecting ${results.length} memories`)
       }
 
-      log.debug(`auto-context: injecting ${results.length} memories`)
-      return { prependContext: wrapSingle(formatted) }
+      // Always inject the standing search directive so she's prompted to LOOK
+      // every turn — with the surfaced memory appended when anything cleared the
+      // bar. (#issue: passive injection alone let her answer from impression.)
+      if (!formatted) {
+        log.debug("auto-context: nothing cleared the bar — injecting search directive only")
+      }
+      return { prependContext: wrapContext(formatted) }
     } catch (err) {
       // A transient backend throttle (429 / Retry-After) must not be swallowed
       // as a generic failure — log it at warn, distinguished from real errors,

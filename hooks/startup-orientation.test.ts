@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import type { HyperspellClient, SearchResult } from "../client.ts";
 import type { HyperspellConfig, HyperspellSource } from "../config.ts";
+import { DEFAULT_RANKING } from "../lib/ranking.ts";
 import {
 	buildStartupOrientationCompactionHandler,
 	buildStartupOrientationHandler,
@@ -80,6 +81,7 @@ function makeCfg(overrides?: Partial<HyperspellConfig>): HyperspellConfig {
 		sources: [],
 		maxResults: 10,
 		relevanceThreshold: 0.6,
+		ranking: DEFAULT_RANKING,
 		debug: false,
 		knowledgeGraph: { enabled: false, scanIntervalMinutes: 60, batchSize: 20 },
 		...overrides,
