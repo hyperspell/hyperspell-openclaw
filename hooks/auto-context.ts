@@ -7,7 +7,7 @@ import {
   type ResolvedUser,
 } from "../lib/sender.ts"
 import { excludeFilterFor, mergeWithExclude } from "../lib/filters.ts"
-import { type RankedResult, rerank } from "../lib/ranking.ts"
+import { type RankedResult, rerank, selectRanked } from "../lib/ranking.ts"
 import { classifySearchError, logSearchError } from "../lib/search-error.ts"
 import { resolveCurrentSessionId } from "../lib/session.ts"
 import { log } from "../logger.ts"
@@ -66,23 +66,15 @@ function formatHighlightBullets(
 }
 
 /**
- * Like formatHighlightBullets, but for composite-RANKED results: a result is
- * kept on its composite score (relevance + curation/story boost − chatter), not
- * raw relevance — so a deliberately-kept memory that's quietly relevant clears
- * the bar where a louder conversation echo doesn't. Highlights are floored at
- * the lower of (threshold, the result's own base relevance), so we don't then
- * hide the very lines that define a boosted-but-quiet memory.
+ * Format already-SELECTED composite-ranked results (threshold + chatter quota
+ * applied upstream by selectRanked). Highlights are floored at the lower of
+ * (threshold, the result's own base relevance), so we don't hide the very lines
+ * that define a boosted-but-quiet memory.
  */
-function formatRankedBullets(
-  ranked: RankedResult[],
-  maxResults: number,
-  threshold: number,
-): string | null {
+function formatSelected(selected: RankedResult[], threshold: number): string | null {
   const sections: string[] = []
 
-  for (const r of ranked) {
-    if (r._composite < threshold) continue
-
+  for (const r of selected) {
     const hiFloor = Math.min(threshold, r._base)
     const chosen = [...r.highlights]
       .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
@@ -96,7 +88,6 @@ function formatRankedBullets(
       .join("\n")
 
     sections.push(`### ${title} (resource_id: ${r.resourceId}, source: ${r.source})\n\n${bullets}`)
-    if (sections.length >= maxResults) break
   }
 
   if (sections.length === 0) return null
@@ -108,20 +99,17 @@ const INTRO =
 const DISCLAIMER =
   "Draw on it when relevant — including indirect connections — but don't force it into every response or make assumptions beyond what's stated."
 
-// Injected EVERY turn (even when nothing cleared the bar): this passive match is
-// a starting point, not the whole of memory. The point is to make her LOOK —
-// actively search before concluding — rather than answer from whatever happened
-// to surface, which is what lets an agent invent instead of recall.
-const SEARCH_DIRECTIVE =
-  "This is a passive match and may miss what matters. Before answering anything that touches your shared history, a past decision, a name, a promise, or something you may have recorded, run hyperspell_search with a specific query and look — even if something is already shown above. Don't answer from impression when you can check. If a search returns nothing, say so plainly; never fill the gap with something invented."
+// A short, CONDITIONAL reminder appended only to a real memory block (not a
+// standing every-turn imperative — that reads as ambient framing and trains
+// search-as-ritual; the agent's own instructions carry the standing rule). The
+// point here is just: what surfaced is a passive match, not all of memory.
+const SEARCH_REMINDER =
+  "This is a passive match, not all of memory — if the answer turns on a specific past decision, promise, name, or something recorded, search for it directly before concluding, and say so plainly if it isn't there."
 
-/** Wrap the per-turn context: the standing search directive always, plus the
- * surfaced memory when anything cleared the bar. */
-function wrapContext(memorySection: string | null): string {
-  if (memorySection) {
-    return `<hyperspell-context>\n${INTRO}\n\n${memorySection}\n\n${DISCLAIMER}\n\n${SEARCH_DIRECTIVE}\n</hyperspell-context>`
-  }
-  return `<hyperspell-context>\n${SEARCH_DIRECTIVE}\n</hyperspell-context>`
+/** Wrap a real memory block. No memory → no injection (caller returns nothing);
+ * the standing search rule lives in the agent's own instructions, not here. */
+function wrapContext(memorySection: string): string {
+  return `<hyperspell-context>\n${INTRO}\n\n${memorySection}\n\n${DISCLAIMER}\n\n${SEARCH_REMINDER}\n</hyperspell-context>`
 }
 
 /**
@@ -189,15 +177,22 @@ export function buildAutoContextHandler(
       let formatted: string | null
       if (ranking.enabled) {
         const ranked = rerank(results, ranking)
-        formatted = formatRankedBullets(ranked, cfg.maxResults, cfg.relevanceThreshold)
+        // Threshold + chatter quota applied here, so a high-similarity echo can
+        // inform but never flood (the quota bounds count; the penalty bounds rank).
+        const selected = selectRanked(
+          ranked,
+          cfg.maxResults,
+          cfg.relevanceThreshold,
+          ranking.chatterQuota,
+        )
+        formatted = formatSelected(selected, cfg.relevanceThreshold)
         if (formatted) {
-          const kept = ranked.filter((r) => r._composite >= cfg.relevanceThreshold)
-          const tally = kept.slice(0, cfg.maxResults).reduce(
+          const tally = selected.reduce(
             (acc, r) => ((acc[r._kind] = (acc[r._kind] ?? 0) + 1), acc),
             {} as Record<string, number>,
           )
           log.debug(
-            `auto-context: injecting (ranked) ${JSON.stringify(tally)} from ${results.length} candidates`,
+            `auto-context: injecting (ranked) ${JSON.stringify(tally)} from ${results.length} candidates (chatter cap ${ranking.chatterQuota})`,
           )
         }
       } else {
@@ -205,11 +200,12 @@ export function buildAutoContextHandler(
         if (formatted) log.debug(`auto-context: injecting ${results.length} memories`)
       }
 
-      // Always inject the standing search directive so she's prompted to LOOK
-      // every turn — with the surfaced memory appended when anything cleared the
-      // bar. (#issue: passive injection alone let her answer from impression.)
+      // No memory cleared the bar → no injection. The standing "search before you
+      // conclude" rule lives in the agent's own instructions, not an ambient
+      // every-turn banner (which reads as framing and trains search-as-ritual).
       if (!formatted) {
-        log.debug("auto-context: nothing cleared the bar — injecting search directive only")
+        log.debug("auto-context: no relevant memories found")
+        return
       }
       return { prependContext: wrapContext(formatted) }
     } catch (err) {

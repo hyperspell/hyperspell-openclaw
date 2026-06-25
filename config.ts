@@ -225,6 +225,7 @@ function parseRanking(raw: unknown): RankingWeights {
 			1,
 			num(r.candidateMultiplier, DEFAULT_RANKING.candidateMultiplier),
 		),
+		chatterQuota: Math.max(0, num(r.chatterQuota, DEFAULT_RANKING.chatterQuota)),
 	};
 }
 

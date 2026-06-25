@@ -164,7 +164,8 @@
 					"chatterPenalty": { "type": "number", "minimum": 0, "maximum": 1 },
 					"storyBoost": { "type": "number", "minimum": 0, "maximum": 1 },
 					"storyTerms": { "type": "array", "items": { "type": "string" } },
-					"candidateMultiplier": { "type": "number", "minimum": 1, "maximum": 10 }
+					"candidateMultiplier": { "type": "number", "minimum": 1, "maximum": 10 },
+					"chatterQuota": { "type": "number", "minimum": 0, "maximum": 20 }
 				}
 			},
 			"debug": {
