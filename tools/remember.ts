@@ -7,6 +7,8 @@ import {
   resolveUser,
   routeWrite,
 } from "../lib/sender.ts"
+import { resolveCurrentSessionId } from "../lib/session.ts"
+import { isMultiSpeaker } from "../lib/speaker-tracker.ts"
 import { log } from "../logger.ts"
 
 export function createRememberToolFactory(
@@ -45,6 +47,23 @@ export function createRememberToolFactory(
       _toolCallId: string,
       params: { text: string; title?: string; date?: string; userId?: string; scope?: string },
     ) {
+      // Decline silently-wrong writes in multi-speaker sessions with no multiUser
+      // config. Without per-sender routing the memory would land under cfg.userId
+      // regardless of who asked — contaminating the primary user's store with
+      // another person's data (attribution gap 1, issue #59 follow-up).
+      const sessionId = resolveCurrentSessionId(undefined, ctx)
+      if (isMultiSpeaker(sessionId, ctx?.is_group_chat === true) && !cfg.multiUser) {
+        log.warn("remember tool: declining write — multi-speaker session with no multiUser config; cannot attribute memory to current speaker")
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "I can't store this memory right now — this is a multi-speaker session and without per-user memory configuration I have no way to attribute it to the right person. The memory would land in the primary user's store regardless of who asked. To fix this, add a `multiUser` config block to the plugin settings.",
+            },
+          ],
+        }
+      }
+
       const resolved = resolveUser(ctx, cfg)
 
       // Scope resolution: explicit param > role default > global default > "private"

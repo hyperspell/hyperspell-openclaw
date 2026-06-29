@@ -1,5 +1,7 @@
 import type { EmotionalStateLatest, HyperspellClient } from "../client.ts";
 import type { HyperspellConfig } from "../config.ts";
+import { resolveCurrentSessionId } from "../lib/session.ts";
+import { isMultiSpeaker } from "../lib/speaker-tracker.ts";
 import { log } from "../logger.ts";
 import { sanitizeTraceText } from "./auto-trace.ts";
 import { buildMoodWeatherContext, rollMood } from "./mood-weather.ts";
@@ -280,14 +282,14 @@ export function buildEmotionalStateStoreHandler(
 			return;
 		}
 
-		// Skip storing when a group chat has no multiUser config: the register is
-		// keyed to a single relationshipId but the transcript mixes multiple speakers,
-		// so a store would corrupt "how the relationship feels" with an undifferentiated
-		// group blend. Proper fix is per-sender relationshipIds via multiUser config
-		// (issue #59).
-		if ((ctx as Record<string, unknown>)?.is_group_chat === true && !cfg.multiUser) {
+		// Skip storing when multiple speakers are present with no multiUser config:
+		// the register is keyed to a single relationshipId but the transcript mixes
+		// speakers, corrupting "how the relationship feels" with an undifferentiated
+		// blend. Uses both is_group_chat and sender_id drift detection (issue #59).
+		const sessionId = resolveCurrentSessionId(event, ctx as Record<string, unknown>);
+		if (isMultiSpeaker(sessionId, (ctx as Record<string, unknown>)?.is_group_chat === true) && !cfg.multiUser) {
 			log.warn(
-				"emotional-state: skipping store — group chat with no multiUser config would corrupt the relationship register with a mixed-speaker transcript (see issue #59)",
+				"emotional-state: skipping store — multi-speaker session with no multiUser config would corrupt the relationship register with a mixed-speaker transcript (see issue #59)",
 			);
 			return;
 		}

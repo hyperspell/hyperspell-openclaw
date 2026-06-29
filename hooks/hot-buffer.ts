@@ -1,6 +1,12 @@
 import type { HyperspellClient } from "../client.ts";
 import type { HyperspellConfig } from "../config.ts";
 import { resolveUser } from "../lib/sender.ts";
+import {
+	cleanupSpeakerSession,
+	isMultiSpeaker,
+	recordSender,
+	senderIdFromCtx,
+} from "../lib/speaker-tracker.ts";
 import { log } from "../logger.ts";
 import { sanitizeTraceText } from "./auto-trace.ts";
 
@@ -107,30 +113,35 @@ export function buildHotBufferHandler(
 		const resourceId = sessionId;
 		const sent = sentBySession.get(sessionId) ?? new Set<string>();
 
-		// Warn once per session when a group chat has no multiUser config: every
-		// turn collapses to cfg.userId with no speaker attribution, feeding the
-		// identity-bleed retrieval failure tracked in #58/#59.
-		if (ctx?.is_group_chat === true && !cfg.multiUser && !warnedGroupSessions.has(sessionId)) {
+		// Record the current sender for evidence-based multi-speaker detection.
+		// isMultiSpeaker() will return true once a second distinct sender_id
+		// appears in this session, regardless of whether is_group_chat was set.
+		const senderId = senderIdFromCtx(ctx);
+		recordSender(sessionId, senderId);
+
+		const groupChat = isMultiSpeaker(sessionId, ctx?.is_group_chat === true);
+
+		// Warn once per session when multiple speakers have no multiUser config.
+		if (groupChat && !cfg.multiUser && !warnedGroupSessions.has(sessionId)) {
 			warnedGroupSessions.add(sessionId);
 			log.warn(
-				"hot-buffer: group chat detected but multiUser is not configured — all turns written under cfg.userId with no speaker attribution (see issues #58/#59)",
+				"hot-buffer: multi-speaker session detected but multiUser is not configured — all turns written under cfg.userId with no speaker attribution (see issues #58/#59)",
 			);
 		}
 
-		// In group-chat single-user mode, prefix each human turn with the sender
+		// In multi-speaker single-user mode, prefix each human turn with the sender
 		// name so attribution survives in stored text. Metadata on hot-buffer
 		// writes suppresses indexing (Hyperspell #1921), so the text content is
 		// the only place attribution can land. Only prefix when we have an
-		// envelope-derived name (ctx.sender / ctx.username via resolveUser) —
-		// if it equals cfg.userId the sender field was absent and prefixing
-		// "alinea:" onto someone else's message would be wrong (issue #59).
-		const speakerPrefix =
-			ctx?.is_group_chat === true &&
-			!cfg.multiUser &&
-			resolved?.name &&
-			resolved.name !== (cfg.userId ?? "")
-				? `[${resolved.name}]: `
+		// envelope-derived name — if it equals cfg.userId the sender field was
+		// absent and prefixing "alinea:" onto someone else's message would mislead.
+		// Escape ] to keep the [Name]: format parseable (issue #59 follow-up).
+		const envName =
+			resolved?.name && resolved.name !== (cfg.userId ?? "")
+				? resolved.name.replace(/\]/g, "").trim()
 				: undefined;
+		const speakerPrefix =
+			groupChat && !cfg.multiUser && envName ? `[${envName}]: ` : undefined;
 
 		const pending: Array<{
 			resourceId: string;
@@ -225,6 +236,7 @@ export function buildHotBufferSessionCleanupHandler() {
 		if (sessionId) {
 			sentBySession.delete(sessionId);
 			warnedGroupSessions.delete(sessionId);
+			cleanupSpeakerSession(sessionId);
 		}
 	};
 }
