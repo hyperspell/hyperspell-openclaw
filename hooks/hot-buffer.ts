@@ -21,6 +21,9 @@ const MAX_TOTAL_CHARS = 5_242_880;
  */
 const sentBySession = new Map<string, Set<string>>();
 
+/** Sessions where we've already emitted the group-chat attribution warning. */
+const warnedGroupSessions = new Set<string>();
+
 /**
  * Flatten a message's content into a single sanitized text string. Mirrors the
  * auto-trace sanitizer so the hot buffer never captures injected
@@ -102,6 +105,16 @@ export function buildHotBufferHandler(
 			crypto.randomUUID();
 		const resourceId = sessionId;
 		const sent = sentBySession.get(sessionId) ?? new Set<string>();
+
+		// Warn once per session when a group chat has no multiUser config: every
+		// turn collapses to cfg.userId with no speaker attribution, feeding the
+		// identity-bleed retrieval failure tracked in #58/#59.
+		if (ctx?.is_group_chat === true && !cfg.multiUser && !warnedGroupSessions.has(sessionId)) {
+			warnedGroupSessions.add(sessionId);
+			log.warn(
+				"hot-buffer: group chat detected but multiUser is not configured — all turns written under cfg.userId with no speaker attribution (see issues #58/#59)",
+			);
+		}
 
 		const pending: Array<{
 			resourceId: string;
@@ -188,10 +201,13 @@ export function buildHotBufferHandler(
 	};
 }
 
-/** Drop the per-session sent-set on session end to avoid unbounded growth. */
+/** Drop per-session state on session end to avoid unbounded growth. */
 export function buildHotBufferSessionCleanupHandler() {
 	return (event: Record<string, unknown>) => {
 		const sessionId = event.sessionId as string | undefined;
-		if (sessionId) sentBySession.delete(sessionId);
+		if (sessionId) {
+			sentBySession.delete(sessionId);
+			warnedGroupSessions.delete(sessionId);
+		}
 	};
 }
