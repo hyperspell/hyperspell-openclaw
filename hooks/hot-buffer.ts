@@ -83,7 +83,8 @@ export function buildHotBufferHandler(
 
 		// X-As-User is mandatory for /messages. Resolve the owner up front and
 		// skip (with a clear warning) rather than firing requests that 422.
-		const userId = resolveUser(ctx, cfg)?.userId;
+		const resolved = resolveUser(ctx, cfg);
+		const userId = resolved?.userId;
 		if (!userId) {
 			log.warn(
 				"hot-buffer: no userId resolved (X-As-User required) — skipping write",
@@ -116,6 +117,21 @@ export function buildHotBufferHandler(
 			);
 		}
 
+		// In group-chat single-user mode, prefix each human turn with the sender
+		// name so attribution survives in stored text. Metadata on hot-buffer
+		// writes suppresses indexing (Hyperspell #1921), so the text content is
+		// the only place attribution can land. Only prefix when we have an
+		// envelope-derived name (ctx.sender / ctx.username via resolveUser) —
+		// if it equals cfg.userId the sender field was absent and prefixing
+		// "alinea:" onto someone else's message would be wrong (issue #59).
+		const speakerPrefix =
+			ctx?.is_group_chat === true &&
+			!cfg.multiUser &&
+			resolved?.name &&
+			resolved.name !== (cfg.userId ?? "")
+				? `[${resolved.name}]: `
+				: undefined;
+
 		const pending: Array<{
 			resourceId: string;
 			messageId: string;
@@ -135,6 +151,7 @@ export function buildHotBufferHandler(
 			}
 
 			let text = extractText(m.content);
+			if (role === "user" && speakerPrefix) text = speakerPrefix + text;
 			if (text.length === 0) continue;
 
 			if (text.length > MAX_CONTENT_CHARS) {
