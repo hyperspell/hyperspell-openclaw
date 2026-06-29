@@ -9,6 +9,9 @@ type ContentItem = { type?: string; text?: string } & Record<string, unknown>;
 const MIN_MESSAGES = 3;
 const MIN_CONVERSATION_LENGTH = 100;
 
+/** Sessions where we've already emitted the group-chat attribution warning. */
+const warnedGroupTraceSessions = new Set<string>();
+
 /**
  * Strip transport/injection metadata from a text blob before it's stored as a
  * trace memory. Without this the auto-context and emotional-state hooks'
@@ -170,6 +173,17 @@ export function buildAutoTraceHandler(
 
 		const sessionId = (event.sessionId as string) ?? crypto.randomUUID();
 		const history = messagesToJSONL(messages, sessionId);
+
+		// Warn once per session when group chat has no multiUser config: all turns
+		// collapse into a single undifferentiated trace, same as the hot-buffer
+		// problem (issue #59). Unlike hot-buffer there's no content-prefix workaround
+		// for JSONL traces — proper fix requires multiUser config.
+		if (ctx?.is_group_chat === true && !cfg.multiUser && !warnedGroupTraceSessions.has(sessionId)) {
+			warnedGroupTraceSessions.add(sessionId);
+			log.warn(
+				"auto-trace: group chat detected but multiUser is not configured — trace will mix all speakers under cfg.userId with no attribution (see issues #58/#59)",
+			);
+		}
 
 		// Title from first user message
 		const firstUser = (messages as Message[]).find((m) => m.role === "user");

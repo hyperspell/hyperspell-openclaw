@@ -2,6 +2,7 @@ import type { EmotionalStateLatest, HyperspellClient } from "../client.ts";
 import type { HyperspellConfig } from "../config.ts";
 import { log } from "../logger.ts";
 import { sanitizeTraceText } from "./auto-trace.ts";
+import { buildMoodWeatherContext, rollMood } from "./mood-weather.ts";
 
 /** How many recent registers to surface as the "arc" at session start. */
 const EMOTIONAL_ARC_LIMIT = 3;
@@ -185,24 +186,42 @@ export function buildEmotionalStateFetchHandler(
 				(s) => s.summary && !looksLikeRawTranscript(s.summary),
 			);
 
+			// Mood weather: an exogenous, uncaused session mood that OVERRIDES the
+			// arc's tone for this session only. Rolled once per session (gated by
+			// the same inject-once cache). Lives purely in the injection path — it is
+			// never written back via the store handler, so one random morning can't
+			// calcify into the baseline. May clash with the room on purpose.
+			const mood = cfg.moodWeatherChance > 0 ? rollMood(cfg.moodWeatherChance) : null;
+			const moodBlock = mood ? buildMoodWeatherContext(mood) : "";
+			if (mood) {
+				log.info(`mood-weather: rolled "${mood.id}" this session`);
+			}
+
 			if (usable.length === 0) {
 				if (states.length > 0) {
 					// State(s) exist but are all still extracting — don't cache, so a
-					// later turn re-fetches once extraction completes.
+					// later turn re-fetches once extraction completes. (We re-roll the
+					// mood then too, which is fine — still at most once per *injected*
+					// session, since extraction settles within seconds.)
 					log.debug(
 						"emotional-context: state(s) still extracting — skipping injection this turn",
 					);
 					return;
 				}
+				// No arc yet — but weather can still land on a blank slate.
 				log.debug("emotional-context: no prior emotional state found");
 				if (sessionKey) injectedSessions.add(sessionKey);
-				return;
+				return moodBlock ? { prependContext: moodBlock } : undefined;
 			}
 
 			log.debug(
 				`emotional-context: injecting ${usable.length} recent register(s)`,
 			);
-			const context = buildEmotionalContext(usable);
+			// Mood block comes AFTER the arc so it reads as today's override on top
+			// of the remembered trajectory — not blended into it.
+			const context = moodBlock
+				? `${buildEmotionalContext(usable)}\n\n${moodBlock}`
+				: buildEmotionalContext(usable);
 
 			if (sessionKey) injectedSessions.add(sessionKey);
 			return { prependContext: context };
@@ -258,6 +277,18 @@ export function buildEmotionalStateStoreHandler(
 		const trigger = ctx?.trigger;
 		if (trigger && NON_CONVERSATIONAL_TRIGGERS.has(trigger)) {
 			log.debug(`emotional-state: skipping — non-conversational trigger (${trigger})`);
+			return;
+		}
+
+		// Skip storing when a group chat has no multiUser config: the register is
+		// keyed to a single relationshipId but the transcript mixes multiple speakers,
+		// so a store would corrupt "how the relationship feels" with an undifferentiated
+		// group blend. Proper fix is per-sender relationshipIds via multiUser config
+		// (issue #59).
+		if ((ctx as Record<string, unknown>)?.is_group_chat === true && !cfg.multiUser) {
+			log.warn(
+				"emotional-state: skipping store — group chat with no multiUser config would corrupt the relationship register with a mixed-speaker transcript (see issue #59)",
+			);
 			return;
 		}
 

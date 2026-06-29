@@ -7,6 +7,7 @@ import {
   getCanReadScopes,
   getDefaultWriteScope,
   resolveRole,
+  resolveUser,
   routeWrite,
 } from "./sender.ts"
 
@@ -17,6 +18,7 @@ function cfg(overrides: Partial<HyperspellConfig["multiUser"]> = {}): Hyperspell
     autoTrace: { enabled: false, extract: ["procedure"] },
     hotBuffer: { enabled: false, source: "vault", writeUser: true, writeAssistant: true },
     emotionalContext: false,
+    moodWeatherChance: 0,
     syncMemories: false,
     syncMemoriesConfig: {
       enabled: false,
@@ -249,4 +251,75 @@ test("routeWrite — non-private goes to sharedUserId with optional collection",
     c,
   )
   assert.deepEqual(r, { userId: "shared", collection: "household-shared" })
+})
+
+// resolveUser — single-user mode (issue #59)
+
+function singleUserCfg(userId = "alinea"): HyperspellConfig {
+  return {
+    apiKey: "test",
+    autoContext: false,
+    autoTrace: { enabled: false, extract: ["procedure"] },
+    hotBuffer: { enabled: false, source: "vault", writeUser: true, writeAssistant: true },
+    emotionalContext: false,
+    moodWeatherChance: 0,
+    syncMemories: false,
+    syncMemoriesConfig: {
+      enabled: false,
+      sectionize: true,
+      watchPaths: [],
+      debounceMs: 2000,
+      maxAgeDays: 30,
+      ignorePaths: ["dreaming"],
+    },
+    sources: [],
+    maxResults: 5,
+    relevanceThreshold: 0.6,
+    ranking: DEFAULT_RANKING,
+    debug: false,
+    knowledgeGraph: { enabled: false, scanIntervalMinutes: 60, batchSize: 20 },
+    startupOrientation: {
+      enabled: false,
+      recentDays: 7,
+      recentLimit: 5,
+      loopsLimit: 3,
+      loopsQuery: "open tasks",
+    },
+    userId,
+    multiUser: undefined,
+  }
+}
+
+test("resolveUser — single-user: resolved is false (static default, not a matched sender)", () => {
+  const r = resolveUser(undefined, singleUserCfg())
+  assert.equal(r?.resolved, false)
+  assert.equal(r?.userId, "alinea")
+})
+
+test("resolveUser — single-user: name falls back to cfg.userId when no envelope sender", () => {
+  const r = resolveUser(undefined, singleUserCfg())
+  assert.equal(r?.name, "alinea")
+})
+
+test("resolveUser — single-user: name uses ctx.sender from envelope when present", () => {
+  const r = resolveUser({ sender: "David S" }, singleUserCfg())
+  assert.equal(r?.userId, "alinea")
+  assert.equal(r?.name, "David S")
+  assert.equal(r?.resolved, false)
+})
+
+test("resolveUser — single-user: name uses ctx.username when sender absent", () => {
+  const r = resolveUser({ username: "dithilli" }, singleUserCfg())
+  assert.equal(r?.name, "dithilli")
+})
+
+test("resolveUser — single-user: ctx.sender takes precedence over ctx.username", () => {
+  const r = resolveUser({ sender: "David S", username: "dithilli" }, singleUserCfg())
+  assert.equal(r?.name, "David S")
+})
+
+test("resolveUser — no userId configured returns undefined", () => {
+  const c = singleUserCfg("")
+  const r = resolveUser(undefined, c)
+  assert.equal(r, undefined)
 })

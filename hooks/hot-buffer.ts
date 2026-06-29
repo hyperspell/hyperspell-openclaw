@@ -21,6 +21,9 @@ const MAX_TOTAL_CHARS = 5_242_880;
  */
 const sentBySession = new Map<string, Set<string>>();
 
+/** Sessions where we've already emitted the group-chat attribution warning. */
+const warnedGroupSessions = new Set<string>();
+
 /**
  * Flatten a message's content into a single sanitized text string. Mirrors the
  * auto-trace sanitizer so the hot buffer never captures injected
@@ -80,7 +83,8 @@ export function buildHotBufferHandler(
 
 		// X-As-User is mandatory for /messages. Resolve the owner up front and
 		// skip (with a clear warning) rather than firing requests that 422.
-		const userId = resolveUser(ctx, cfg)?.userId;
+		const resolved = resolveUser(ctx, cfg);
+		const userId = resolved?.userId;
 		if (!userId) {
 			log.warn(
 				"hot-buffer: no userId resolved (X-As-User required) — skipping write",
@@ -103,6 +107,31 @@ export function buildHotBufferHandler(
 		const resourceId = sessionId;
 		const sent = sentBySession.get(sessionId) ?? new Set<string>();
 
+		// Warn once per session when a group chat has no multiUser config: every
+		// turn collapses to cfg.userId with no speaker attribution, feeding the
+		// identity-bleed retrieval failure tracked in #58/#59.
+		if (ctx?.is_group_chat === true && !cfg.multiUser && !warnedGroupSessions.has(sessionId)) {
+			warnedGroupSessions.add(sessionId);
+			log.warn(
+				"hot-buffer: group chat detected but multiUser is not configured — all turns written under cfg.userId with no speaker attribution (see issues #58/#59)",
+			);
+		}
+
+		// In group-chat single-user mode, prefix each human turn with the sender
+		// name so attribution survives in stored text. Metadata on hot-buffer
+		// writes suppresses indexing (Hyperspell #1921), so the text content is
+		// the only place attribution can land. Only prefix when we have an
+		// envelope-derived name (ctx.sender / ctx.username via resolveUser) —
+		// if it equals cfg.userId the sender field was absent and prefixing
+		// "alinea:" onto someone else's message would be wrong (issue #59).
+		const speakerPrefix =
+			ctx?.is_group_chat === true &&
+			!cfg.multiUser &&
+			resolved?.name &&
+			resolved.name !== (cfg.userId ?? "")
+				? `[${resolved.name}]: `
+				: undefined;
+
 		const pending: Array<{
 			resourceId: string;
 			messageId: string;
@@ -122,6 +151,7 @@ export function buildHotBufferHandler(
 			}
 
 			let text = extractText(m.content);
+			if (role === "user" && speakerPrefix) text = speakerPrefix + text;
 			if (text.length === 0) continue;
 
 			if (text.length > MAX_CONTENT_CHARS) {
@@ -188,10 +218,13 @@ export function buildHotBufferHandler(
 	};
 }
 
-/** Drop the per-session sent-set on session end to avoid unbounded growth. */
+/** Drop per-session state on session end to avoid unbounded growth. */
 export function buildHotBufferSessionCleanupHandler() {
 	return (event: Record<string, unknown>) => {
 		const sessionId = event.sessionId as string | undefined;
-		if (sessionId) sentBySession.delete(sessionId);
+		if (sessionId) {
+			sentBySession.delete(sessionId);
+			warnedGroupSessions.delete(sessionId);
+		}
 	};
 }

@@ -24,9 +24,16 @@ function matchFromSenderMap(
 ): ResolvedUser | undefined {
   const multiUser = cfg.multiUser
   if (!multiUser) {
-    return cfg.userId
-      ? { userId: cfg.userId, name: cfg.userId, resolved: true }
-      : undefined
+    if (!cfg.userId) return undefined
+    // In single-user mode memory ownership stays cfg.userId, but still capture
+    // the envelope sender name so downstream context can name who spoke even
+    // when all writes go to the same store. resolved: false — this is a static
+    // default, not a confirmed sender match (issue #59).
+    const envName =
+      (ctx?.sender as string | undefined) ??
+      (ctx?.username as string | undefined) ??
+      undefined
+    return { userId: cfg.userId, name: envName ?? cfg.userId, resolved: false }
   }
 
   // Try direct senderId lookup (slash command contexts)
