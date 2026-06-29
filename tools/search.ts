@@ -8,6 +8,8 @@ import {
   searchErrorToolText,
 } from "../lib/search-error.ts"
 import { buildScopeFilter, getCanReadScopes, resolveUser } from "../lib/sender.ts"
+import { resolveCurrentSessionId } from "../lib/session.ts"
+import { isMultiSpeaker } from "../lib/speaker-tracker.ts"
 import { log } from "../logger.ts"
 
 export function createSearchToolFactory(
@@ -58,6 +60,16 @@ export function createSearchToolFactory(
       const limit = params.limit ?? 5
       const resolved = resolveUser(ctx, cfg)
       const userId = params.userId ?? resolved?.userId
+
+      // Warn when searching in a multi-speaker session with no multiUser config:
+      // results reflect the primary user's full store, not the current speaker's
+      // personal space. The search proceeds but the result carries the caveat so
+      // the agent can qualify its answer (attribution gap 1, issue #59 follow-up).
+      const sessionId = resolveCurrentSessionId(undefined, ctx)
+      const multiSpeakerNoConfig = isMultiSpeaker(sessionId, ctx?.is_group_chat === true) && !cfg.multiUser
+      if (multiSpeakerNoConfig) {
+        log.warn("search tool: multi-speaker session with no multiUser config — results reflect primary user's full store, not current speaker's personal space")
+      }
 
       // Build scope filter: intersect requested scope (if any) with caller's canRead
       let filter: Record<string, unknown> | undefined
@@ -119,7 +131,10 @@ export function createSearchToolFactory(
           })
           .join("\n\n")
 
-        const text = `Found ${documents.length} memories:\n\n${formattedDocs}`
+        const caveat = multiSpeakerNoConfig
+          ? "\n\n⚠️ Note: This is a multi-speaker session without per-user memory config. These results reflect the primary user's store, not the current speaker's personal space. Use these results with that limitation in mind."
+          : ""
+        const text = `Found ${documents.length} memories:\n\n${formattedDocs}${caveat}`
 
         return {
           content: [{ type: "text" as const, text }],

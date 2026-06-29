@@ -1,6 +1,8 @@
 import type { HyperspellClient, SearchResult } from "../client.ts";
 import type { HyperspellConfig } from "../config.ts";
 import { resolveUser } from "../lib/sender.ts";
+import { resolveCurrentSessionId } from "../lib/session.ts";
+import { isMultiSpeaker } from "../lib/speaker-tracker.ts";
 import { log } from "../logger.ts";
 
 type AgentContext = Record<string, unknown> & { sessionKey?: string };
@@ -228,6 +230,19 @@ export function buildStartupOrientationHandler(
 		if (skip) {
 			log.debug(
 				"startup-orientation: skipping — unknown sender in multi-user mode",
+			);
+			if (sessionKey) injectedSessions.add(sessionKey);
+			return;
+		}
+
+		// Skip when multiple speakers are present with no multiUser config.
+		// Orientation injects the primary user's personal activity context; in a
+		// group chat that leaks their private session history to other participants
+		// who may have triggered the session start (attribution v2, gap 2).
+		const sessionId = resolveCurrentSessionId(undefined, ctx as Record<string, unknown>);
+		if (!cfg.multiUser && isMultiSpeaker(sessionId, (ctx as Record<string, unknown>)?.is_group_chat === true)) {
+			log.debug(
+				"startup-orientation: skipping — multi-speaker session with no multiUser config (would expose primary user's personal context)",
 			);
 			if (sessionKey) injectedSessions.add(sessionKey);
 			return;

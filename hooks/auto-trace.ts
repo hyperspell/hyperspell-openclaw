@@ -1,6 +1,7 @@
 import type { HyperspellClient } from "../client.ts";
 import type { HyperspellConfig } from "../config.ts";
 import { resolveUser } from "../lib/sender.ts";
+import { isMultiSpeaker } from "../lib/speaker-tracker.ts";
 import { log } from "../logger.ts";
 
 type Message = { role?: string; content?: string | unknown };
@@ -174,14 +175,13 @@ export function buildAutoTraceHandler(
 		const sessionId = (event.sessionId as string) ?? crypto.randomUUID();
 		const history = messagesToJSONL(messages, sessionId);
 
-		// Warn once per session when group chat has no multiUser config: all turns
-		// collapse into a single undifferentiated trace, same as the hot-buffer
-		// problem (issue #59). Unlike hot-buffer there's no content-prefix workaround
-		// for JSONL traces — proper fix requires multiUser config.
-		if (ctx?.is_group_chat === true && !cfg.multiUser && !warnedGroupTraceSessions.has(sessionId)) {
+		// Warn once per session when multiple speakers have no multiUser config:
+		// all turns collapse into a single undifferentiated trace under cfg.userId.
+		// Uses both is_group_chat and sender_id drift detection (issue #59).
+		if (isMultiSpeaker(sessionId, ctx?.is_group_chat === true) && !cfg.multiUser && !warnedGroupTraceSessions.has(sessionId)) {
 			warnedGroupTraceSessions.add(sessionId);
 			log.warn(
-				"auto-trace: group chat detected but multiUser is not configured — trace will mix all speakers under cfg.userId with no attribution (see issues #58/#59)",
+				"auto-trace: multi-speaker session detected but multiUser is not configured — trace will mix all speakers under cfg.userId with no attribution (see issues #58/#59)",
 			);
 		}
 

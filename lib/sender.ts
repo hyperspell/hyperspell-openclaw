@@ -47,16 +47,21 @@ function matchFromSenderMap(
     return { ...profile, resolved: true }
   }
 
-  // Try sessionKey substring matching (longest-first to avoid partial matches)
+  // Try sessionKey segment matching (longest-first to avoid partial matches).
+  // We split on common separators and require the handle to appear as a whole
+  // token — not as a substring of another word — to prevent "ali" matching
+  // "alinea:voice-session-42". The senderId exact-match path above is always
+  // preferred; this path is a human-readable-handle fallback.
   const sessionKey = ctx?.sessionKey as string | undefined
   if (sessionKey) {
+    const tokens = new Set(sessionKey.split(/[:\-\/\s@#.]+/))
     const sortedEntries = Object.entries(multiUser.senderMap).sort(
       ([a], [b]) => b.length - a.length,
     )
     for (const [handle, profile] of sortedEntries) {
-      if (sessionKey.includes(handle)) {
+      if (tokens.has(handle)) {
         log.debug(
-          `sender resolved via sessionKey: ${handle} -> ${profile.userId}`,
+          `sender resolved via sessionKey token: ${handle} -> ${profile.userId}`,
         )
         return { ...profile, resolved: true }
       }
