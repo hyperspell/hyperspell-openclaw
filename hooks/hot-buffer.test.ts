@@ -55,26 +55,43 @@ test("hot-buffer — writes user and assistant turns with stable ids", async () 
 	assert.notEqual(calls[0][0].messageId, calls[0][1].messageId);
 });
 
-test("hot-buffer — does NOT send metadata (a /messages write with metadata is not retrievable post-#1921)", async () => {
-	// Regression guard: tagging hot rows via POST /messages metadata is accepted
-	// (200) but makes the row non-retrievable (verified live). Untagged rows are
-	// searchable and survive the unconditional {$ne:"agent_end"} exclude, so we
-	// must write content only — no metadata.
+test("hot-buffer — tags rows with origin metadata (source, session, channel)", async () => {
+	// Metadata on POST /messages is retrievable + filterable since the #1921
+	// backend fix (verified live 2026-07-02, docs/filter-dialect-test.mjs).
+	// Tagging by origin lets retrieval and cleanup filter hot rows precisely;
+	// the {openclaw_source:{$ne:"agent_end"}} exclude keeps "hot_buffer" rows.
 	const { client, calls, optionsList } = makeClient();
 	const handler = buildHotBufferHandler(client, cfg);
 	await handler(
 		{
 			success: true,
-			sessionId: "s-tag",
-			messages: [{ role: "user", content: "do not tag me" }],
+			messages: [{ role: "user", content: "tag me" }],
 		},
-		{},
+		{ sessionId: "s-tag", channelId: "chan-9" },
 	);
 	assert.equal(calls.length, 1);
-	assert.equal(
-		(optionsList[0] as { metadata?: unknown }).metadata,
-		undefined,
+	assert.deepEqual((optionsList[0] as { metadata?: unknown }).metadata, {
+		openclaw_source: "hot_buffer",
+		openclaw_session_id: "s-tag",
+		openclaw_channel_id: "chan-9",
+	});
+});
+
+test("hot-buffer — omits channel tag when ctx has no channelId", async () => {
+	const { client, calls, optionsList } = makeClient();
+	const handler = buildHotBufferHandler(client, cfg);
+	await handler(
+		{
+			success: true,
+			messages: [{ role: "user", content: "no channel" }],
+		},
+		{ sessionId: "s-nochan" },
 	);
+	assert.equal(calls.length, 1);
+	assert.deepEqual((optionsList[0] as { metadata?: unknown }).metadata, {
+		openclaw_source: "hot_buffer",
+		openclaw_session_id: "s-nochan",
+	});
 });
 
 test("hot-buffer — resourceId comes from ctx.sessionId (agent_end event has none)", async () => {

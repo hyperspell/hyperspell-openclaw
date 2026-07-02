@@ -306,3 +306,21 @@ test("parseConfig — hotBuffer with an invalid source throws", () => {
     /Invalid source/,
   )
 })
+
+test("parseConfig — excludeChannels defaults to empty", () => {
+  const cfg = parseConfig(base)
+  assert.deepEqual(cfg.excludeChannels, [])
+})
+
+test("parseConfig — excludeChannels trims entries and drops empties", () => {
+  const cfg = parseConfig({
+    ...base,
+    excludeChannels: [" 1521620672726438171 ", "", "abc"],
+  })
+  assert.deepEqual(cfg.excludeChannels, ["1521620672726438171", "abc"])
+})
+
+test("parseConfig — non-array excludeChannels falls back to empty", () => {
+  const cfg = parseConfig({ ...base, excludeChannels: "123" })
+  assert.deepEqual(cfg.excludeChannels, [])
+})
