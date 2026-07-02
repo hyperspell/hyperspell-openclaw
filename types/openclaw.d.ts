@@ -48,20 +48,26 @@ declare module "openclaw/plugin-sdk" {
       },
       meta: { name: string },
     ): void
+    // Core's OpenClawPluginToolFactory may return null/undefined to signal
+    // "no tool in this context" (src/plugins/tool-types.ts) — e.g. a
+    // quarantined channel. Keep this declaration aligned.
     registerTool<T = unknown>(
-      factory: (ctx: Record<string, unknown>) => {
-        name: string
-        label: string
-        description: string
-        parameters: unknown
-        execute: (
-          toolCallId: string,
-          params: T,
-        ) => Promise<{
-          content: Array<{ type: "text"; text: string }>
-          details?: Record<string, unknown>
-        }>
-      },
+      factory: (ctx: Record<string, unknown>) =>
+        | {
+            name: string
+            label: string
+            description: string
+            parameters: unknown
+            execute: (
+              toolCallId: string,
+              params: T,
+            ) => Promise<{
+              content: Array<{ type: "text"; text: string }>
+              details?: Record<string, unknown>
+            }>
+          }
+        | null
+        | undefined,
       meta: { name: string },
     ): void
     on(event: string, handler: (event: Record<string, unknown>, ctx?: Record<string, unknown>) => Promise<{ prependContext?: string } | void> | void): void

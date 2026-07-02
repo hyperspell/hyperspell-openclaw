@@ -21,6 +21,7 @@ import {
 	buildStartupOrientationHandler,
 	buildStartupOrientationSessionCleanupHandler,
 } from "./hooks/startup-orientation.ts"
+import { isExcludedChannel } from "./lib/exclude-channels.ts"
 import { initLogger, log } from "./logger.ts"
 import { createRememberToolFactory } from "./tools/remember.ts"
 import { createSearchToolFactory } from "./tools/search.ts"
@@ -94,11 +95,29 @@ export default {
 
 		const client = new HyperspellClient(cfg);
 
+		// Channel quarantine (cfg.excludeChannels): excluded conversations get no
+		// memory surface in either direction. Guard the shared choke points here —
+		// before_agent_start (all injection), agent_end (all writes), and the tool
+		// factories — so individual hooks stay quarantine-unaware.
+		const quarantined = (ctx?: Record<string, unknown>): boolean => {
+			if (!isExcludedChannel(ctx, cfg)) return false;
+			log.debug("channel quarantined — skipping memory surface");
+			return true;
+		};
+		const unlessQuarantined =
+			<E, R>(handler: (event: E, ctx?: Record<string, unknown>) => R) =>
+			(event: E, ctx?: Record<string, unknown>): R | undefined =>
+				quarantined(ctx) ? undefined : handler(event, ctx);
+		const toolUnlessQuarantined =
+			<T>(factory: (ctx: Record<string, unknown>) => T) =>
+			(ctx: Record<string, unknown>): T | null =>
+				quarantined(ctx) ? null : factory(ctx);
+
 		// Register AI tools (factory pattern for sender context)
-		api.registerTool(createSearchToolFactory(client, cfg), {
+		api.registerTool(toolUnlessQuarantined(createSearchToolFactory(client, cfg)), {
 			name: "hyperspell_search",
 		});
-		api.registerTool(createRememberToolFactory(client, cfg), {
+		api.registerTool(toolUnlessQuarantined(createRememberToolFactory(client, cfg)), {
 			name: "hyperspell_remember",
 		});
 
@@ -125,7 +144,10 @@ export default {
 			);
 			api.on("after_compaction", buildEmotionalStateCompactionHandler());
 			api.on("session_end", buildEmotionalStateSessionCleanupHandler());
-			api.on("agent_end", buildEmotionalStateStoreHandler(client, cfg));
+			api.on(
+				"agent_end",
+				unlessQuarantined(buildEmotionalStateStoreHandler(client, cfg)),
+			);
 		}
 
 		if (cfg.autoContext) {
@@ -151,6 +173,8 @@ export default {
 
 		if (startHandlers.length > 0) {
 			api.on("before_agent_start", async (event, ctx) => {
+				// Quarantined channels get no injected memory of any kind.
+				if (quarantined(ctx as Record<string, unknown> | undefined)) return undefined;
 				const results = await Promise.all(
 					startHandlers.map((h) =>
 						Promise.resolve()
@@ -173,13 +197,19 @@ export default {
 
 		// Register auto-trace hook (send conversations to Hyperspell on session end)
 		if (cfg.autoTrace.enabled) {
-			api.on("agent_end", buildAutoTraceHandler(client, cfg));
+			api.on(
+				"agent_end",
+				unlessQuarantined(buildAutoTraceHandler(client, cfg)),
+			);
 		}
 
 		// Register hot-buffer hook: write each turn to POST /messages so it's
 		// instantly full-text searchable (vs. the slow /memories embedding path).
 		if (cfg.hotBuffer.enabled) {
-			api.on("agent_end", buildHotBufferHandler(client, cfg));
+			api.on(
+				"agent_end",
+				unlessQuarantined(buildHotBufferHandler(client, cfg)),
+			);
 			api.on("session_end", buildHotBufferSessionCleanupHandler());
 		}
 

@@ -201,18 +201,26 @@ export function buildHotBufferHandler(
 
 		try {
 			let total = 0;
+			// Tag hot rows so retrieval and cleanup can identify them by origin.
+			// Historical note: metadata on POST /messages used to suppress indexing
+			// (Hyperspell #1921), so tagging was disabled; verified fixed live
+			// 2026-07-02 (docs/filter-dialect-test.mjs: metadata-carrying row is
+			// baseline-retrievable AND filterable). The retrieval exclude
+			// {openclaw_source:{$ne:"agent_end"}} keeps "hot_buffer" rows.
+			const channelId =
+				typeof ctx?.channelId === "string" && ctx.channelId.length > 0
+					? ctx.channelId
+					: undefined;
+			const metadata: Record<string, string> = {
+				openclaw_source: "hot_buffer",
+				openclaw_session_id: sessionId,
+				...(channelId ? { openclaw_channel_id: channelId } : {}),
+			};
 			for (const b of batches) {
-				// Do NOT tag hot rows with metadata: a POST /messages write that
-				// carries `metadata` is accepted (200) but the row never becomes
-				// retrievable (verified live, post-Hyperspell #1921) — tagging
-				// silently breaks hot-buffer recall. The tag isn't needed anyway:
-				// untagged rows survive the unconditional {$ne:"agent_end"} exclude
-				// (absent-field semantics, #1921) AND are full-text searchable. So
-				// we write content only. (Backend follow-up: make /messages metadata
-				// not suppress indexing, then this can be reinstated.)
 				const result = await client.sendMessages(b, {
 					userId,
 					source: cfg.hotBuffer.source,
+					metadata,
 				});
 				total += result.count;
 			}

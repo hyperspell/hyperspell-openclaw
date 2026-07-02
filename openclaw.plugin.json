@@ -46,6 +46,11 @@
 			"help": "Maintain emotional continuity across sessions — remembers not just what happened, but how it felt",
 			"advanced": true
 		},
+		"excludeChannels": {
+			"label": "Excluded Channels",
+			"help": "Conversation/channel ids fully quarantined from memory: no context injection, no memory writes, no memory tools in those sessions. Threads inside an excluded channel inherit the quarantine.",
+			"advanced": true
+		},
 		"startupOrientation": {
 			"label": "Startup Orientation",
 			"help": "Inject recent-interactions and unfinished-loops blocks once per session at startup. Costs two extra calls + ~500–800 tokens of injection per session; off by default.",
@@ -137,6 +142,10 @@
 				"type": "number",
 				"minimum": 0,
 				"maximum": 1
+			},
+			"excludeChannels": {
+				"type": "array",
+				"items": { "type": "string" }
 			},
 			"relationshipId": {
 				"type": "string"

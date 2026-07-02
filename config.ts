@@ -147,6 +147,14 @@ export type HyperspellConfig = {
 	 * (~0.05–0.10) so it reads as weather, not a gimmick. Requires emotionalContext.
 	 */
 	moodWeatherChance: number;
+	/**
+	 * Conversation/channel ids that are fully quarantined from memory: no
+	 * context injection, no memory writes (hot buffer, auto-trace, emotional
+	 * state), and no memory tools in those sessions. Matched against the
+	 * session's resolved conversation id (e.g. a Discord channel id); threads
+	 * inside an excluded channel inherit the quarantine. Default: [].
+	 */
+	excludeChannels: string[];
 	relationshipId?: string;
 	startupOrientation: StartupOrientationConfig;
 	syncMemories: boolean;
@@ -168,6 +176,7 @@ const ALLOWED_KEYS = [
 	"hotBuffer",
 	"emotionalContext",
 	"moodWeatherChance",
+	"excludeChannels",
 	"relationshipId",
 	"startupOrientation",
 	"syncMemories",
@@ -534,6 +543,11 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 			1,
 			Math.max(0, (cfg.moodWeatherChance as number) ?? 0),
 		),
+		excludeChannels: Array.isArray(cfg.excludeChannels)
+			? (cfg.excludeChannels as unknown[])
+					.map((c) => String(c).trim())
+					.filter((c) => c.length > 0)
+			: [],
 		relationshipId: cfg.relationshipId as string | undefined,
 		startupOrientation: {
 			enabled: (soRaw.enabled as boolean) ?? false,

@@ -19,6 +19,7 @@ function cfg(overrides: Partial<HyperspellConfig["multiUser"]> = {}): Hyperspell
     hotBuffer: { enabled: false, source: "vault", writeUser: true, writeAssistant: true },
     emotionalContext: false,
     moodWeatherChance: 0,
+    excludeChannels: [],
     syncMemories: false,
     syncMemoriesConfig: {
       enabled: false,
@@ -263,6 +264,7 @@ function singleUserCfg(userId = "alinea"): HyperspellConfig {
     hotBuffer: { enabled: false, source: "vault", writeUser: true, writeAssistant: true },
     emotionalContext: false,
     moodWeatherChance: 0,
+    excludeChannels: [],
     syncMemories: false,
     syncMemoriesConfig: {
       enabled: false,
