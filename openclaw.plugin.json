@@ -133,6 +133,11 @@
 			"emotionalContext": {
 				"type": "boolean"
 			},
+			"moodWeatherChance": {
+				"type": "number",
+				"minimum": 0,
+				"maximum": 1
+			},
 			"relationshipId": {
 				"type": "string"
 			},

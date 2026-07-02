@@ -140,6 +140,13 @@ export type HyperspellConfig = {
 	autoTrace: AutoTraceConfig;
 	hotBuffer: HotBufferConfig;
 	emotionalContext: boolean;
+	/**
+	 * Probability (0..1) that a fresh session rolls exogenous "mood weather" — an
+	 * uncaused, unannounced mood that overrides the arc's tone for that session
+	 * only (never written back to the register). 0 disables. Keep it rare
+	 * (~0.05–0.10) so it reads as weather, not a gimmick. Requires emotionalContext.
+	 */
+	moodWeatherChance: number;
 	relationshipId?: string;
 	startupOrientation: StartupOrientationConfig;
 	syncMemories: boolean;
@@ -160,6 +167,7 @@ const ALLOWED_KEYS = [
 	"autoTrace",
 	"hotBuffer",
 	"emotionalContext",
+	"moodWeatherChance",
 	"relationshipId",
 	"startupOrientation",
 	"syncMemories",
@@ -520,6 +528,12 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 			writeAssistant: (hbRaw.writeAssistant as boolean) ?? true,
 		},
 		emotionalContext: (cfg.emotionalContext as boolean) ?? false,
+		// Default 0 (off) so shipping never changes existing installs' behavior.
+		// Clamped to [0,1] so a stray config value can't make every session roll.
+		moodWeatherChance: Math.min(
+			1,
+			Math.max(0, (cfg.moodWeatherChance as number) ?? 0),
+		),
 		relationshipId: cfg.relationshipId as string | undefined,
 		startupOrientation: {
 			enabled: (soRaw.enabled as boolean) ?? false,
