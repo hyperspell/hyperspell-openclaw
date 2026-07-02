@@ -345,6 +345,7 @@ async function runSetup(): Promise<void> {
           writeAssistant: true,
         },
         emotionalContext: false,
+        moodWeatherChance: 0,
         syncMemories: true,
         syncMemoriesConfig: {
           enabled: true,

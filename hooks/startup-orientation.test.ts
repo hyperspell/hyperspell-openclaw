@@ -62,6 +62,7 @@ function makeCfg(overrides?: Partial<HyperspellConfig>): HyperspellConfig {
 		autoTrace: { enabled: true, extract: ["procedure"] },
 		hotBuffer: { enabled: false, source: "vault", writeUser: true, writeAssistant: true },
 		emotionalContext: false,
+		moodWeatherChance: 0,
 		startupOrientation: {
 			enabled: true,
 			recentDays: 7,
