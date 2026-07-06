@@ -1,4 +1,7 @@
+import fs from "node:fs";
+import path from "node:path";
 import type { HyperspellClient } from "../client.ts";
+import { getWorkspaceDir } from "../config.ts";
 import type { HyperspellConfig } from "../config.ts";
 import { resolveUser } from "../lib/sender.ts";
 import {
@@ -24,11 +27,66 @@ const MAX_TOTAL_CHARS = 5_242_880;
  * this we'd re-post every prior message each turn. The server upserts (so it's
  * harmless correctness-wise), but re-posting is wasteful — this keeps each turn
  * to just its new messages. Cleared on session_end.
+ *
+ * This map alone is NOT restart-safe: it's module-scope, in-memory only. A
+ * gateway restart wipes it without firing session_end, so the next turn of a
+ * still-open session sees an empty set and re-posts the entire transcript to
+ * date in one shot (observed live: two 499/503-message flushes right after
+ * restarts, vs. the normal 2-10). `loadPersistedSent`/`persistSent` below
+ * mirror this map to disk per session so a restart degrades to "reload from
+ * disk" instead of "resend everything."
  */
 const sentBySession = new Map<string, Set<string>>();
 
+function stateDir(root: string): string {
+	return path.join(root, "hot-buffer-sent");
+}
+
+function stateFile(root: string, sessionId: string): string {
+	const safe = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+	return path.join(stateDir(root), `${safe}.json`);
+}
+
+function loadPersistedSent(root: string, sessionId: string): Set<string> {
+	try {
+		const raw = fs.readFileSync(stateFile(root, sessionId), "utf-8");
+		const ids = JSON.parse(raw) as string[];
+		return new Set(ids);
+	} catch {
+		return new Set();
+	}
+}
+
+function persistSent(root: string, sessionId: string, sent: Set<string>): void {
+	try {
+		fs.mkdirSync(stateDir(root), { recursive: true });
+		fs.writeFileSync(stateFile(root, sessionId), JSON.stringify([...sent]));
+	} catch (err) {
+		log.error("hot-buffer: failed to persist sent-id state to disk", err);
+	}
+}
+
+function deletePersistedSent(root: string, sessionId: string): void {
+	try {
+		fs.unlinkSync(stateFile(root, sessionId));
+	} catch {
+		// Nothing to clean up — fine.
+	}
+}
+
 /** Sessions where we've already emitted the group-chat attribution warning. */
 const warnedGroupSessions = new Set<string>();
+
+/**
+ * Test-only: drop just the in-memory dedup cache for a session, leaving any
+ * persisted-to-disk state untouched. This is what a bare gateway restart
+ * looks like (module state wiped, disk state intact) — as opposed to
+ * `buildHotBufferSessionCleanupHandler`'s session_end, which clears both on
+ * purpose. Not used outside tests.
+ */
+export function __simulateRestartForTest(sessionId: string): void {
+	sentBySession.delete(sessionId);
+}
 
 /**
  * Flatten a message's content into a single sanitized text string. Mirrors the
@@ -74,7 +132,9 @@ function messageId(role: string, text: string): string {
 export function buildHotBufferHandler(
 	client: HyperspellClient,
 	cfg: HyperspellConfig,
+	opts?: { stateRoot?: string },
 ) {
+	const stateRoot = opts?.stateRoot ?? getWorkspaceDir();
 	return async (
 		event: Record<string, unknown>,
 		ctx?: Record<string, unknown>,
@@ -111,7 +171,15 @@ export function buildHotBufferHandler(
 			(event.sessionId as string) ??
 			crypto.randomUUID();
 		const resourceId = sessionId;
-		const sent = sentBySession.get(sessionId) ?? new Set<string>();
+		// Fall back to disk before assuming "nothing sent yet" — an empty
+		// in-memory entry is ambiguous between "brand new session" and "this
+		// process restarted mid-session," and treating the latter as the former
+		// is exactly the full-transcript-resend bug this guards against.
+		let sent = sentBySession.get(sessionId);
+		if (!sent) {
+			sent = loadPersistedSent(stateRoot, sessionId);
+			sentBySession.set(sessionId, sent);
+		}
 
 		// Record the current sender for evidence-based multi-speaker detection.
 		// isMultiSpeaker() will return true once a second distinct sender_id
@@ -227,6 +295,7 @@ export function buildHotBufferHandler(
 			// Only mark as sent after a successful write so a failure retries next turn.
 			for (const id of pendingIds) sent.add(id);
 			sentBySession.set(sessionId, sent);
+			persistSent(stateRoot, sessionId, sent);
 			log.info(
 				`hot-buffer: wrote ${total} message(s) to ${sessionId} (user=${userId})`,
 			);
@@ -238,13 +307,15 @@ export function buildHotBufferHandler(
 }
 
 /** Drop per-session state on session end to avoid unbounded growth. */
-export function buildHotBufferSessionCleanupHandler() {
+export function buildHotBufferSessionCleanupHandler(opts?: { stateRoot?: string }) {
+	const stateRoot = opts?.stateRoot ?? getWorkspaceDir();
 	return (event: Record<string, unknown>) => {
 		const sessionId = event.sessionId as string | undefined;
 		if (sessionId) {
 			sentBySession.delete(sessionId);
 			warnedGroupSessions.delete(sessionId);
 			cleanupSpeakerSession(sessionId);
+			deletePersistedSent(stateRoot, sessionId);
 		}
 	};
 }
