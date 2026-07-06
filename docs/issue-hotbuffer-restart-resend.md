@@ -48,6 +48,13 @@ Chose disk persistence over asking Hyperspell "what message ids already exist fo
    - Against the **fixed** code: turn 2 sent only `["reply-1", "turn-2"]`.
 3. `tsc --noEmit` clean; full existing suite (199 tests) still green.
 
-## Follow-up
+## Follow-up: checked the live account, no cleanup needed
 
-The two restart-triggered resends on 2026-07-06 (499 and 503 messages) landed duplicate-looking hot-buffer rows in Alinea's live Hyperspell account. Since the server upserts by message id, these aren't duplicate *rows* in the strict sense, but worth a pass to confirm the account doesn't have any leftover mess from those two incidents before considering this fully closed.
+Pulled the actual resourceId for the 503-message flush from the gateway log (`a0de13d9-e452-44b7-995e-06922f6278d3`, 2026-07-06 08:40 local) and read the consolidated vault resource directly (read-only `memories.get` + `memories.search`, no mutation):
+
+- One vault resource for that session, as expected (resourceId == sessionId).
+- 368 message nodes in the document, **0 duplicates** — every text is distinct.
+
+So the server-side upsert-by-message-id worked exactly as the code comment already claimed: resending 503 already-sent messages in one batch overwrote the same existing rows rather than appending duplicates. The bug's cost was request/write volume (and whatever the backend does with a 503-message batch internally — re-embedding, re-consolidation), not stored duplicate content. There is nothing to delete from the account.
+
+(The other incident, a 499-message flush, happened before this morning's `/private/tmp` log rotation — its session id wasn't recoverable to spot-check, but it's the same code path and same deterministic message-id hashing, so the same conclusion almost certainly holds.)
