@@ -14,6 +14,8 @@ The roll itself is gated in `hooks/emotional-state.ts:196` (`cfg.moodWeatherChan
 
 **⚠️ Landing-order note: three separate guides touch `index.ts`'s `register()` near the same spot.** #69 edits the *existing* `allowConversationAccess` warn block (downgrading it to `info`). This guide and #81 (Memory Network discoverability) each *add a new* info-level log block nearby, following #69's pattern as precedent. Suggested order: land **#69 first** if it hasn't already — it has the smallest conflict surface, and this guide's log block should be placed right after it, matching its wording/level style. This guide and #81 can land in either order relative to each other; whichever lands second just needs a trivial rebase past the other's insertion.
 
+**⚠️ Also note: issue #76 (`hyperspell_emotional_arc` tool)** inserts its `api.registerTool(...)` call as content inside this same `if (cfg.emotionalContext) {` block. Purely a textual rebase — this guide's log line and #76's tool registration are independent statements in the same block, compatible in either order — but whoever lands second should place their addition without deleting the other's.
+
 ## 1. Startup log — `index.ts`
 
 Add the check inside the existing `if (cfg.emotionalContext)` block at `index.ts:167`, as its first statement. This mirrors the existing nested-discoverability-check pattern in the `startupOrientation` block just below it (`index.ts:187-196`, the "recent-interactions will be empty" warn). Use `log.info`, not `log.warn` — `moodWeatherChance: 0` is a valid, intentional-by-default state, not a misconfiguration; this is purely a discoverability nudge. (The `logger.ts` `log` facade is initialized at `index.ts:101`, well before this point.)
