@@ -4,6 +4,8 @@
 
 `syncMemoriesConfig.watchPaths` defaults to `[]` (`config.ts:565-567`), so the sync pipeline only ever sees `<workspace>/memory/`. A nightly consolidator writing `notes/brainstem/YYYY-MM-DD.md` under the workspace root is invisible to both the startup bulk sync (`syncAllFilesSectionized` → `getSyncableFiles`) and the live watcher (`startFileWatcher` / `buildFileSyncHandler`), so `hyperspell_search` can never surface that content. Additionally, even when a user *does* configure `watchPaths`, everything synced is tagged identically (`openclaw_source: "memory_sync_section"`, `sync/markdown.ts:543`) — there is no way to tell a curated `MEMORY.md` fragment from a machine-generated brainstem daily at retrieval time.
 
+**⚠️ Verify against `origin/main` before implementing, not the local working tree.** This guide's `index.ts:295-308` wiring citation (§5 below) and its `hooks/memory-sync.test.ts` fixtures describe the maintainer's uncommitted local WIP — on `origin/main`, `index.ts` does not yet wire `syncMemoriesOnStartup`/`startFileWatcher`, and `hooks/memory-sync.test.ts` is untracked (not in `package.json`'s test list). Confirm the actual current `index.ts` memory-sync wiring and test-file state before implementing §5, rather than assuming this snapshot is what's on the remote.
+
 ## Design decision: do NOT widen the default watch scope
 
 Keep the default `watchPaths: []`. Widening the default (e.g. auto-watching `notes/`) would silently start ingesting arbitrary workspace content on upgrade for every existing install — an ingest-volume, cost, and privacy surprise. This plugin's convention is default-off for behavior-changing features (see the `hotBuffer.enabled` default comment at `config.ts:532-534`). The fix is therefore:
