@@ -22,6 +22,34 @@ Option B is the same shape as the plugin's existing retrieval ranking (`lib/rank
 
 **Backend verification gate (do this first):** live-verify that `POST /emotional-state` persists `metadata` and that `GET /emotional-state/recent` echoes it in each item. The store path already sends `metadata.source`, so persistence is likely; the echo is unverified — the client mapping (`client.ts:679-685`) currently drops everything except the five known fields, so we can't tell from client code alone. If the echo is missing, add it to `docs/hyperspell-backend-followups.md` as a one-line backend ask ("echo stored `metadata` in emotional-state GET responses"). Crucially, the design below **degrades gracefully to today's pure-recency behavior** when metadata is absent, so the plugin change can ship ahead of the backend echo.
 
+**⚠️ Coordination with issue #74 (channel-tag the register) — read before implementing either.** #74 also edits the exact `storeEmotionalState` metadata literal at `hooks/emotional-state.ts:324-327`, adding `...(channelId ? { channelId } : {})`. These are compatible, not conflicting, if merged into one object rather than landed as two competing literals:
+
+```ts
+const result = await client.storeEmotionalState(transcript, {
+	relationshipId: cfg.relationshipId,
+	metadata: {
+		source: "openclaw_agent_end",
+		turn_count: userTurns,
+		transcript_chars: transcript.length,
+		depth_score: depthScore,
+		...(channelId ? { channelId } : {}),
+	},
+});
+```
+
+Whichever of #68/#74 lands second must merge into the other's actual landed object rather than overwrite it. **Also fix #74's own test:** its guide's `assert.deepEqual(stores[0].opts.metadata, { source: "openclaw_agent_end", channelId: "chan-42" })` is an exact-object match that breaks the moment this guide's `turn_count`/`transcript_chars`/`depth_score` fields exist — that assertion should become per-key (`assert.equal(stores[0].opts.metadata?.channelId, "chan-42")`) regardless of landing order, not just when #68 lands first.
+
+**⚠️ Coordination with issue #77 (mood-weather cross-session cooldown) — read before implementing either.** #77 also restructures `buildEmotionalStateFetchHandler`'s body around the `usable.length === 0` guard(s), splitting the single existing guard into an early "still extracting" return followed later by a "blank slate" branch, with mood-roll/cooldown logic sandwiched between them. This guide replaces `usable` with a re-ranked/deduped `arc` for the guard and for `buildEmotionalContext`. Reconciled merge order (safe because `selectArc` on empty input returns empty, so `arc.length === 0 ⟺ usable.length === 0` always — the two guides' guards stay equivalent):
+
+1. Fetch `states`, compute `usable` (unchanged).
+2. **Extracting early-return** (#77's first split, unchanged): `if (usable.length === 0 && states.length > 0) { ...; return; }` — keep this keyed on `usable`, not `arc`; it doesn't need the arc computed yet and firing before that work is strictly cheaper.
+3. **Mood roll + cross-session cooldown** (#77's logic, unchanged) — independent of `usable`/`arc`.
+4. **Compute the arc** (this guide's `selectArc`): `const arc = selectArc(usable, EMOTIONAL_ARC_LIMIT, cfg.emotionalArcDepthWeight);` — placed here, after the extracting check, since a still-extracting turn already returned above and never needs it.
+5. **Blank-slate branch** (#77's second split): change its guard from `usable.length === 0` to `arc.length === 0`, per this guide's intent.
+6. **Main path:** `buildEmotionalContext(arc)` (this guide) inside #77's mood-block-append logic (unchanged otherwise).
+
+Whichever of #68/#77 lands second should apply this merged shape directly rather than re-deriving the interleaving from scratch, and should verify against the other's actual landed code (not just this snapshot).
+
 ## Why turn count + transcript chars, and why NOT duration
 
 - `transcript.length` is already computed in `buildEmotionalStateStoreHandler` (`hooks/emotional-state.ts:305`) — free.
