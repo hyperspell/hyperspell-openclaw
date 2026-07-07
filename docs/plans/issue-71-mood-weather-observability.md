@@ -4,6 +4,8 @@
 
 Each time a mood actually lands (i.e. is injected into a session), fire-and-forget a small memory row tagged `openclaw_source: "mood_weather"` via the existing `memories.add` write path, and extend the existing exclude-filter mechanism in `lib/filters.ts` so that tag is dropped from every recall path the same way `agent_end` traces already are. The "never writes forward" guarantee stays enforced by construction: the emotional-state **store** handler (`POST /emotional-state`) is untouched, the record goes to a completely separate store (vault memories), and the arc **fetch** (`GET /emotional-state[/recent]`) can never return it because it reads a different endpoint keyed by `relationship_id`. The only new leak surface is generic memory recall — which is exactly what the exclude filter closes.
 
+**⚠️ Coordination with issue #77 (mood-weather cross-session cooldown) — read before implementing either.** Both this guide and #77's restructure the same two return sites inside `buildEmotionalStateFetchHandler`. #77 introduces a `priorMood`/cooldown mechanism so a post-compaction re-injection *replays* the same mood instead of rolling fresh dice, and its natural landing spot for "a roll genuinely happened" is a guard shaped `if (mood && !priorMood)`. **`recordMoodRoll` must be called inside that guard, not on a bare `if (mood)`** — otherwise, once #77 lands, a post-compaction replay of an already-rolled mood would call `recordMoodRoll` a second time for the same roll, producing a duplicate observability record for one real event. If #71 lands first (without #77's `priorMood` concept yet), use `if (mood)` as written below, but whoever implements #77 afterward must move the call into its `if (mood && !priorMood)` block rather than leaving a duplicate. If #77 lands first, skip straight to the reconciled version and call `recordMoodRoll` from its guard. Either PR's author should check whether the other has already merged and adjust accordingly — this note exists so neither implementer is surprised by the other's shape.
+
 **No backend change is needed.** This is purely client-side:
 
 - `memories.add` metadata is **proven** to persist and be filterable — canary `A` in `docs/filter-dialect-test.mjs` was tagged via `memories.add` and both matched `{$eq}` and was dropped by `{$ne}` (see truth table in `docs/hyperspell-backend-followups.md`).
@@ -140,7 +142,9 @@ Also update the `DOES NOT WRITE FORWARD` bullet in the file header (`hooks/mood-
 
 ### Call sites in `hooks/emotional-state.ts` (`buildEmotionalStateFetchHandler`)
 
-Critical placement detail: the handler can roll a mood and then **discard** it — the "still extracting" branch (`hooks/emotional-state.ts:202-212`) returns without injecting `moodBlock`, and the next turn re-rolls. Record **only when the mood block is actually returned**, or the log will show weather that never happened. Two injection sites:
+Critical placement detail: the handler can roll a mood and then **discard** it — the "still extracting" branch returns without injecting `moodBlock`, and the next turn re-rolls. Record **only when the mood block is actually returned**, or the log will show weather that never happened.
+
+**If #77 has not landed yet** (no `priorMood`/cooldown concept exists), two injection sites, gated on bare `if (mood)`:
 
 ```ts
 // blank-slate return
@@ -157,7 +161,9 @@ if (mood) recordMoodRoll(client, mood, { sessionKey, relationshipId: cfg.relatio
 return { prependContext: context };
 ```
 
-Because the inject-once cache (`injectedSessions`) gates the whole path, this is at most **one record per injected session** — matching the roll semantics exactly.
+Because the inject-once cache (`injectedSessions`) gates the whole path, this is at most **one record per injected session** — matching the roll semantics exactly, *as long as #77 hasn't also landed introducing mid-session mood replay across compaction*.
+
+**If #77 has already landed** (its `priorMood`/`sessionMoods` replay mechanism exists), the gate must be `if (mood && !priorMood)` instead of `if (mood)` at both sites — see #77's guide for the exact surrounding code. Calling `recordMoodRoll` on a `priorMood` replay (post-compaction re-injection of an already-rolled mood) would log the same roll twice, which is exactly the kind of noise this feature exists to avoid.
 
 **Quarantine is inherited for free:** the merged start-handler wrapper in `index.ts` skips the fetch handler entirely for `excludeChannels` conversations, so no roll and no write happen there — consistent with the "no memory writes" quarantine contract.
 
