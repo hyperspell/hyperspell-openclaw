@@ -4,6 +4,25 @@
 
 `hooks/hot-buffer.ts` already tags every `POST /messages` write with `openclaw_channel_id` resolved from `ctx.channelId`, but the Tin Man register store in `hooks/emotional-state.ts` sends only `metadata: { source: "openclaw_agent_end" }`. This PR threads the channel id into `storeEmotionalState`'s metadata — **data capture only**. Nothing about the injected prose changes.
 
+**⚠️ Coordination with issue #68 (salience-weighted arc selection) — read before implementing either.** #68 also edits this exact `storeEmotionalState` metadata literal, adding `turn_count`, `transcript_chars`, `depth_score`. Merge into one object rather than landing two competing literals:
+
+```ts
+const result = await client.storeEmotionalState(transcript, {
+	relationshipId: cfg.relationshipId,
+	metadata: {
+		source: "openclaw_agent_end",
+		turn_count: userTurns,
+		transcript_chars: transcript.length,
+		depth_score: depthScore,
+		...(channelId ? { channelId } : {}),
+	},
+});
+```
+
+**Also update this guide's own test** (§ "The change" → `hooks/emotional-state.test.ts` below): the exact-match `assert.deepEqual(stores[0].opts.metadata, { source: "openclaw_agent_end", channelId: "chan-42" })` will break the moment #68's fields exist in the same object, regardless of landing order. Assert per-key instead, e.g. `assert.equal(stores[0].opts.metadata?.channelId, "chan-42")` and `assert.equal(stores[0].opts.metadata?.source, "openclaw_agent_end")` — don't assert the whole object shape, since a second PR (#68, in either order) legitimately adds more keys to it.
+
+**⚠️ Note re: issue #80 (quarantine purge).** #80's README documents that emotional-state registers "are not channel-tagged." After this PR they carry `channelId` in metadata, but that alone does not make them purgeable by #80's channel-quarantine tooling — registers aren't reachable via `listMemories`/the purge command's resource enumeration, and the key here is unprefixed `channelId`, not `openclaw_channel_id` (see design decision 2 above, which is deliberate). If #80 is extended to cover emotional-state registers later, it needs its own lookup path and must use this guide's actual key name, not assume the `/messages` prefix convention.
+
 ## Design decisions (read before coding)
 
 1. **Resolve via the existing `channelIdFromCtx` helper, not a new inline check.** `lib/exclude-channels.ts:40-44` already exports the canonical "resolve the conversation id from any hook context" helper: it prefers `ctx.channelId` and falls back to parsing the composite `sessionKey` (`agent:<agentId>:<provider>:<kind>:<id>` → `<id>`). This subsumes hot-buffer's inline direct-only pattern and is already unit-tested. Reusing it means zero new resolution logic and slightly better coverage than hot-buffer gets today (e.g. a context that carries only a composite `sessionKey`).
@@ -81,10 +100,12 @@ test("emotional-state store — tags metadata with channelId from ctx (#74)", as
 		{ trigger: "user", channelId: "chan-42" } as never,
 	);
 	assert.equal(stores.length, 1);
-	assert.deepEqual(stores[0].opts.metadata, {
-		source: "openclaw_agent_end",
-		channelId: "chan-42",
-	});
+	// Per-key, not deepEqual on the whole object: issue #68 (arc depth weighting)
+	// adds turn_count/transcript_chars/depth_score to this same metadata literal,
+	// in either landing order — an exact-shape assertion would break the moment
+	// both PRs' fields coexist.
+	assert.equal(stores[0].opts.metadata?.source, "openclaw_agent_end");
+	assert.equal(stores[0].opts.metadata?.channelId, "chan-42");
 });
 
 test("emotional-state store — resolves channelId from composite sessionKey when ctx.channelId is absent", async () => {
@@ -110,7 +131,8 @@ test("emotional-state store — omits channelId when unresolvable, still stores 
 	// e.g. a manual CLI run: no channelId, sessionKey has no conversation segment.
 	await handler({ success: true, messages: richMessages }, { trigger: "user" });
 	assert.equal(stores.length, 1);
-	assert.deepEqual(stores[0].opts.metadata, { source: "openclaw_agent_end" });
+	assert.equal(stores[0].opts.metadata?.source, "openclaw_agent_end");
+	assert.equal(stores[0].opts.metadata?.channelId, undefined);
 });
 ```
 
