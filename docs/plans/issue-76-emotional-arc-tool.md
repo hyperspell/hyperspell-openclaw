@@ -12,7 +12,9 @@ The tool is a thin wrapper over logic that already exists: `fetchRecentOrLatest`
 
 ## Step 1 — Export the reusable pieces from `hooks/emotional-state.ts`
 
-`looksLikeRawTranscript` is already exported. `fetchRecentOrLatest`, `buildEmotionalContext`, and `EMOTIONAL_ARC_LIMIT` are currently module-private — export them, and give `fetchRecentOrLatest` an optional `limit` parameter (the hook call site stays unchanged via the default):
+`looksLikeRawTranscript` is already exported. `fetchRecentOrLatest`, `buildEmotionalContext`, and `EMOTIONAL_ARC_LIMIT` are currently module-private — export them, and give `fetchRecentOrLatest` an optional `limit` parameter (the hook call site stays unchanged via the default).
+
+**⚠️ Coordination with issue #68 (salience-weighted arc selection) — read before implementing either.** #68 also modifies `fetchRecentOrLatest`, computing its own internal fetch limit from `cfg.emotionalArcDepthWeight` when that config is set. These are compatible only if the caller-supplied `limit` (this tool's use case) takes precedence over the depth-weight default (the passive hook's use case) — an explicit ask from the model should never get silently overridden by an unrelated config knob. The signature below already reflects that reconciliation:
 
 ```ts
 // hooks/emotional-state.ts
@@ -25,12 +27,17 @@ export const EMOTIONAL_ARC_LIMIT = 3;
 export async function fetchRecentOrLatest(
 	client: HyperspellClient,
 	cfg: HyperspellConfig,
-	limit: number = EMOTIONAL_ARC_LIMIT,
+	limit?: number,
 ): Promise<EmotionalStateLatest[]> {
+	// If #68 (emotionalArcDepthWeight) hasn't landed yet, this reduces to
+	// `limit ?? EMOTIONAL_ARC_LIMIT`. Once it has, an explicit caller-supplied
+	// limit (e.g. from this tool) still wins outright; only the *default* when
+	// no limit is passed depends on depth-weight config — see #68's guide.
+	const fetchLimit = limit ?? EMOTIONAL_ARC_LIMIT;
 	try {
 		const recent = await client.getRecentEmotionalStates(
 			cfg.relationshipId,
-			limit,
+			fetchLimit,
 		);
 		if (recent !== null) return recent; // endpoint available (may be empty)
 	} catch (err) {
@@ -45,6 +52,8 @@ export function buildEmotionalContext(states: EmotionalStateLatest[]): string {
 	// body unchanged
 }
 ```
+
+If #68 has already landed by the time this is implemented, read its actual merged `fetchRecentOrLatest` body rather than the snippet above — extend its existing `limit ?? (depthWeight-driven default)` logic to also accept this tool's explicit override, don't re-introduce a fourth parameter.
 
 No cycle risk: `tools/emotional-arc.ts` → `hooks/emotional-state.ts` → (`hooks/auto-trace.ts`, `hooks/mood-weather.ts`, `client.ts`, `config.ts`, `lib/*`) — nothing in that chain imports from `tools/`.
 
