@@ -9,6 +9,8 @@
 
 Because the loops query is byte-identical every session, semantic search ranks the *same* lexically-similar resources every time. Content that is genuinely open but doesn't share vocabulary with that phrase never surfaces; content that happens to embed near it surfaces forever. This is the "stuck" failure mode described in the issue.
 
+**⚠️ Coordination with issue #78 (`/previewcontext` command) — read before implementing either.** #78 proposes extracting the fetch+format core of this same `buildStartupOrientationHandler` into a standalone exported `gatherOrientation(client, cfg, userId)` function, so a read-only preview command can call it without touching session-lifecycle state. That extraction should happen **on top of** this guide's resequenced logic (recent-fetch-first, then the derived `loopsQuery`), not the original parallel-fetch shape — otherwise #78 would extract a version of the function that #73 immediately has to re-resequence, undoing part of the extraction. **Land this guide (#73) first if possible**; if #78 lands first instead, apply this guide's resequencing and query-derivation directly inside its already-extracted `gatherOrientation`, rather than to the pre-extraction handler body.
+
 ## Direction decision
 
 ### Option 1 — dynamic query derived from recent session content (recommended, this PR's scope)
