@@ -172,13 +172,31 @@ export function selectArc(
 
 Rewire `fetchRecentOrLatest` (`hooks/emotional-state.ts:128-143`) to over-fetch **only when weighting is on** (so `depthWeight = 0` keeps request payloads byte-identical to today):
 
+**⚠️ Coordination with issue #76 (on-demand `hyperspell_emotional_arc` tool) — read before implementing either.** #76 also modifies `fetchRecentOrLatest`'s signature, adding an external `limit?: number` parameter so its tool can request a different arc size on demand. These are compatible, not conflicting, IF the signature is reconciled as below — an explicit caller-supplied `limit` wins outright; the depth-weight-driven default only applies when no `limit` is passed (i.e. the hook's own call site, `fetchRecentOrLatest(client, cfg)` with no third arg):
+
 ```ts
-const fetchLimit =
-	cfg.emotionalArcDepthWeight > 0
-		? EMOTIONAL_ARC_LIMIT * ARC_CANDIDATE_MULTIPLIER
-		: EMOTIONAL_ARC_LIMIT;
-const recent = await client.getRecentEmotionalStates(cfg.relationshipId, fetchLimit);
+export async function fetchRecentOrLatest(
+	client: HyperspellClient,
+	cfg: HyperspellConfig,
+	limit?: number,
+): Promise<EmotionalStateLatest[]> {
+	const fetchLimit =
+		limit ??
+		(cfg.emotionalArcDepthWeight > 0
+			? EMOTIONAL_ARC_LIMIT * ARC_CANDIDATE_MULTIPLIER
+			: EMOTIONAL_ARC_LIMIT);
+	try {
+		const recent = await client.getRecentEmotionalStates(cfg.relationshipId, fetchLimit);
+		if (recent !== null) return recent; // endpoint available (may be empty)
+	} catch (err) {
+		log.debug("emotional-context: /recent unavailable — falling back to latest", err);
+	}
+	const single = await client.getEmotionalState(cfg.relationshipId);
+	return single ? [single] : [];
+}
 ```
+
+If #76 lands first (before `cfg.emotionalArcDepthWeight` and `ARC_CANDIDATE_MULTIPLIER` exist), its version of this function will just be `limit ?? EMOTIONAL_ARC_LIMIT` — when implementing #68 afterward, extend that existing optional `limit` parameter with the depth-weight branch above rather than re-adding a third parameter that already exists. Whichever of #68/#76 lands second should read the other's actual merged code, not assume this snapshot.
 
 In `buildEmotionalStateFetchHandler`, apply selection **after** the raw-transcript-placeholder filter (`hooks/emotional-state.ts:187-189`) — placeholders must not consume candidate slots:
 
