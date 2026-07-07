@@ -16,6 +16,8 @@ Two small correctness wrinkles worth fixing while we're here (both one-liners):
 1. The wizard copy says the cron "runs as a periodic cron job **in the main session**", but the cron is created with `--session isolated`. Copy bug.
 2. `knowledgeGraph.scanIntervalMinutes` is parsed and schema'd but **never read by any runtime code** — the wizard hardcodes `--every 1h` and `getCronSetupCommand`'s `interval` param is never called with the config value. The docs below must not pretend this knob works; see Part 4 for the recommended handling.
 
+**⚠️ Overlap with Group B `proposal/06-knowledge-graph-enablement` (external, not landable by this repo's normal process) — flag for human/cross-agent coordination, do not resolve unilaterally beyond the correction below.** That proposal covers the same feature from a complementary angle (enable + evaluate on one install, vs. this guide's discoverability + docs), but there are three concrete touchpoints a human should reconcile before both land: (a) both fix the identical "in the main session" wizard-copy bug — land whichever first, the other is then a no-op; (b) both address the inert `scanIntervalMinutes` knob with compatible but distinct remedies (this guide: wire it into the wizard in Part 4; proposal/06: treat the cron as the source of truth and wire-or-remove later) — pick one; (c) **proposal/06's §3.3 independently verified the `graph_entity` re-scan bug this guide's own planned README text was about to (falsely) describe as fixed** — see the correction inline above. Since (c) is a factual correction with independent verification behind it, it's applied directly in this guide rather than just flagged.
+
 **On the #72 pattern, and a landing-order note**: issue #72 (moodWeatherChance silently 0) has a companion implementation-guide PR — both should read as siblings: the two existing precedents both live in `index.ts` `register()`: the `allowConversationAccess` startup warn (`api.logger.warn`, one message, names the exact config key and the consequence of not acting) and the startup-orientation inert-source warn. Match those. More precisely: **three** guides touch this same area of `index.ts` — #69 edits the *existing* `allowConversationAccess` block (downgrading warn→info), while this guide and #72 each *add a new* block nearby. Suggested order: land #69 first if it hasn't already (smallest conflict surface, sets the template wording/level), then this guide and #72 in either order — whichever lands second just needs a trivial rebase past the other's insertion.
 
 ---
@@ -153,8 +155,10 @@ Engineering Manager at Hyperspell. Leads the Memory Network project.
 
 Re-extraction **merges**: existing `source_memories`, `relationships`, and
 `hyperspell_id` are preserved and unioned, so files are safe to hand-edit between runs.
-The `graph_entity: true` frontmatter prevents synced entity files from being re-scanned
-as source memories.
+
+**⚠️ Do not ship this next sentence as originally drafted — it is false on current code.** The extraction prompt (`graph/cron.ts`) *promises* that `graph_entity: true` frontmatter prevents synced entity files from being re-scanned as source memories, but neither sync path (`syncMarkdownFileSectionized` nor the legacy `syncMarkdownFile` in `sync/markdown.ts`) propagates frontmatter into the stored memory's `metadata` — only `openclaw_source`/`file_path`/`file_name`/`section_title`/`content_hash` land there. `scanMemories` (`graph/ops.ts:106`) skips on `metadata?.graph_entity`, which is therefore never true for a synced entity file. **Confirmed independently by Group B's `proposal/06-knowledge-graph-enablement` (§3.3), which flags this as a live self-scan-loop bug** to verify in cycle 1 of its enablement eval, with a proposed fix (propagate `graph_entity` from frontmatter into sync metadata in both paths). Until that fix lands, entity files DO re-enter scans as unprocessed source memories. Replace the guarantee sentence with something honest, e.g.:
+
+> Re-extraction is idempotent by design (the cron agent should re-derive the same entities and mark rows complete), but a known gap means synced entity files currently re-enter future scans as unprocessed memories rather than being skipped — see issue #66's linked follow-up (tracked alongside `proposal/06-knowledge-graph-enablement`) for the fix.
 ~~~
 
 ---
