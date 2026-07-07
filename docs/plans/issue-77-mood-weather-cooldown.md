@@ -4,6 +4,8 @@
 
 `rollMood()` is gated once per session by the `injectedSessions` inject-once cache, but nothing remembers that weather *landed* across consecutive sessions. With the documented "rare" chance (~0.05–0.10), a cluster of five short same-day sessions gets five independent rolls — silly → spiky → flat in one afternoon reads as broken, not moody. Fix: a module-scope, relationship-keyed timestamp of the last time weather actually landed, mirroring the two debounce patterns this codebase already uses (`STORE_DEBOUNCE_MS`/`lastStoreAt` in `hooks/emotional-state.ts`, `TRACE_DEBOUNCE_MS`/`lastTraceAt` in `hooks/auto-trace.ts`). Once weather lands, no new roll until the window elapses — regardless of session count.
 
+**Touches the same code as issue #71** (mood-weather observability): both restructure the two return sites inside `buildEmotionalStateFetchHandler` where a rolled mood is handled. See the inline coordination note at the `if (mood && !priorMood)` block below — #71's `recordMoodRoll` call belongs inside that guard, not on a bare `if (mood)`, or a post-compaction replay would double-log one real roll. Whichever of #71/#77 is implemented second should check the other's actual landed code rather than assume this guide's snapshot.
+
 ## Design decisions (read before coding)
 
 1. **`rollMood()` stays pure.** It's a tested pure function with injectable `rng`; its test suite (`hooks/mood-weather.test.ts`) relies on that. The cooldown is caller state, so it lives in `hooks/emotional-state.ts` next to its sibling `lastStoreAt` — the fetch handler gates the call. **No changes to `hooks/mood-weather.ts`.**
@@ -104,6 +106,12 @@ Current order: roll mood → check `usable.length === 0` (extracting return, the
 				lastMoodRollAt.set(relId, now());
 				if (sessionKey) sessionMoods.set(sessionKey, mood);
 				log.info(`mood-weather: rolled "${mood.id}" this session`);
+				// Coordination with issue #71 (mood-weather observability): if #71's
+				// recordMoodRoll(client, mood, {...}) has landed, its call belongs
+				// HERE — inside this `!priorMood` guard — not on a bare `if (mood)`
+				// at the two return sites below. A priorMood replay (post-compaction
+				// re-injection of an already-rolled mood) is not a new roll; calling
+				// recordMoodRoll on replay would log the same event twice.
 			}
 			const moodBlock = mood ? buildMoodWeatherContext(mood) : "";
 
