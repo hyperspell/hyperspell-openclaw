@@ -6,6 +6,17 @@
 
 **Touches the same code as issue #71** (mood-weather observability): both restructure the two return sites inside `buildEmotionalStateFetchHandler` where a rolled mood is handled. See the inline coordination note at the `if (mood && !priorMood)` block below — #71's `recordMoodRoll` call belongs inside that guard, not on a bare `if (mood)`, or a post-compaction replay would double-log one real roll. Whichever of #71/#77 is implemented second should check the other's actual landed code rather than assume this guide's snapshot.
 
+**⚠️ Coordination with issue #68 (salience-weighted arc selection) — read before implementing either.** #68 also restructures this same handler: it computes a re-ranked/deduped `arc` from `usable` and replaces `usable.length === 0` / `buildEmotionalContext(usable)` with `arc`-based equivalents. Reconciled merge order (safe because `selectArc` on empty input returns empty, so `arc.length === 0 ⟺ usable.length === 0` always — the split guard below stays equivalent either way):
+
+1. Fetch `states`, compute `usable` (unchanged).
+2. **Extracting early-return** (this guide's first split): `if (usable.length === 0 && states.length > 0) { ...; return; }` — stays keyed on `usable`, not `arc` — it fires before #68's arc computation is needed.
+3. **Mood roll + cross-session cooldown** (this guide's logic, unchanged).
+4. **Compute the arc** (#68's `selectArc`) here, after the extracting check.
+5. **Blank-slate branch** (this guide's second split): guard becomes `arc.length === 0` instead of `usable.length === 0`.
+6. **Main path:** `buildEmotionalContext(arc)` (#68) inside this guide's mood-block-append logic (unchanged otherwise).
+
+Whichever of #68/#77 lands second should apply this merged shape directly rather than re-deriving the interleaving, and should verify against the other's actual landed code.
+
 ## Design decisions (read before coding)
 
 1. **`rollMood()` stays pure.** It's a tested pure function with injectable `rng`; its test suite (`hooks/mood-weather.test.ts`) relies on that. The cooldown is caller state, so it lives in `hooks/emotional-state.ts` next to its sibling `lastStoreAt` — the fetch handler gates the call. **No changes to `hooks/mood-weather.ts`.**
