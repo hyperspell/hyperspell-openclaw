@@ -12,6 +12,8 @@ moodWeatherChance: Math.min(1, Math.max(0, (cfg.moodWeatherChance as number) ?? 
 
 The roll itself is gated in `hooks/emotional-state.ts:196` (`cfg.moodWeatherChance > 0 ? rollMood(...) : null`), so with the default an operator who turned on `emotionalContext` gets zero mood-weather behavior and zero signal about it. The parsed shape is a plain `number`, always defined, so the check is exactly `cfg.moodWeatherChance === 0`.
 
+**⚠️ Landing-order note: three separate guides touch `index.ts`'s `register()` near the same spot.** #69 edits the *existing* `allowConversationAccess` warn block (downgrading it to `info`). This guide and #81 (Memory Network discoverability) each *add a new* info-level log block nearby, following #69's pattern as precedent. Suggested order: land **#69 first** if it hasn't already — it has the smallest conflict surface, and this guide's log block should be placed right after it, matching its wording/level style. This guide and #81 can land in either order relative to each other; whichever lands second just needs a trivial rebase past the other's insertion.
+
 ## 1. Startup log — `index.ts`
 
 Add the check inside the existing `if (cfg.emotionalContext)` block at `index.ts:167`, as its first statement. This mirrors the existing nested-discoverability-check pattern in the `startupOrientation` block just below it (`index.ts:187-196`, the "recent-interactions will be empty" warn). Use `log.info`, not `log.warn` — `moodWeatherChance: 0` is a valid, intentional-by-default state, not a misconfiguration; this is purely a discoverability nudge. (The `logger.ts` `log` facade is initialized at `index.ts:101`, well before this point.)
