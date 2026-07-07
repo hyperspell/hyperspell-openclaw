@@ -19,6 +19,8 @@ This fires on **every** gateway start whenever any of the three `agent_end` feat
 
 Conclusion: the reminder is inherently unconditional given today's SDK surface, so it must not read as an alarm. Downgrade to `info` and reword; propose real grant introspection upstream.
 
+**⚠️ Landing-order note: three separate guides touch `index.ts`'s `register()` near the same spot.** This one (#69) edits the *existing* `allowConversationAccess` warn block. #72 (moodWeatherChance discoverability) and #81 (Memory Network discoverability) each *add a new* info-level log block nearby, following this one's pattern as precedent. Suggested order: land **this PR (#69) first** — it touches existing lines, so it has the smallest conflict surface, and the other two can literally copy its finished shape. #72 and #81 can then land in either order relative to each other (both are purely additive new blocks); whichever lands second just needs a trivial rebase past the other's insertion. If you're implementing #72 or #81 and #69 has already landed, use its actual merged wording/level as the template rather than re-deriving the `info`-vs-`warn` decision from scratch.
+
 ## Part 1 — What this PR does today: downgrade to `info` + reword
 
 ### 1a. `index.ts` — change level and wording
