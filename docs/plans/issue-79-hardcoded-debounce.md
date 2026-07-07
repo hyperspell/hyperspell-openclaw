@@ -7,6 +7,8 @@ Both debounce windows are hardcoded to 3 minutes:
 
 This exposes both as config with the 3-minute values kept as defaults. Setting `0` disables debouncing (`since < 0` is never true, so every qualifying turn sends).
 
+**Related to issue #77 (mood-weather cross-session cooldown).** #77 introduces a third hardcoded real-time window, `MOOD_WEATHER_COOLDOWN_MS`, in the same shape (module-scope constant, gates a `Date.now()`-based comparison) but for a different reason — it's a product-design guardrail ("weather, not a gimmick"), not an ops-rhythm tuning knob like these two. #77's guide recommends landing with a fixed constant first and enrolling it in whatever config mechanism this guide settles on, as a follow-up rather than blocking either PR on the other. If this guide lands first, when #77 is implemented afterward, add `moodWeatherCooldownMs` alongside `autoTrace.debounceMs`/`emotionalStateDebounceMs` using the same feature-owned-key pattern (default `6h`, clamped `>= 0`, `0` meaning "no cross-session cooldown") rather than inventing a fourth pattern. If #77 lands first with its own fixed constant, extend this guide's config additions to cover it in the same PR rather than leaving three timing knobs configured two different ways.
+
 ## Key shape: feature-owned keys, not a `timing` sub-object
 
 - **Auto-trace:** `autoTrace.debounceMs` — the `autoTrace` sub-object already exists (`enabled`, `extract`, `metadata`), and `syncMemories.debounceMs` is the established precedent for a per-feature `debounceMs`.
