@@ -6,6 +6,8 @@ A read-only slash command that assembles and prints exactly what the plugin's `b
 
 **Command name:** `registerCommand` takes a single flat `name`, so there is no `/hyperspell preview` subcommand form. Use `previewcontext` — it pairs naturally with the existing `getcontext`.
 
+**⚠️ Coordination with issue #73 (dynamic unfinished-loops query) — read before implementing either.** #73 resequences `buildStartupOrientationHandler`'s two fetches (recent-interactions first, then a loops query derived from the recent results) instead of running them in one parallel `Promise.allSettled`. This guide's `gatherOrientation` extraction (Step 1 below) should be built **on top of** #73's resequenced version — extract whatever the handler's fetch+format core actually looks like after #73 lands, not the original parallel-fetch shape shown here. **If #73 hasn't landed yet, land it first**; the `gatherOrientation` sketch below assumes the pre-#73 (parallel, static-query) shape purely because that's what exists today; update it to match #73's resequencing before or during this extraction.
+
 ## Architecture decision (read this before coding)
 
 Do **not** invoke `buildEmotionalStateFetchHandler(...)` or `buildStartupOrientationHandler(...)` from the preview. Both handlers mutate module-scoped session state:
