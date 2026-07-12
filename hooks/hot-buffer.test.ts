@@ -92,6 +92,27 @@ test("hot-buffer — tags rows with origin metadata (source, session, channel)",
 	});
 });
 
+test("hot-buffer — channel tag falls back to sessionKey when ctx lacks channelId", async () => {
+	// Tool-factory-style contexts carry only a composite sessionKey. Tagging
+	// must resolve the SAME id the quarantine check would (channelIdFromCtx),
+	// or purge-channel misses rows that excludeChannels would have blocked.
+	const { client, calls, optionsList } = makeClient();
+	const handler = buildHotBufferHandler(client, cfg, { stateRoot: testStateRoot });
+	await handler(
+		{
+			success: true,
+			messages: [{ role: "user", content: "tag via key" }],
+		},
+		{ sessionId: "s-key", sessionKey: "agent:main:discord:channel:777" },
+	);
+	assert.equal(calls.length, 1);
+	assert.deepEqual((optionsList[0] as { metadata?: unknown }).metadata, {
+		openclaw_source: "hot_buffer",
+		openclaw_session_id: "s-key",
+		openclaw_channel_id: "777",
+	});
+});
+
 test("hot-buffer — omits channel tag when ctx has no channelId", async () => {
 	const { client, calls, optionsList } = makeClient();
 	const handler = buildHotBufferHandler(client, cfg, { stateRoot: testStateRoot });

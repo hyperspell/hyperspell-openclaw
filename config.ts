@@ -155,6 +155,8 @@ export type HyperspellConfig = {
 	 * state), and no memory tools in those sessions. Matched against the
 	 * session's resolved conversation id (e.g. a Discord channel id); threads
 	 * inside an excluded channel inherit the quarantine. Default: [].
+	 * Forward-only: content synced before a channel is quarantined stays in
+	 * Hyperspell; use the purge-channel CLI command to remove tagged content.
 	 */
 	excludeChannels: string[];
 	relationshipId?: string;

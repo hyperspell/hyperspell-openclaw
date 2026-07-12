@@ -49,7 +49,7 @@
 		},
 		"excludeChannels": {
 			"label": "Excluded Channels",
-			"help": "Conversation/channel ids fully quarantined from memory: no context injection, no memory writes, no memory tools in those sessions. Threads inside an excluded channel inherit the quarantine.",
+			"help": "Conversation/channel ids fully quarantined from memory: no context injection, no memory writes, no memory tools in those sessions. Threads inside an excluded channel inherit the quarantine. Forward-only; already-synced content is not removed (see purge-channel CLI command).",
 			"advanced": true
 		},
 		"startupOrientation": {

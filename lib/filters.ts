@@ -27,10 +27,12 @@ type ExcludeCfg = { autoTrace: { enabled: boolean } }
  * search (~1s observed live), and when auto-trace is off there are no `agent_end`
  * rows to hide, so the filter would cost latency on every turn for zero benefit.
  *
- * Do NOT instead try to positively tag hot rows via `POST /messages` metadata to
- * identify them: a `/messages` write carrying `metadata` is accepted (200) but
- * the row becomes NON-retrievable (verified live, post-#1921) — see the
- * hot-buffer hook, which writes content only.
+ * Hot rows ARE positively tagged (`openclaw_source: "hot_buffer"` plus
+ * session/channel ids — see the hot-buffer hook): metadata-carrying
+ * `/messages` rows were verified retrievable AND filterable live 2026-07-02
+ * (docs/filter-dialect-test.mjs). The `$ne` exclude keeps them because
+ * "hot_buffer" != "agent_end". (An earlier note here claimed metadata made
+ * hot rows non-retrievable — that predated the backend fix.)
  *
  * NOTE: an earlier version checked the top-level `source` field for
  * "openclaw_agent_end" — wrong on BOTH counts (the tag lives in metadata under

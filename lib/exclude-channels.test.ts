@@ -3,8 +3,30 @@ import { describe, it } from "node:test"
 import {
   channelIdFromCtx,
   conversationIdFromSessionKey,
+  conversationMatchesChannel,
   isExcludedChannel,
 } from "./exclude-channels.ts"
+
+describe("conversationMatchesChannel", () => {
+  it("matches an exact id", () => {
+    assert.equal(conversationMatchesChannel("chan-9", "chan-9"), true)
+  })
+
+  it("matches a thread suffix", () => {
+    assert.equal(conversationMatchesChannel("chan-9:thread:1", "chan-9"), true)
+  })
+
+  it("matches case-insensitively", () => {
+    assert.equal(conversationMatchesChannel("CHAN-9", "chan-9"), true)
+    assert.equal(conversationMatchesChannel("chan-9:THREAD:1", "CHAN-9"), true)
+  })
+
+  it("does not match a different channel or a bare-prefix superset", () => {
+    assert.equal(conversationMatchesChannel("chan-10", "chan-9"), false)
+    // chan-90 shares chan-9 as a bare prefix but is a DIFFERENT channel.
+    assert.equal(conversationMatchesChannel("chan-90", "chan-9"), false)
+  })
+})
 
 describe("conversationIdFromSessionKey", () => {
   it("extracts the id from an agent-prefixed channel key", () => {

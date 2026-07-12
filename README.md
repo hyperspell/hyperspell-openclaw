@@ -102,6 +102,27 @@ Check your current configuration and connection status.
 
 Open the Hyperspell connect page to link your accounts (Notion, Slack, Google Drive, etc.). After connecting, your sources are automatically updated in the config.
 
+### `openclaw openclaw-hyperspell purge-channel <channelId>`
+
+Find — and with `--yes`, delete — memories that were synced from a specific conversation/channel. Use it for retroactive cleanup after adding a channel to `excludeChannels`, which is [forward-only](#excludechannels-is-forward-only).
+
+```
+openclaw openclaw-hyperspell purge-channel 1521620672726438171          # dry run: list what would be deleted
+openclaw openclaw-hyperspell purge-channel 1521620672726438171 --yes    # actually delete
+```
+
+| Flag | Description |
+|------|-------------|
+| `--source <sources>` | Comma-separated Hyperspell sources to scan. Default `vault` — the hot-buffer consolidation target and default `hotBuffer.source`. |
+| `--user <userId>` | `X-As-User` to scan/delete under. Default: the configured `userId`. In `multiUser` deployments, run once per mapped userId. |
+| `--session <ids>` | Comma-separated OpenClaw session ids — matches legacy **untagged** hot-buffer resources through the `resource_id === session id` identity. |
+| `--resource <ids>` | Explicit resource ids to delete (escape hatch for traces or `/remember` memories you identified manually, e.g. via `hyperspell_search`). |
+| `--yes` | Actually delete. Without it the command is a **dry run** that prints the matches and exits. |
+
+Matching uses the same semantics as the quarantine check itself: exact id or thread suffix (`<channelId>:...`), case-insensitive. Discovery enumerates memories and filters client-side on the `openclaw_channel_id` metadata tag — deleted rows are reported per resource, and a resource that is already gone counts as deleted.
+
+**Finding session ids for `--session`:** OpenClaw session keys embed the conversation id (`agent:<agentId>:<provider>:channel:<channelId>[...]` — the same format the plugin's quarantine matching parses). Look up the quarantined conversation's sessions in OpenClaw's session store and pass their session ids; each hot-buffer resource id equals its session id.
+
 ## Configuration Options
 
 | Option | Type | Default | Description |
@@ -114,6 +135,7 @@ Open the Hyperspell connect page to link your accounts (Notion, Slack, Google Dr
 | `syncMemories` | boolean | `false` | Sync markdown files in `workspace/memory/` to Hyperspell |
 | `sources` | string | - | Comma-separated sources to search (e.g., `vault,notion,slack`) |
 | `maxResults` | number | `10` | Maximum memories per context injection |
+| `excludeChannels` | string[] | `[]` | Conversation/channel ids fully quarantined from memory: no context injection, no memory writes, no memory tools. Threads inherit. **Forward-only** — see [below](#excludechannels-is-forward-only). |
 | `debug` | boolean | `false` | Enable verbose logging |
 | `dreaming.enabled` | boolean | `false` | Allow `memory-core` to sidecar-load so Dreaming can consolidate local session transcripts into `workspace/MEMORY.md`. See [Running alongside Dreaming](#running-alongside-dreaming). |
 
@@ -209,6 +231,17 @@ When `autoContext: true` (default), the plugin automatically:
 3. Injects matching context into the AI's prompt
 
 This ensures the AI always has access to relevant information from your connected sources.
+
+### `excludeChannels` is forward-only
+
+Adding a channel to `excludeChannels` stops all future injection/writes/tools for that conversation, but does **not** remove content that was synced before the channel was quarantined.
+
+- **Hot-buffer content** written by plugin versions since 2026-07 is tagged with `openclaw_channel_id` and can be removed with [`openclaw openclaw-hyperspell purge-channel <id>`](#openclaw-openclaw-hyperspell-purge-channel-channelid). Older hot-buffer rows are untagged, but each row's resource id equals its OpenClaw session id, so they are reachable via the purge command's `--session` flag.
+- **Auto-trace resources and `/remember` memories** written by current versions carry the same `openclaw_channel_id` tag going forward. Ones written by older versions are not channel-tagged and cannot be automatically purged — identify them manually (e.g. via `hyperspell_search`) and use the purge command's `--resource` escape hatch.
+- **Emotional-state registers** are keyed by relationship, not channel, and live behind the `/emotional-state` API rather than the memories store this command scans — they are never matched by `purge-channel`, and deletion of them is per-relationship, all-or-nothing. (Newer plugin versions tag registers with a `channelId` metadata field for analysis, but that does not make them purgeable per channel.)
+- **Server-side extractions** derived from traces (`extract: ["procedure", "memory", "mood"]`) are created backend-side; whether deleting the parent trace removes them is an open backend question (see `docs/hyperspell-backend-followups.md`).
+
+The purge command prints these standing limitations on every run.
 
 ## Available Sources
 

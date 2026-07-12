@@ -1,5 +1,6 @@
 import type { HyperspellClient } from "../client.ts";
 import type { HyperspellConfig } from "../config.ts";
+import { channelIdFromCtx } from "../lib/exclude-channels.ts";
 import { resolveUser } from "../lib/sender.ts";
 import { isMultiSpeaker } from "../lib/speaker-tracker.ts";
 import { log } from "../logger.ts";
@@ -172,7 +173,15 @@ export function buildAutoTraceHandler(
 			return;
 		}
 
-		const sessionId = (event.sessionId as string) ?? crypto.randomUUID();
+		// The session id lives on the hook CONTEXT, not the agent_end event (same
+		// contract issue #42 hit in hot-buffer): reading only event.sessionId
+		// yields a fresh random UUID per turn, which breaks multi-speaker
+		// detection keying and makes the openclaw_session_id tag useless for
+		// cleanup. Prefer ctx; keep event/random as fallbacks.
+		const sessionId =
+			(ctx?.sessionId as string) ??
+			(event.sessionId as string) ??
+			crypto.randomUUID();
 		const history = messagesToJSONL(messages, sessionId);
 
 		// Warn once per session when multiple speakers have no multiUser config:
@@ -196,12 +205,23 @@ export function buildAutoTraceHandler(
 		const resolved = resolveUser(ctx, cfg);
 		const userId = resolved?.userId;
 
+		// Tag traces with the conversation they came from. channelIdFromCtx is the
+		// same resolver the quarantine check uses, so tag-time identity matches
+		// quarantine-time identity — the purge-channel CLI relies on that parity.
+		// session_id is a first-class trace field but is NOT exposed by
+		// listMemories, so it's mirrored into metadata for enumeration.
+		const channelId = channelIdFromCtx(ctx);
+
 		try {
 			const result = await client.sendTrace(history, {
 				sessionId,
 				title,
 				extract: cfg.autoTrace.extract,
-				metadata: cfg.autoTrace.metadata,
+				metadata: {
+					...cfg.autoTrace.metadata,
+					...(channelId ? { openclaw_channel_id: channelId } : {}),
+					openclaw_session_id: sessionId,
+				},
 				userId,
 				// Auto-trace captures full conversation text — the most sensitive class
 				// of memory. Default to private; users opt into family-visible recall

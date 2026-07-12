@@ -14,9 +14,16 @@ import { openInBrowser } from "../lib/browser.ts"
 import { DEFAULT_RANKING } from "../lib/ranking.ts"
 import { HyperspellClient } from "../client.ts"
 import { getWorkspaceDir, parseConfig, resolveConfigPath } from "../config.ts"
+import type { HyperspellSource } from "../config.ts"
 import { buildExtractionPrompt, CRON_JOB_NAME } from "../graph/cron.ts"
 import { NetworkStateManager } from "../graph/state.ts"
 import { scanMemories, formatScanResults, completeMemories } from "../graph/ops.ts"
+import {
+  deleteMatches,
+  findChannelMemories,
+  formatMatchTable,
+  PURGE_LIMITATIONS_FOOTER,
+} from "./purge-channel.ts"
 
 async function fetchConnectionSources(client: Hyperspell, userId: string): Promise<string[]> {
   try {
@@ -637,6 +644,76 @@ export function registerCliCommands(program: Command, pluginConfig: unknown): vo
     .description("Open the Hyperspell connect page to link your accounts")
     .action(async () => {
       await runConnect(pluginConfig)
+    })
+
+  // Retroactive cleanup for quarantined channels. Dry run by default — no
+  // interactive prompt, so it stays usable from cron/exec like `network`.
+  hyperspellCmd
+    .command("purge-channel <channelId>")
+    .description(
+      "Find (and with --yes delete) memories synced from a channel — retroactive cleanup for excludeChannels, which is forward-only",
+    )
+    .option(
+      "--source <sources>",
+      "Comma-separated Hyperspell sources to scan (default: vault, the hot-buffer consolidation target)",
+      "vault",
+    )
+    .option(
+      "--user <userId>",
+      "X-As-User to scan/delete under (default: configured userId). In multiUser deployments run once per mapped userId.",
+    )
+    .option(
+      "--session <ids>",
+      "Comma-separated OpenClaw session ids — matches legacy untagged hot-buffer resources (resource_id === session id)",
+    )
+    .option(
+      "--resource <ids>",
+      "Comma-separated explicit resource ids to include (escape hatch for traces / remember memories identified manually)",
+    )
+    .option("--yes", "Actually delete. Without this flag the command is a dry run.")
+    .action(async (channelId: string, opts) => {
+      const splitCsv = (v: unknown): string[] =>
+        typeof v === "string" ? v.split(",").map((s) => s.trim()).filter(Boolean) : []
+      try {
+        const cfg = parseConfig(pluginConfig)
+        const client = new HyperspellClient(cfg)
+        const sources = splitCsv(opts.source).map((s) => s.toLowerCase()) as HyperspellSource[]
+        const userId = (opts.user as string | undefined) ?? cfg.userId
+        const matches = await findChannelMemories(client, channelId, {
+          sources: sources.length > 0 ? sources : ["vault"],
+          userId,
+          sessionIds: splitCsv(opts.session),
+        })
+        // Explicit ids are operator-asserted; append any not already found.
+        const found = new Set(matches.map((m) => m.resourceId))
+        for (const id of splitCsv(opts.resource)) {
+          if (!found.has(id)) {
+            matches.push({ resourceId: id, source: sources[0] ?? "vault", title: null, via: "explicit" })
+          }
+        }
+
+        if (matches.length === 0) {
+          process.stdout.write(`No memories matched channel ${channelId}.\n\n${PURGE_LIMITATIONS_FOOTER}\n`)
+          return
+        }
+
+        process.stdout.write(formatMatchTable(matches) + "\n\n")
+        if (!opts.yes) {
+          process.stdout.write(
+            `Dry run: ${matches.length} memor${matches.length === 1 ? "y" : "ies"} would be deleted. Re-run with --yes to delete.\n\n${PURGE_LIMITATIONS_FOOTER}\n`,
+          )
+          return
+        }
+
+        const result = await deleteMatches(client, matches, { userId })
+        process.stdout.write(
+          `Deleted ${result.deleted} of ${result.matched.length} matched memories (${result.failed} failed).\n\n${PURGE_LIMITATIONS_FOOTER}\n`,
+        )
+        if (result.failed > 0) process.exit(1)
+      } catch (err) {
+        process.stderr.write(`Purge failed: ${err instanceof Error ? err.message : String(err)}\n`)
+        process.exit(1)
+      }
     })
 
   // Memory Network CLI commands (used by isolated cron sessions via exec)
