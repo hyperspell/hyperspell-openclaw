@@ -8,7 +8,7 @@ import { sanitizeTraceText } from "./auto-trace.ts";
 import { buildMoodWeatherContext, rollMood } from "./mood-weather.ts";
 
 /** How many recent registers to surface as the "arc" at session start. */
-const EMOTIONAL_ARC_LIMIT = 3;
+export const EMOTIONAL_ARC_LIMIT = 3;
 
 type Message = { role?: string; content?: string | unknown };
 type AgentContext = { sessionKey?: string; trigger?: string };
@@ -126,14 +126,20 @@ function relativeWhen(iso: string): string {
  * backend doesn't expose `/emotional-state/recent` yet (returns null) or errors
  * — so this works before AND after that endpoint deploys.
  */
-async function fetchRecentOrLatest(
+export async function fetchRecentOrLatest(
 	client: HyperspellClient,
 	cfg: HyperspellConfig,
+	limit?: number,
 ): Promise<EmotionalStateLatest[]> {
+	// An explicit caller-supplied limit (the hyperspell_emotional_arc tool) must
+	// always win outright; only the *default* when no limit is passed may depend
+	// on config (see #68's depth-weighted default) — a model's explicit ask
+	// should never be silently overridden by an unrelated config knob.
+	const fetchLimit = limit ?? EMOTIONAL_ARC_LIMIT;
 	try {
 		const recent = await client.getRecentEmotionalStates(
 			cfg.relationshipId,
-			EMOTIONAL_ARC_LIMIT,
+			fetchLimit,
 		);
 		if (recent !== null) return recent; // endpoint available (may be empty)
 	} catch (err) {
@@ -144,7 +150,7 @@ async function fetchRecentOrLatest(
 }
 
 /** Build the injected emotional-context block from one or more registers. */
-function buildEmotionalContext(states: EmotionalStateLatest[]): string {
+export function buildEmotionalContext(states: EmotionalStateLatest[]): string {
 	const intro =
 		states.length > 1
 			? "How your relationship with this user has felt across your recent conversations, most recent first. Let the trajectory inform your tone — don't reference it explicitly."

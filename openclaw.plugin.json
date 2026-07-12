@@ -8,6 +8,7 @@
 		"tools": [
 			"hyperspell_search",
 			"hyperspell_remember",
+			"hyperspell_emotional_arc",
 			"hyperspell_network_scan",
 			"hyperspell_network_write",
 			"hyperspell_network_complete"

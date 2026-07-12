@@ -186,6 +186,7 @@ The plugin registers tools that the AI can use autonomously:
 
 - **hyperspell_search** - Search through connected sources
 - **hyperspell_remember** - Save information to memory
+- **hyperspell_emotional_arc** - Re-fetch the recent emotional arc mid-conversation (requires `emotionalContext: true`); returns the same block injected at session start, e.g. after compaction removed it
 
 ## Auto-Context
 

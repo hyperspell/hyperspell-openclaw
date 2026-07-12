@@ -23,6 +23,7 @@ import {
 } from "./hooks/startup-orientation.ts"
 import { isExcludedChannel } from "./lib/exclude-channels.ts"
 import { initLogger, log } from "./logger.ts"
+import { createEmotionalArcToolFactory } from "./tools/emotional-arc.ts"
 import { createRememberToolFactory } from "./tools/remember.ts"
 import { createSearchToolFactory } from "./tools/search.ts"
 import { registerNetworkTools } from "./graph/index.ts"
@@ -139,6 +140,13 @@ export default {
 		const startHandlers: StartHandler[] = [];
 
 		if (cfg.emotionalContext) {
+			// On-demand arc re-fetch (issue #76): the session-start injection can be
+			// compacted out of history mid-session; this tool lets the agent pull the
+			// exact same block back without waiting for the next prompt build.
+			api.registerTool(
+				toolUnlessQuarantined(createEmotionalArcToolFactory(client, cfg)),
+				{ name: "hyperspell_emotional_arc" },
+			);
 			startHandlers.push(
 				buildEmotionalStateFetchHandler(client, cfg) as StartHandler,
 			);
