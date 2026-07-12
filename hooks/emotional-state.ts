@@ -1,5 +1,6 @@
 import type { EmotionalStateLatest, HyperspellClient } from "../client.ts";
 import type { HyperspellConfig } from "../config.ts";
+import { channelIdFromCtx } from "../lib/exclude-channels.ts";
 import { resolveCurrentSessionId } from "../lib/session.ts";
 import { isMultiSpeaker } from "../lib/speaker-tracker.ts";
 import { log } from "../logger.ts";
@@ -321,9 +322,16 @@ export function buildEmotionalStateStoreHandler(
 		}
 
 		try {
+			// Tag the register with the medium it was extracted from (voice vs Discord vs
+			// DM), mirroring hot-buffer's openclaw_channel_id tag. Capture-only: analysis/
+			// debugging metadata, deliberately NOT surfaced in the injected prose (#74).
+			const channelId = channelIdFromCtx(ctx as Record<string, unknown>);
 			const result = await client.storeEmotionalState(transcript, {
 				relationshipId: cfg.relationshipId,
-				metadata: { source: "openclaw_agent_end" },
+				metadata: {
+					source: "openclaw_agent_end",
+					...(channelId ? { channelId } : {}),
+				},
 			});
 			lastStoreAt.set(relId, Date.now());
 			log.info(`emotional-state: stored ${result.resourceId}`);
