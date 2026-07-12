@@ -141,6 +141,16 @@ Manually sync all markdown files in `workspace/memory/` to Hyperspell.
 /sync
 ```
 
+### `/previewcontext`
+
+Show exactly what Hyperspell would inject at the start of the next session — the emotional-context arc, the auto-context setting, and the startup-orientation blocks — without starting a session or touching any session state. Read-only and idempotent: run it twice and you get the same report.
+
+Mood weather is shown as its configured chance only (e.g. "configured chance 8% per session") and is **never rolled by the preview** — each real session rolls independently at injection time, so the actual mood (if any) is only observable in the live session.
+
+```
+/previewcontext
+```
+
 ## Memory Sync
 
 When `syncMemories: true`, the plugin syncs markdown files from your agent's workspace memory directory (e.g., `~/.openclaw/workspace/memory/`) to Hyperspell. This includes all `.md` files in subdirectories.

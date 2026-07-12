@@ -12,6 +12,7 @@ import {
 } from "../lib/sender.ts"
 import { log } from "../logger.ts"
 import { syncAllMemoryFiles } from "../sync/markdown.ts"
+import { buildPreviewReport } from "./preview.ts"
 
 /**
  * Strip a `#scope-name` prefix from free text. Returns the scope and the
@@ -192,6 +193,23 @@ export function registerCommands(
       } catch (err) {
         log.error("/sync failed", err)
         return { text: "Failed to sync memory files. Check logs for details." }
+      }
+    },
+  })
+
+  // /previewcontext - Show what would be injected into the next session
+  api.registerCommand({
+    name: "previewcontext",
+    description: "Preview what Hyperspell would inject at the next session start",
+    acceptsArgs: false,
+    requireAuth: true,
+    handler: async (ctx: { args?: string; senderId?: string; channel?: string }) => {
+      log.debug("/previewcontext command")
+      try {
+        return { text: await buildPreviewReport(client, cfg, ctx) }
+      } catch (err) {
+        log.error("/previewcontext failed", err)
+        return { text: "Failed to build preview. Check logs for details." }
       }
     },
   })
