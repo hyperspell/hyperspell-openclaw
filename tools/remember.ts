@@ -1,6 +1,7 @@
 import { Type } from "@sinclair/typebox"
 import type { HyperspellClient } from "../client.ts"
 import type { HyperspellConfig } from "../config.ts"
+import { channelIdFromCtx } from "../lib/exclude-channels.ts"
 import {
   getDefaultWriteScope,
   resolveRole,
@@ -119,12 +120,20 @@ export function createRememberToolFactory(
         `remember tool: "${params.text.slice(0, 50)}..." date=${params.date ?? "now"} userId=${userId} scope=${scope}`,
       )
 
+      // Tag with the originating conversation so purge-channel can find this
+      // memory if the channel is quarantined later (the tool is already
+      // suppressed in channels that are quarantined NOW).
+      const channelId = channelIdFromCtx(ctx)
+
       try {
         await client.addMemory(params.text, {
           title: params.title,
           date: params.date,
           collection,
-          metadata: { source: "openclaw_tool" },
+          metadata: {
+            source: "openclaw_tool",
+            ...(channelId ? { openclaw_channel_id: channelId } : {}),
+          },
           userId,
           scope: scopingEnabled ? scope : undefined,
         })

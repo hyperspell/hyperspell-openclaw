@@ -1,6 +1,8 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { sanitizeTraceText } from "./auto-trace.ts";
+import type { HyperspellClient } from "../client.ts";
+import { parseConfig } from "../config.ts";
+import { buildAutoTraceHandler, sanitizeTraceText } from "./auto-trace.ts";
 
 test("sanitizeTraceText — strips hyperspell-context wrapper", () => {
 	const input =
@@ -97,4 +99,93 @@ test("sanitizeTraceText — strips [Untrusted daily memory:...] QUOTED_NOTES blo
 	const input =
 		"[Untrusted daily memory: memory/2026-04-16.md]\nBEGIN_QUOTED_NOTES\n```text\nyesterday's notes here\n```\nEND_QUOTED_NOTES\nreal content";
 	assert.equal(sanitizeTraceText(input), "real content");
+});
+
+// ---------------------------------------------------------------------------
+// buildAutoTraceHandler — channel/session metadata tagging
+// ---------------------------------------------------------------------------
+
+function makeTraceClient() {
+	const calls: Array<{ history: string; options?: Record<string, unknown> }> =
+		[];
+	const client = {
+		async sendTrace(history: string, options?: Record<string, unknown>) {
+			calls.push({ history, options });
+			return { resourceId: "trace-1", status: "queued" };
+		},
+	} as unknown as HyperspellClient;
+	return { client, calls };
+}
+
+const traceCfg = parseConfig({
+	apiKey: "k",
+	userId: "u1",
+	autoTrace: { enabled: true, metadata: { deployment: "test" } },
+});
+
+// Long enough to clear MIN_MESSAGES (3) and MIN_CONVERSATION_LENGTH (100).
+const traceMessages = [
+	{ role: "user", content: "tell me about the project timeline please".repeat(2) },
+	{ role: "assistant", content: "sure, here is the current project timeline".repeat(2) },
+	{ role: "user", content: "thanks, that helps a lot with planning" },
+];
+
+test("auto-trace — tags metadata with openclaw_channel_id and openclaw_session_id from ctx", async () => {
+	const { client, calls } = makeTraceClient();
+	const handler = buildAutoTraceHandler(client, traceCfg);
+	await handler(
+		{ success: true, messages: traceMessages },
+		{ sessionId: "sess-1", channelId: "chan-9" },
+	);
+	assert.equal(calls.length, 1);
+	assert.deepEqual(calls[0].options?.metadata, {
+		deployment: "test",
+		openclaw_channel_id: "chan-9",
+		openclaw_session_id: "sess-1",
+	});
+	// The first-class session_id field uses the same ctx-resolved id.
+	assert.equal(calls[0].options?.sessionId, "sess-1");
+});
+
+test("auto-trace — resolves the channel tag via the sessionKey fallback", async () => {
+	const { client, calls } = makeTraceClient();
+	const handler = buildAutoTraceHandler(client, traceCfg);
+	await handler(
+		{ success: true, messages: traceMessages },
+		{ sessionId: "sess-2", sessionKey: "agent:main:discord:channel:777" },
+	);
+	assert.equal(calls.length, 1);
+	assert.deepEqual(calls[0].options?.metadata, {
+		deployment: "test",
+		openclaw_channel_id: "777",
+		openclaw_session_id: "sess-2",
+	});
+});
+
+test("auto-trace — omits the channel tag when no conversation id resolves", async () => {
+	const { client, calls } = makeTraceClient();
+	const handler = buildAutoTraceHandler(client, traceCfg);
+	await handler(
+		{ success: true, messages: traceMessages },
+		{ sessionId: "sess-3" },
+	);
+	assert.equal(calls.length, 1);
+	assert.deepEqual(calls[0].options?.metadata, {
+		deployment: "test",
+		openclaw_session_id: "sess-3",
+	});
+});
+
+test("auto-trace — ctx.sessionId takes precedence over event.sessionId (issue #42 contract)", async () => {
+	const { client, calls } = makeTraceClient();
+	const handler = buildAutoTraceHandler(client, traceCfg);
+	await handler(
+		{ success: true, sessionId: "evt-sess", messages: traceMessages },
+		{ sessionId: "ctx-sess" },
+	);
+	assert.equal(calls[0].options?.sessionId, "ctx-sess");
+	assert.equal(
+		(calls[0].options?.metadata as Record<string, unknown>).openclaw_session_id,
+		"ctx-sess",
+	);
 });
