@@ -6,7 +6,9 @@ import {
 	buildEmotionalStateSessionCleanupHandler,
 	buildEmotionalStateStoreHandler,
 	looksLikeRawTranscript,
+	MOOD_WEATHER_COOLDOWN_MS,
 } from "./emotional-state.ts";
+import { MOOD_TABLE } from "./mood-weather.ts";
 
 type State = {
 	resourceId: string;
@@ -382,4 +384,144 @@ test("emotional-state fetch — falls back to single latest when /recent is unav
 	const ctx = (out as { prependContext?: string })?.prependContext ?? "";
 	assert.match(ctx, /Just the latest register/);
 	assert.equal(client.callCount, 1, "fell back to getEmotionalState");
+});
+
+// ---- mood weather: cross-session cooldown (issue #77) ----------------------
+
+const moodCfg = (relationshipId: string, chance = 1) =>
+	({ relationshipId, moodWeatherChance: chance }) as unknown as Parameters<
+		typeof buildEmotionalStateFetchHandler
+	>[1];
+
+const hasMood = (out: unknown) =>
+	String((out as { prependContext?: string })?.prependContext ?? "").includes(
+		"<hyperspell-mood-weather>",
+	);
+
+test("mood weather — a landed roll suppresses new rolls for clustered sessions", async () => {
+	const { client } = makeClient("Warm and steady.");
+	let t = 1_000_000;
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-mood-cluster"),
+		{ now: () => t, rng: () => 0 },
+	);
+
+	const first = await handler({}, { sessionKey: "mood-s1" });
+	assert.ok(hasMood(first), "chance=1 → weather lands on the first session");
+
+	t += 10 * 60 * 1000; // 10 minutes later — well inside the cooldown
+	const second = await handler({}, { sessionKey: "mood-s2" });
+	assert.ok(!hasMood(second), "second session in the cluster gets NO new weather");
+	assert.match(
+		String((second as { prependContext?: string })?.prependContext ?? ""),
+		/Warm and steady/,
+		"arc injection is unaffected — only the weather is suppressed",
+	);
+
+	t += 60 * 60 * 1000; // one more hour — still inside the 6h window
+	const third = await handler({}, { sessionKey: "mood-s3" });
+	assert.ok(!hasMood(third), "still cooled down an hour later");
+});
+
+test("mood weather — rolls again once the cooldown window has elapsed", async () => {
+	const { client } = makeClient("Warm and steady.");
+	let t = 1_000_000;
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-mood-elapse"),
+		{ now: () => t, rng: () => 0 },
+	);
+
+	const first = await handler({}, { sessionKey: "elapse-s1" });
+	assert.ok(hasMood(first));
+
+	t += MOOD_WEATHER_COOLDOWN_MS + 1;
+	const later = await handler({}, { sessionKey: "elapse-s2" });
+	assert.ok(hasMood(later), "a session past the window can roll fresh weather");
+});
+
+test("mood weather — a miss does not start the cooldown", async () => {
+	const { client } = makeClient("Warm and steady.");
+	let rngValue = 0.999;
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-mood-miss", 0.5),
+		{ now: () => 1_000_000, rng: () => rngValue },
+	);
+
+	const first = await handler({}, { sessionKey: "miss-s1" });
+	assert.ok(!hasMood(first), "0.999 >= 0.5 — the gate misses");
+
+	rngValue = 0;
+	const second = await handler({}, { sessionKey: "miss-s2" });
+	assert.ok(hasMood(second), "the miss did not burn the window — next session can land");
+});
+
+test("mood weather — post-compaction re-injection replays the SAME mood, no new dice", async () => {
+	const { client } = makeClient("Warm and steady.");
+	// First roll consumes [0, 0] → gate hit, picks MOOD_TABLE[0]. If a second
+	// roll ever happened it would consume [0, 0.999999] → the LAST table entry.
+	const rolls = [0, 0, 0, 0.999999];
+	let i = 0;
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-mood-compact"),
+		{ now: () => 1_000_000, rng: () => rolls[i++] ?? 0 },
+	);
+	const onCompaction = buildEmotionalStateCompactionHandler();
+	const ctx = { sessionKey: "compact-mood" };
+
+	const first = await handler({}, ctx);
+	assert.ok(hasMood(first));
+	assert.match(
+		String((first as { prependContext?: string })?.prependContext ?? ""),
+		new RegExp(MOOD_TABLE[0].id),
+	);
+
+	await onCompaction({}, ctx);
+
+	const replay = await handler({}, ctx);
+	const replayCtx = String((replay as { prependContext?: string })?.prependContext ?? "");
+	assert.ok(
+		replayCtx.includes(MOOD_TABLE[0].note),
+		"re-injection carries the mood rolled at session start",
+	);
+	assert.ok(
+		!replayCtx.includes(MOOD_TABLE[MOOD_TABLE.length - 1].note),
+		"no second roll happened (the [0, 0.999999] mood never appears)",
+	);
+});
+
+test("mood weather — a still-extracting turn does not consume the roll", async () => {
+	// Call 1 returns the pending raw-transcript placeholder (discarded turn);
+	// call 2 returns a real register. The roll must happen only on call 2.
+	let calls = 0;
+	const client = {
+		async getRecentEmotionalStates() {
+			return null;
+		},
+		async getEmotionalState() {
+			calls++;
+			return calls === 1
+				? st("user: hi\nassistant: hey")
+				: st("Settled and warm.");
+		},
+	};
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-mood-pending"),
+		{ now: () => 1_000_000, rng: () => 0 },
+	);
+	const ctx = { sessionKey: "pending-mood" };
+
+	const first = await handler({}, ctx);
+	assert.equal(first, undefined, "still extracting — no injection, no roll");
+
+	const second = await handler({}, ctx);
+	assert.ok(hasMood(second), "the roll was not burned by the discarded turn");
+	assert.match(
+		String((second as { prependContext?: string })?.prependContext ?? ""),
+		/Settled and warm/,
+	);
 });
