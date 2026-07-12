@@ -3,7 +3,9 @@
 > Implementation guide for idea #17 from issue [#66](https://github.com/hyperspell/hyperspell-openclaw/issues/66).
 > This is the **meta-idea**: the reusable test infrastructure that the other retrieval-relevance
 > ideas (#1, #2, #7, #9, #12, #13, and most of the rest) lean on in their own test plans.
-> Design doc only — no functional code ships in this PR.
+> Implemented in this PR: the hermetic eval core (`eval/`, in `npm test`), the
+> shared matcher module (`lib/eval-matchers.ts`), and the live runner
+> (`scripts/eval-retrieval.ts` + `docs/eval/retrieval-fixtures.jsonl`).
 
 ## 1. Summary
 

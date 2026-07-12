@@ -29,5 +29,8 @@ npm-debug.log*
 
 # TypeScript cache
 *.tsbuildinfo
+
+# Live retrieval-eval run log (fixtures are committed; results stay local)
+docs/eval/retrieval-results.jsonl
 __pycache__/
 .aider*

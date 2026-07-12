@@ -1,0 +1,8 @@
+// Live retrieval eval fixtures — one JSON object per line, appended over time.
+// See docs/proposals/17-retrieval-eval-harness.md §3.1/§3.3 for the format and
+// the growth process. Run: npm run eval:retrieval (live API, maintainer only).
+// Matchers OR: pass if any SELECTED result matches expectedResourceId OR
+// expectedTitleContains (title/highlights, case-insensitive). "skip": true parks a line.
+{ "query": "what did we decide about the hot buffer metadata trap", "expectedTitleContains": "hot buffer", "note": "seed fixture from the proposal itself — the 2026-06-23 hotbuffer verification session", "addedAt": "2026-07-12" }
+{ "query": "the Omuerta magic system and the characters Heath, Junii, Tevre", "expectedTitleContains": "omuerta", "note": "seed: the original ranked-out Writing Notes case behind lib/ranking.ts — FAILS live 2026-07-12 (only a heartbeat echo carries the term in-pool, cut by threshold); parked pending corpus check / a #66 ranking idea flipping it", "addedAt": "2026-07-12", "skip": true }
+{ "query": "why do we exclude agent_end traces from memory search", "expectedTitleContains": "agent_end", "note": "seed: the auto-trace exclude-filter decision (lib/filters.ts lore)", "addedAt": "2026-07-12" }
