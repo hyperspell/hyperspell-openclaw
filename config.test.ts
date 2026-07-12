@@ -324,3 +324,7 @@ test("parseConfig — non-array excludeChannels falls back to empty", () => {
   const cfg = parseConfig({ ...base, excludeChannels: "123" })
   assert.deepEqual(cfg.excludeChannels, [])
 })
+
+test("parseConfig — moodWeatherChance defaults to 0 (mood weather off)", () => {
+  assert.equal(parseConfig(base).moodWeatherChance, 0)
+})
