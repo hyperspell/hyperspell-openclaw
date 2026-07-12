@@ -4,6 +4,7 @@ import type { SearchResult } from "../client.ts";
 import {
 	classifyResult,
 	DEFAULT_RANKING,
+	explainSelection,
 	rerank,
 	type RankedResult,
 	scoreResult,
@@ -110,4 +111,133 @@ test("selectRanked — drops below-threshold and honors maxResults", () => {
 	const sel = selectRanked(list, 1, 0.6, 2);
 	assert.equal(sel.length, 1, "maxResults respected");
 	assert.equal(sel[0].resourceId, "a");
+});
+
+// Pre-refactor selectRanked, copied verbatim as the behavior-identity oracle:
+// selectRanked is now derived from explainSelection (proposal 02 §3a) and must
+// select the exact same set. Domain note: maxResults >= 1 — the old loop's
+// check-after-push let ONE item through at maxResults 0, but a 0 config also
+// makes the candidate fetch limit 0, so that input is unreachable in prod.
+function legacySelectRanked(
+	list: RankedResult[],
+	maxResults: number,
+	threshold: number,
+	chatterQuota: number,
+): RankedResult[] {
+	const out: RankedResult[] = [];
+	let chatter = 0;
+	for (const r of list) {
+		if (r._composite < threshold) continue;
+		if (r._kind === "chatter") {
+			if (chatter >= chatterQuota) continue;
+			chatter++;
+		}
+		out.push(r);
+		if (out.length >= maxResults) break;
+	}
+	return out;
+}
+
+test("explainSelection — behavior identity: selected set matches the pre-refactor selectRanked on varied pools", () => {
+	const pools: RankedResult[][] = [
+		[],
+		// echo flood around the quota
+		[
+			ranked("chatter", 0.9, "c1"),
+			ranked("chatter", 0.85, "c2"),
+			ranked("chatter", 0.8, "c3"),
+			ranked("curated", 0.7, "k1"),
+			ranked("chatter", 0.65, "c4"),
+		],
+		// below-threshold tail + maxResults pressure
+		[ranked("curated", 0.9, "a"), ranked("curated", 0.8, "c"), ranked("other", 0.5, "b")],
+		// all four kinds straddling the threshold
+		[
+			ranked("story", 0.95, "s1"),
+			ranked("chatter", 0.9, "c1"),
+			ranked("curated", 0.61, "k1"),
+			ranked("chatter", 0.6, "c2"),
+			ranked("other", 0.6, "o1"),
+			ranked("chatter", 0.59, "c3"),
+			ranked("curated", 0.4, "k2"),
+		],
+		// chatter-only pool (quota and cap interact)
+		[
+			ranked("chatter", 0.7, "c1"),
+			ranked("chatter", 0.7, "c2"),
+			ranked("chatter", 0.7, "c3"),
+			ranked("chatter", 0.7, "c4"),
+		],
+	];
+	const params: Array<[number, number, number]> = [
+		[10, 0.6, 2],
+		[1, 0.6, 2],
+		[3, 0.6, 0],
+		[2, 0.5, 1],
+		[4, 0.7, 3],
+	];
+	for (const pool of pools) {
+		for (const [max, thr, quota] of params) {
+			const label = `pool=[${pool.map((r) => r.resourceId)}] max=${max} thr=${thr} quota=${quota}`;
+			const expected = legacySelectRanked(pool, max, thr, quota);
+			assert.deepEqual(selectRanked(pool, max, thr, quota), expected, `selectRanked ${label}`);
+			assert.deepEqual(
+				explainSelection(pool, max, thr, quota)
+					.filter((e) => e.selected)
+					.map((e) => e.result),
+				expected,
+				`explainSelection ${label}`,
+			);
+		}
+	}
+});
+
+test("explainSelection — annotates every candidate; selected entries carry cut null", () => {
+	const list = [ranked("curated", 0.9, "a"), ranked("other", 0.5, "b")];
+	const ex = explainSelection(list, 10, 0.6, 2);
+	assert.equal(ex.length, list.length, "one entry per candidate, ranked order");
+	assert.deepEqual(ex.map((e) => e.result.resourceId), ["a", "b"]);
+	assert.deepEqual(ex.map((e) => e.cut), [null, "threshold"]);
+});
+
+test("explainSelection — sub-threshold is 'threshold' even when the maxResults cap is already full", () => {
+	const list = [ranked("curated", 0.9, "a"), ranked("curated", 0.8, "b"), ranked("curated", 0.5, "low")];
+	const ex = explainSelection(list, 1, 0.6, 2);
+	assert.deepEqual(ex.map((e) => e.cut), [null, "max-results", "threshold"]);
+});
+
+test("explainSelection — third chatter item with quota 2 is cut by 'chatter-quota' (the quota was the binding constraint)", () => {
+	// The proposal-03 ask: distinguish "quota bound" from threshold/maxResults cuts.
+	const list = [
+		ranked("chatter", 0.9, "c1"),
+		ranked("chatter", 0.85, "c2"),
+		ranked("chatter", 0.8, "c3"),
+		ranked("curated", 0.7, "k1"),
+	];
+	const ex = explainSelection(list, 10, 0.6, 2);
+	assert.deepEqual(ex.map((e) => e.cut), [null, null, "chatter-quota", null]);
+	assert.deepEqual(
+		ex.filter((e) => e.selected).map((e) => e.result.resourceId),
+		["c1", "c2", "k1"],
+	);
+});
+
+test("explainSelection — above-threshold item past maxResults is 'max-results'", () => {
+	const list = [ranked("curated", 0.9, "a"), ranked("curated", 0.8, "b"), ranked("curated", 0.7, "c")];
+	const ex = explainSelection(list, 2, 0.6, 2);
+	assert.deepEqual(ex.map((e) => e.cut), [null, null, "max-results"]);
+});
+
+test("explainSelection — chatter past a full maxResults cap reads 'max-results', not 'chatter-quota'", () => {
+	// It would have been cut regardless of the quota, so the quota wasn't
+	// binding for it — proposal 03 §3.2's correctness property.
+	const list = [ranked("curated", 0.9, "k1"), ranked("chatter", 0.8, "c1")];
+	const ex = explainSelection(list, 1, 0.6, 2);
+	assert.deepEqual(ex.map((e) => e.cut), [null, "max-results"]);
+});
+
+test("explainSelection — quota 0 cuts every above-threshold chatter as 'chatter-quota'", () => {
+	const list = [ranked("chatter", 0.9, "c1"), ranked("chatter", 0.8, "c2"), ranked("curated", 0.7, "k1")];
+	const ex = explainSelection(list, 10, 0.6, 0);
+	assert.deepEqual(ex.map((e) => e.cut), ["chatter-quota", "chatter-quota", null]);
 });

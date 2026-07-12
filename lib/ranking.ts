@@ -119,11 +119,68 @@ export function rerank(
 		.sort((a, b) => b._composite - a._composite);
 }
 
+/** Why a candidate was cut from injection. Closed set — the tuning analysis
+ * (proposal 02) and the chatter-quota instrumentation (proposal 03) both key
+ * off it. */
+export type SelectionCut = "threshold" | "max-results" | "chatter-quota";
+
+/** Selected entries carry `cut: null`; cut entries carry the binding reason.
+ * Discriminated on `selected` so a cut entry can never lack a reason. */
+export type SelectionExplained =
+	| { result: RankedResult; selected: true; cut: null }
+	| { result: RankedResult; selected: false; cut: SelectionCut };
+
+/**
+ * One pass over ranked results, annotating each with its selection outcome.
+ * Same policy as selectRanked — which is now derived from this, so the two
+ * can never drift (proposal 02 §3a).
+ *
+ * Attribution order is deliberate: the threshold check comes first so a
+ * below-the-bar result is always attributed to "threshold" even when the
+ * max-results cap is already full; and a chatter item past the cap reads
+ * "max-results", not "chatter-quota" — it would have been cut regardless, so
+ * the quota was not the binding constraint (proposal 03 §3.2 semantics).
+ */
+export function explainSelection(
+	ranked: RankedResult[],
+	maxResults: number,
+	threshold: number,
+	chatterQuota: number,
+): SelectionExplained[] {
+	const out: SelectionExplained[] = [];
+	let chatter = 0;
+	let kept = 0;
+	for (const r of ranked) {
+		if (r._composite < threshold) {
+			out.push({ result: r, selected: false, cut: "threshold" });
+			continue;
+		}
+		if (kept >= maxResults) {
+			out.push({ result: r, selected: false, cut: "max-results" });
+			continue;
+		}
+		if (r._kind === "chatter" && chatter >= chatterQuota) {
+			out.push({ result: r, selected: false, cut: "chatter-quota" });
+			continue;
+		}
+		if (r._kind === "chatter") chatter++;
+		kept++;
+		out.push({ result: r, selected: true, cut: null });
+	}
+	return out;
+}
+
 /**
  * Choose which ranked results to inject: keep those clearing `threshold` on
  * their composite, cap CHATTER at `chatterQuota` regardless of score (so a
  * high-similarity echo can inform but never flood — the penalty bounds rank,
  * the quota bounds count), and stop at `maxResults`.
+ *
+ * Signature and return shape are intentionally unchanged: the retrieval eval
+ * harness (proposal 17) and existing call sites depend on
+ * `selectRanked(ranked, maxResults, threshold, chatterQuota): RankedResult[]`.
+ * It is a thin projection of explainSelection so selection policy lives in
+ * exactly one place.
  */
 export function selectRanked(
 	ranked: RankedResult[],
@@ -131,16 +188,7 @@ export function selectRanked(
 	threshold: number,
 	chatterQuota: number,
 ): RankedResult[] {
-	const out: RankedResult[] = [];
-	let chatter = 0;
-	for (const r of ranked) {
-		if (r._composite < threshold) continue;
-		if (r._kind === "chatter") {
-			if (chatter >= chatterQuota) continue;
-			chatter++;
-		}
-		out.push(r);
-		if (out.length >= maxResults) break;
-	}
-	return out;
+	return explainSelection(ranked, maxResults, threshold, chatterQuota)
+		.filter((e) => e.selected)
+		.map((e) => e.result);
 }

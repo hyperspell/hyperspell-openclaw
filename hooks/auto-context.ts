@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs"
 import type { HyperspellClient, SearchResult } from "../client.ts"
 import type { CanReadScope, HyperspellConfig } from "../config.ts"
 import {
@@ -7,7 +8,12 @@ import {
   type ResolvedUser,
 } from "../lib/sender.ts"
 import { excludeFilterFor, mergeWithExclude } from "../lib/filters.ts"
-import { type RankedResult, rerank, selectRanked } from "../lib/ranking.ts"
+import {
+  explainSelection,
+  type RankedResult,
+  rerank,
+  type SelectionExplained,
+} from "../lib/ranking.ts"
 import { classifySearchError, logSearchError } from "../lib/search-error.ts"
 import { resolveCurrentSessionId } from "../lib/session.ts"
 import { recordSender, senderIdFromCtx } from "../lib/speaker-tracker.ts"
@@ -93,6 +99,54 @@ function formatSelected(selected: RankedResult[], threshold: number): string | n
 
   if (sections.length === 0) return null
   return sections.join("\n\n")
+}
+
+/**
+ * Opt-in score sampling for relevanceThreshold tuning (proposal 02 §3b).
+ * Writes one JSONL line per candidate when HYPERSPELL_SCORE_LOG names a file;
+ * review/analyze with docs/score-review.mjs and docs/score-analyze.mjs.
+ *
+ * The lines carry an 80-char prompt prefix and memory snippets — sensitive
+ * plaintext on disk — so this is OFF by default and never config-driven:
+ * it writes nothing unless the operator explicitly sets the env var (setting
+ * it IS the opt-in), and the log should be deleted after the tuning window.
+ * The env var is read at call time (not module load) so tests can set it.
+ * Must never throw into the retrieval path.
+ */
+function logScoreSamples(
+  prompt: string,
+  sessionId: string | undefined,
+  scope: "single" | "personal" | "shared",
+  explained: SelectionExplained[],
+  threshold: number,
+): void {
+  const path = process.env.HYPERSPELL_SCORE_LOG
+  if (!path || explained.length === 0) return
+  const ts = new Date().toISOString()
+  const lines = explained.map((e) => {
+    const r = e.result
+    const top = [...r.highlights].sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0]
+    return JSON.stringify({
+      ts,
+      sessionId,
+      scope,
+      prompt: prompt.slice(0, 80),
+      resourceId: r.resourceId,
+      title: (r.title ?? "").slice(0, 60),
+      kind: r._kind,
+      base: Number(r._base.toFixed(4)),
+      composite: Number(r._composite.toFixed(4)),
+      threshold,
+      selected: e.selected,
+      cut: e.cut,
+      snippet: (top?.text ?? "").replace(/\s+/g, " ").slice(0, 120),
+    })
+  })
+  try {
+    appendFileSync(path, `${lines.join("\n")}\n`)
+  } catch {
+    // instrumentation must never break retrieval
+  }
 }
 
 const INTRO =
@@ -199,12 +253,35 @@ export function buildAutoContextHandler(
         const ranked = rerank(results, ranking)
         // Threshold + chatter quota applied here, so a high-similarity echo can
         // inform but never flood (the quota bounds count; the penalty bounds rank).
-        const selected = selectRanked(
+        const explained = explainSelection(
           ranked,
           cfg.maxResults,
           cfg.relevanceThreshold,
           ranking.chatterQuota,
         )
+        logScoreSamples(prompt, currentSessionId, "single", explained, cfg.relevanceThreshold)
+        const selected = explained.filter((e) => e.selected).map((e) => e.result)
+
+        // Cut-reason visibility (proposal 02, absorbs proposal 03): logged
+        // BEFORE the `formatted` check so quota drops stay visible even when
+        // nothing is injected (e.g. chatterQuota 0 with only chatter clearing
+        // the threshold). Stable "auto-context: cut" prefix for log greps.
+        // flatMap (not filter) so TS narrows to the cut member of the union.
+        const cuts = explained.flatMap((e) => (e.selected ? [] : [e]))
+        if (cuts.length > 0) {
+          const cutTally = cuts.reduce(
+            (acc, e) => ((acc[e.cut] = (acc[e.cut] ?? 0) + 1), acc),
+            {} as Record<string, number>,
+          )
+          const topQuotaDrop = cuts.find((e) => e.cut === "chatter-quota")
+          const quotaNote = topQuotaDrop
+            ? `, top quota-dropped composite ${topQuotaDrop.result._composite.toFixed(2)}`
+            : ""
+          log.debug(
+            `auto-context: cut ${cuts.length} of ${ranked.length} candidates ${JSON.stringify(cutTally)}${quotaNote}`,
+          )
+        }
+
         formatted = formatSelected(selected, cfg.relevanceThreshold)
         if (formatted) {
           const tally = selected.reduce(
@@ -212,7 +289,7 @@ export function buildAutoContextHandler(
             {} as Record<string, number>,
           )
           log.debug(
-            `auto-context: injecting (ranked) ${JSON.stringify(tally)} from ${results.length} candidates (chatter cap ${ranking.chatterQuota})`,
+            `auto-context: injecting (ranked) ${JSON.stringify(tally)} from ${results.length} candidates (chatter cap ${ranking.chatterQuota}, composite ${selected.at(-1)?._composite.toFixed(2)}–${selected[0]?._composite.toFixed(2)})`,
           )
         }
       } else {
@@ -239,6 +316,10 @@ export function buildAutoContextHandler(
   }
 }
 
+// Score logging / cut attribution (proposal 02) applies to the ranked
+// single-user path only: this path never runs rerank/explainSelection, so
+// there is no composite score to attribute. If ranking ever lands here, call
+// logScoreSamples with scope "personal" / "shared" per search.
 async function multiUserSearch(
   client: HyperspellClient,
   cfg: HyperspellConfig,
