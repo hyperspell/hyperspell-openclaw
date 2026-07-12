@@ -109,6 +109,8 @@ Open the Hyperspell connect page to link your accounts (Notion, Slack, Google Dr
 | `apiKey` | string | `${HYPERSPELL_API_KEY}` | Hyperspell API key |
 | `userId` | string | - | User ID for multi-tenant memory (can be your email) |
 | `autoContext` | boolean | `true` | Auto-inject relevant memories before each AI turn |
+| `emotionalContext` | boolean | `false` | Persist an emotional-state register at session end and inject the recent arc at session start |
+| `moodWeatherChance` | number | `0` | Probability (0–1) that a fresh session rolls exogenous "mood weather". `0` disables. Suggested starting value: `0.03`–`0.05` — rare enough to read as weather, not a gimmick. Requires `emotionalContext`. |
 | `syncMemories` | boolean | `false` | Sync markdown files in `workspace/memory/` to Hyperspell |
 | `sources` | string | - | Comma-separated sources to search (e.g., `vault,notion,slack`) |
 | `maxResults` | number | `10` | Maximum memories per context injection |

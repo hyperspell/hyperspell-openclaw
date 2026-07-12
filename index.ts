@@ -151,6 +151,13 @@ export default {
 		const startHandlers: StartHandler[] = [];
 
 		if (cfg.emotionalContext) {
+			// moodWeatherChance defaults to 0, so mood weather is inert unless the
+			// operator opts in — say so once at startup rather than staying silent.
+			if (cfg.moodWeatherChance === 0) {
+				log.info(
+					"emotionalContext is on but moodWeatherChance is 0 — mood weather will never roll. Set moodWeatherChance (e.g. 0.03–0.05) to enable it.",
+				);
+			}
 			// On-demand arc re-fetch (issue #76): the session-start injection can be
 			// compacted out of history mid-session; this tool lets the agent pull the
 			// exact same block back without waiting for the next prompt build.
