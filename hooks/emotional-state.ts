@@ -5,7 +5,7 @@ import { resolveCurrentSessionId } from "../lib/session.ts";
 import { isMultiSpeaker } from "../lib/speaker-tracker.ts";
 import { log } from "../logger.ts";
 import { sanitizeTraceText } from "./auto-trace.ts";
-import { buildMoodWeatherContext, rollMood } from "./mood-weather.ts";
+import { buildMoodWeatherContext, type MoodSpec, rollMood } from "./mood-weather.ts";
 
 /** How many recent registers to surface as the "arc" at session start. */
 export const EMOTIONAL_ARC_LIMIT = 3;
@@ -35,6 +35,28 @@ const STORE_DEBOUNCE_MS = 3 * 60 * 1000;
 
 /** relationshipId → last successful store time (ms). Module-scoped, per process. */
 const lastStoreAt = new Map<string, number>();
+
+/**
+ * Cross-session cooldown for mood weather: once weather actually LANDS, no new
+ * roll for this long, no matter how many sessions start. "Rare per session"
+ * isn't "rare" when sessions cluster — five short same-day sessions would
+ * otherwise get five independent rolls and can whiplash silly → spiky → flat
+ * in one afternoon. Weather changes on the scale of days, not sessions.
+ * Misses do NOT start the cooldown — only landed weather does, so effective
+ * frequency for unclustered sessions still tracks moodWeatherChance.
+ */
+export const MOOD_WEATHER_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+/** relationshipId → when weather last actually landed (ms). Module-scoped, per process (mirrors lastStoreAt). */
+const lastMoodRollAt = new Map<string, number>();
+
+/**
+ * sessionKey → the mood that landed for that session. Post-compaction
+ * re-injection must replay the SAME weather — not roll new dice (mood must
+ * stay stable for a whole session) and not silently drop it (the cooldown
+ * would otherwise suppress the re-roll mid-session).
+ */
+const sessionMoods = new Map<string, MoodSpec>();
 
 /**
  * Sessions where emotional context has already been injected this run.
@@ -178,7 +200,9 @@ export function buildEmotionalContext(states: EmotionalStateLatest[]): string {
 export function buildEmotionalStateFetchHandler(
 	client: HyperspellClient,
 	cfg: HyperspellConfig,
+	deps: { now?: () => number; rng?: () => number } = {},
 ) {
+	const now = deps.now ?? Date.now;
 	return async (_event: Record<string, unknown>, ctx?: AgentContext) => {
 		const sessionKey = ctx?.sessionKey;
 		if (sessionKey && injectedSessions.has(sessionKey)) {
@@ -195,28 +219,50 @@ export function buildEmotionalStateFetchHandler(
 				(s) => s.summary && !looksLikeRawTranscript(s.summary),
 			);
 
-			// Mood weather: an exogenous, uncaused session mood that OVERRIDES the
-			// arc's tone for this session only. Rolled once per session (gated by
-			// the same inject-once cache). Lives purely in the injection path — it is
-			// never written back via the store handler, so one random morning can't
-			// calcify into the baseline. May clash with the room on purpose.
-			const mood = cfg.moodWeatherChance > 0 ? rollMood(cfg.moodWeatherChance) : null;
-			const moodBlock = mood ? buildMoodWeatherContext(mood) : "";
-			if (mood) {
-				log.info(`mood-weather: rolled "${mood.id}" this session`);
+			if (usable.length === 0 && states.length > 0) {
+				// State(s) exist but are all still extracting — don't cache, so a
+				// later turn re-fetches once extraction completes. Runs BEFORE the
+				// mood roll so a discarded turn can't land weather or burn the
+				// cross-session cooldown.
+				log.debug(
+					"emotional-context: state(s) still extracting — skipping injection this turn",
+				);
+				return;
 			}
 
+			// Mood weather: an exogenous, uncaused session mood that OVERRIDES the
+			// arc's tone for this session only. Lives purely in the injection path —
+			// never written back via the store handler, so one random morning can't
+			// calcify into the baseline. May clash with the room on purpose.
+			// Rolled once per session (inject-once cache) AND at most once per
+			// MOOD_WEATHER_COOLDOWN_MS across sessions (a landed roll suppresses new
+			// rolls; post-compaction re-injection replays the same mood instead).
+			const relId = cfg.relationshipId ?? "";
+			const priorMood = sessionKey ? sessionMoods.get(sessionKey) : undefined;
+			// Missing map entry means weather never landed this process — always
+			// eligible (don't subtract from an epoch the injectable clock may predate).
+			const lastLanded = lastMoodRollAt.get(relId);
+			const cooledDown =
+				lastLanded === undefined || now() - lastLanded >= MOOD_WEATHER_COOLDOWN_MS;
+			const mood =
+				priorMood ??
+				(cfg.moodWeatherChance > 0 && cooledDown
+					? rollMood(cfg.moodWeatherChance, deps.rng)
+					: null);
+			if (mood && !priorMood) {
+				lastMoodRollAt.set(relId, now());
+				if (sessionKey) sessionMoods.set(sessionKey, mood);
+				log.info(`mood-weather: rolled "${mood.id}" this session`);
+				// Coordination with issue #71 (mood-weather observability): if #71's
+				// recordMoodRoll(client, mood, {...}) has landed, its call belongs
+				// HERE — inside this `!priorMood` guard — not on a bare `if (mood)`
+				// at the two return sites below. A priorMood replay (post-compaction
+				// re-injection of an already-rolled mood) is not a new roll; calling
+				// recordMoodRoll on replay would log the same event twice.
+			}
+			const moodBlock = mood ? buildMoodWeatherContext(mood) : "";
+
 			if (usable.length === 0) {
-				if (states.length > 0) {
-					// State(s) exist but are all still extracting — don't cache, so a
-					// later turn re-fetches once extraction completes. (We re-roll the
-					// mood then too, which is fine — still at most once per *injected*
-					// session, since extraction settles within seconds.)
-					log.debug(
-						"emotional-context: state(s) still extracting — skipping injection this turn",
-					);
-					return;
-				}
 				// No arc yet — but weather can still land on a blank slate.
 				log.debug("emotional-context: no prior emotional state found");
 				if (sessionKey) injectedSessions.add(sessionKey);
@@ -263,7 +309,12 @@ export function buildEmotionalStateCompactionHandler() {
 export function buildEmotionalStateSessionCleanupHandler() {
 	return async (_event: Record<string, unknown>, ctx?: AgentContext) => {
 		const sessionKey = ctx?.sessionKey;
-		if (sessionKey) injectedSessions.delete(sessionKey);
+		if (sessionKey) {
+			injectedSessions.delete(sessionKey);
+			// Session over — its mood memo is dead weight. NOT cleared on
+			// compaction: surviving compaction is what makes the mood replay.
+			sessionMoods.delete(sessionKey);
+		}
 	};
 }
 

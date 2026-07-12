@@ -145,6 +145,8 @@ export type HyperspellConfig = {
 	 * uncaused, unannounced mood that overrides the arc's tone for that session
 	 * only (never written back to the register). 0 disables. Keep it rare
 	 * (~0.05–0.10) so it reads as weather, not a gimmick. Requires emotionalContext.
+	 * Once weather lands, a cross-session cooldown (~6h) suppresses new rolls so
+	 * a cluster of same-day sessions shares one weather.
 	 */
 	moodWeatherChance: number;
 	/**
