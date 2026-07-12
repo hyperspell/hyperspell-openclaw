@@ -219,9 +219,15 @@ test("emotional-state fetch — skips injecting a raw-transcript placeholder (pe
 // ---- store handler: cron-gate + debounce (the cadence fix) ----------------
 
 function makeStoreClient() {
-	const stores: Array<{ transcript: string; opts: { relationshipId?: string } }> = [];
+	const stores: Array<{
+		transcript: string;
+		opts: { relationshipId?: string; metadata?: Record<string, string | number | boolean> };
+	}> = [];
 	const client = {
-		async storeEmotionalState(transcript: string, opts: { relationshipId?: string }) {
+		async storeEmotionalState(
+			transcript: string,
+			opts: { relationshipId?: string; metadata?: Record<string, string | number | boolean> },
+		) {
 			stores.push({ transcript, opts });
 			return { resourceId: "es-x", status: "pending", summary: "", extractedAt: "", sessionId: null, relationshipId: opts?.relationshipId ?? null };
 		},
@@ -279,6 +285,51 @@ test("emotional-state store — debounces repeated stores within the window", as
 	await handler({ success: true, messages: richMessages }, { trigger: "user" });
 	await handler({ success: true, messages: richMessages }, { trigger: "user" });
 	assert.equal(stores.length, 1, "second store within the debounce window is skipped");
+});
+
+// Metadata assertions below are per-key (not exact deepEqual) so later additive
+// metadata fields (e.g. #68's depth fields) don't break these tests.
+
+test("emotional-state store — tags metadata with channelId from ctx (#74)", async () => {
+	const { client, stores } = makeStoreClient();
+	const handler = buildEmotionalStateStoreHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
+		storeCfg("rel-chan-direct"),
+	);
+	await handler(
+		{ success: true, messages: richMessages },
+		{ trigger: "user", channelId: "chan-42" } as never,
+	);
+	assert.equal(stores.length, 1);
+	assert.equal(stores[0].opts.metadata?.source, "openclaw_agent_end");
+	assert.equal(stores[0].opts.metadata?.channelId, "chan-42");
+});
+
+test("emotional-state store — resolves channelId from composite sessionKey when ctx.channelId is absent", async () => {
+	const { client, stores } = makeStoreClient();
+	const handler = buildEmotionalStateStoreHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
+		storeCfg("rel-chan-skey"),
+	);
+	await handler(
+		{ success: true, messages: richMessages },
+		{ trigger: "user", sessionKey: "agent:main:discord:channel:222" },
+	);
+	assert.equal(stores.length, 1);
+	assert.equal(stores[0].opts.metadata?.channelId, "222");
+});
+
+test("emotional-state store — omits channelId when unresolvable, still stores (no crash)", async () => {
+	const { client, stores } = makeStoreClient();
+	const handler = buildEmotionalStateStoreHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
+		storeCfg("rel-chan-none"),
+	);
+	// e.g. a manual CLI run: no channelId, sessionKey has no conversation segment.
+	await handler({ success: true, messages: richMessages }, { trigger: "user" });
+	assert.equal(stores.length, 1);
+	assert.equal(stores[0].opts.metadata?.source, "openclaw_agent_end");
+	assert.equal("channelId" in (stores[0].opts.metadata ?? {}), false, "channelId key must be absent, not empty");
 });
 
 // ---- the arc: inject last N via /emotional-state/recent --------------------
