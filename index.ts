@@ -87,6 +87,17 @@ export default {
 					}
 				},
 			})
+			api.registerCommand({
+				name: "previewcontext",
+				description: "Preview what Hyperspell would inject at the next session start",
+				acceptsArgs: false,
+				requireAuth: false,
+				handler: async () => {
+					return {
+						text: "Hyperspell not configured. Run 'openclaw openclaw-hyperspell setup' first.",
+					}
+				},
+			})
 			return
 		}
 
