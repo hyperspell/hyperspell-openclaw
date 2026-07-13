@@ -46,6 +46,10 @@ export type RankingWeights = {
 	 * boost/penalty). Keyed by Hyperspell source name; any source not listed —
 	 * including sources that don't exist yet — is neutral (1.0). */
 	sourceWeights: Record<string, number>;
+	/** Token-overlap ratio above which a candidate is skipped as a near-
+	 * duplicate of an already-SELECTED result (its slot passes to different
+	 * content). 0 disables the check. */
+	dedupThreshold: number;
 };
 
 export const DEFAULT_RANKING: RankingWeights = {
@@ -60,6 +64,7 @@ export const DEFAULT_RANKING: RankingWeights = {
 	recencyMaxPenalty: 0.1,
 	recencyCuratedFactor: 0.5,
 	sourceWeights: {},
+	dedupThreshold: 0.8,
 };
 
 const UUID_RE =
@@ -225,10 +230,65 @@ export function rerank(
 		.sort((a, b) => b._composite - a._composite);
 }
 
+/** The text a result would lead its injection with: its highest-scored
+ * highlight, falling back to the title. Near-duplicate KEYS ≈ near-duplicate
+ * injected content, which is exactly what the diversity check must catch. */
+export function dedupKey(r: SearchResult): string {
+	let best = "";
+	let bestScore = -1;
+	for (const h of r.highlights) {
+		const s = h.score ?? 0;
+		if (s > bestScore) {
+			bestScore = s;
+			best = h.text;
+		}
+	}
+	return best !== "" ? best : (r.title ?? "");
+}
+
+function tokens(s: string): Set<string> {
+	return new Set(
+		s
+			.toLowerCase()
+			.replace(/[^\p{L}\p{N}\s]/gu, " ")
+			.split(/\s+/)
+			.filter((t) => t.length > 0),
+	);
+}
+
+/**
+ * Token-set OVERLAP COEFFICIENT (|A∩B| / min|A|,|B|), not Jaccard: duplicated
+ * memories here typically differ mainly by length (a note vs the doc it
+ * quotes), and containment must read as duplication — 10 tokens fully inside
+ * 40 scores 1.0 here but only 0.25 under Jaccard. Dependency-free and linear;
+ * this runs synchronously in the ranking hot path.
+ */
+export function nearDuplicate(a: string, b: string, threshold: number): boolean {
+	if (threshold <= 0) return false;
+	const ta = tokens(a);
+	const tb = tokens(b);
+	const min = Math.min(ta.size, tb.size);
+	if (min === 0) return false;
+	// Tiny keys (short titles, 2-3 common words) make overlap-coefficient
+	// trigger-happy; require exact token-set equality below 5 tokens.
+	if (min < 5) {
+		if (ta.size !== tb.size) return false;
+		for (const t of ta) if (!tb.has(t)) return false;
+		return true;
+	}
+	let inter = 0;
+	for (const t of ta) if (tb.has(t)) inter++;
+	return inter / min >= threshold;
+}
+
 /** Why a candidate was cut from injection. Closed set — the tuning analysis
  * (proposal 02) and the chatter-quota instrumentation (proposal 03) both key
  * off it. */
-export type SelectionCut = "threshold" | "max-results" | "chatter-quota";
+export type SelectionCut =
+	| "threshold"
+	| "max-results"
+	| "near-duplicate"
+	| "chatter-quota";
 
 /** Selected entries carry `cut: null`; cut entries carry the binding reason.
  * Discriminated on `selected` so a cut entry can never lack a reason. */
@@ -252,8 +312,15 @@ export function explainSelection(
 	maxResults: number,
 	threshold: number,
 	chatterQuota: number,
+	dedupThreshold = 0,
 ): SelectionExplained[] {
 	const out: SelectionExplained[] = [];
+	// Dedup state is exactly "what was accepted": only SELECTED results record
+	// keys (and only they consume quota), so a skipped candidate — whatever cut
+	// it — can never shadow later different-kind content sharing its text, and
+	// a diversity-skipped chatter echo never burns a quota slot (proposal 09's
+	// double-count invariant).
+	const keys: string[] = [];
 	let chatter = 0;
 	let kept = 0;
 	for (const r of ranked) {
@@ -265,12 +332,21 @@ export function explainSelection(
 			out.push({ result: r, selected: false, cut: "max-results" });
 			continue;
 		}
+		// After max-results (a dup past a full cap was cut regardless — the cap
+		// was binding), before chatter-quota (a dup echo injects nothing, so the
+		// quota was not the binding constraint and must not be charged).
+		const key = dedupKey(r);
+		if (keys.some((k) => nearDuplicate(k, key, dedupThreshold))) {
+			out.push({ result: r, selected: false, cut: "near-duplicate" });
+			continue;
+		}
 		if (r._kind === "chatter" && chatter >= chatterQuota) {
 			out.push({ result: r, selected: false, cut: "chatter-quota" });
 			continue;
 		}
 		if (r._kind === "chatter") chatter++;
 		kept++;
+		keys.push(key);
 		out.push({ result: r, selected: true, cut: null });
 	}
 	return out;
@@ -293,8 +369,9 @@ export function selectRanked(
 	maxResults: number,
 	threshold: number,
 	chatterQuota: number,
+	dedupThreshold = 0,
 ): RankedResult[] {
-	return explainSelection(ranked, maxResults, threshold, chatterQuota)
+	return explainSelection(ranked, maxResults, threshold, chatterQuota, dedupThreshold)
 		.filter((e) => e.selected)
 		.map((e) => e.result);
 }

@@ -389,6 +389,43 @@ export const EVAL_CASES: EvalCase[] = [
 		},
 	},
 	{
+		name: "near-duplicate dedup: the re-saved memory yields its slot to different content",
+		note:
+			"Proposal 09's core case: the same memory exists as a synced doc section " +
+			"AND a remembered note — both curated, both clear every gate, and " +
+			"pre-dedup the copy displaced the one genuinely different memory. With " +
+			"dedupThreshold 0.8 the second copy (date-prefixed, so not string-equal) " +
+			"is skipped with continue and the quieter distinct note fills the slot.",
+		pool: [
+			curated(
+				"doc-omuerta",
+				"The Lady of Storms — Omuerta notes",
+				0.62,
+				"Heath finally confronts Junii about the Omuerta binding and what it cost Tevre on the night of storms",
+			),
+			curated(
+				"note-omuerta-copy",
+				"2026-02-09 — remembered",
+				0.6,
+				"2026-02-09 — Heath finally confronts Junii about the Omuerta binding and what it cost Tevre on the night of storms",
+			),
+			curated(
+				"note-grocery",
+				"Household notes",
+				0.55,
+				"Grocery run Thursday; Alinea prefers oat milk and dark rye",
+			),
+		],
+		weights: { ...DEFAULT_RANKING },
+		maxResults: 2,
+		threshold: 0.5,
+		expect: {
+			mustSelect: ["doc-omuerta", "note-grocery"],
+			mustNotSelect: ["note-omuerta-copy"],
+			order: [["doc-omuerta", "note-grocery"]],
+		},
+	},
+	{
 		name: "source weights: the journaled page outranks the same-topic titled aside",
 		note:
 			"Proposal 11's core case: a Notion doc and a Slack message with the SAME " +
