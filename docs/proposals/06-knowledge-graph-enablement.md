@@ -1,6 +1,16 @@
 # Idea #6 — Enable and evaluate the Knowledge Graph for who/what recall
 
-Implementation guide for idea #6 from issue #66. This is a design/evaluation doc only — the feature already exists in the codebase (`graph/*`), is fully wired into setup, and is OFF by default. The work here is: turn it on for one install, verify the entity files actually feed back into retrieval, and measure whether who/what questions get better answers. One small code gap is identified below (§3.3) that should be verified — and if confirmed, fixed — during the first scan cycle.
+Implementation guide for idea #6 from issue #66. The feature already exists in the codebase (`graph/*`), is fully wired into setup, and is OFF by default. The work here is: turn it on for one install, verify the entity files actually feed back into retrieval, and measure whether who/what questions get better answers.
+
+> **Status update (this branch, post-0.19.0 rebase):** both code gaps identified below are now confirmed by code reading and **fixed on this branch**, ahead of the live evaluation:
+>
+> - **§3.3 self-scan loop** — fixed with two guards: (1) `sync/markdown.ts` now propagates `graph_entity: true` frontmatter into the synced memory's metadata in **both** sync paths (sectionized and legacy whole-file), honoring the contract the extraction prompt states; (2) `graph/ops.ts` `isEntityFileMemory` additionally skips memories whose `metadata.file_path` falls under `memory/(people|projects|organizations|topics)/`, which covers records synced *before* the propagation existed (unchanged sections are content-hash skipped on re-sync, so their old metadata is never refreshed — propagation alone could not close the loop for them). Tests: `graph/ops.test.ts` (entity-derived records skipped, tagged and legacy), `sync/markdown.test.ts` (propagation in both paths).
+> - **§3.3 second seam (multi-user CLI bypass)** — the CLI `network scan` now passes `cfg` into `scanMemories`, and `scanMemories`' `cfg` parameter is required (not optional) so no caller can silently bypass the `getAllUserIds` fan-out again. Single-user installs without a `userId` still scan under the key's default identity. Test: `graph/ops.test.ts` (fan-out over mapped users + shared, default-identity fallback).
+> - **§3.1 cadence gotcha** — reconciled with `issue-81-knowledge-graph-discoverability` (PR #114) into one approach: the wizard wires one `scanIntervalMinutes` value into both the cron's `--every` and the persisted `knowledgeGraph.scanIntervalMinutes` (implemented on #114's branch). The cron job remains the runtime source of truth; the config field is an honest record of the cron the wizard created.
+> - **§4.2 probe script** — `docs/kg-eval.mjs` is implemented on this branch; the question fixture stays owner-created at eval time (real names must come from the install's history).
+> - The wizard "main session" copy fix is implemented on #114's branch (whichever lands second no-ops).
+>
+> What remains is owner-run: the live dry-run + evaluation (see §3.4 for the exact command sequence).
 
 ## 1. Summary
 
@@ -40,7 +50,7 @@ Equivalent manual path (what the wizard does, for installs where the wizard is i
    ```
 4. Optionally trigger the first run now: `openclaw cron run <job-id>`. First run on a large corpus loops scan→extract→complete until "No unprocessed memories found" (extraction prompt step 6) — expect it to take a while and burn tokens proportional to corpus size.
 
-**Config gotcha (cadence):** `knowledgeGraph.scanIntervalMinutes` (default 60, `config.ts:581`) is parsed and schema'd (`openclaw.plugin.json`) but **nothing at runtime reads it** — the actual cadence is the cron job's `--every 1h`, hardcoded in `commands/setup.ts:440`. To change cadence, edit the cron job, not the config. Either wire the config value into setup or remove it from the schema in a follow-up; for this evaluation, just know the cron job is the source of truth.
+**Config gotcha (cadence) — resolved:** `knowledgeGraph.scanIntervalMinutes` (default 60) used to be parsed and schema'd but read by nothing; the cron's `--every 1h` was hardcoded. Reconciled with PR #114's guide into ONE remedy, implemented on #114's branch: the wizard uses a single `scanIntervalMinutes` value for both the cron's `--every ${n}m` and the persisted `knowledgeGraph: { enabled: true, scanIntervalMinutes }`, so config and cron are born in agreement. There is still no runtime rescheduling — the cron job is the source of truth; to change cadence after setup, edit the cron job (and keep the config field in sync so it stays an honest record).
 
 **Prerequisite check:** `syncMemories` must be enabled (it is what feeds entity files back into search, §3.2). Confirm `cfg.syncMemoriesConfig.ignorePaths` has not been customized to exclude the entity directories.
 
@@ -56,20 +66,58 @@ This was the key open question. Answer: **no retrieval change is needed** — en
 
 **One deliberate design consequence to note:** the graph's relationship links (`works-at:organizations/hyperspell`) survive only as markdown text/links inside the synced memory — search treats them as content, not as a traversable graph. For this idea that is fine (the hypothesis is only "entity file text answers who/what better"); actual graph traversal is out of scope.
 
-### 3.3 Gap to verify in cycle 1: the `graph_entity` re-scan guard is likely inert
+### 3.3 The `graph_entity` re-scan guard was inert — FIXED on this branch
 
-`scanMemories` skips memories whose **metadata** carries `graph_entity` (`graph/ops.ts:106`), and the extraction prompt promises that `graph_entity: true` frontmatter "prevents the scan from re-processing entity files that get synced back to Hyperspell" (`graph/cron.ts:353`). But neither sync path propagates frontmatter into memory metadata:
+`scanMemories` skips memories whose **metadata** carries `graph_entity`, and the extraction prompt promises that `graph_entity: true` frontmatter "prevents the scan from re-processing entity files that get synced back to Hyperspell" (`graph/cron.ts:353`). But neither sync path propagated frontmatter into memory metadata:
 
-- `syncMarkdownFileSectionized` sets metadata `{ openclaw_source: "memory_sync_section", file_path, file_name, section_title, content_hash }` (`sync/markdown.ts:543-548`);
-- legacy `syncMarkdownFile` sets `{ openclaw_source: "memory_sync", file_path }` (markdown.ts:424-428).
+- `syncMarkdownFileSectionized` set metadata `{ openclaw_source: "memory_sync_section", file_path, file_name, section_title, content_hash }`;
+- legacy `syncMarkdownFile` set `{ openclaw_source: "memory_sync", file_path }`.
 
-`graph_entity` from the frontmatter is parsed and discarded. So synced entity sections re-enter the next scan as unprocessed memories: the cron agent will be handed its own entity files as extraction sources. Severity is moderate — `writeEntity` merges idempotently and the agent should just re-derive the same entities and mark the rows `complete` — but it wastes cron tokens every cycle and risks slow self-reinforcement (entity files citing entity files in `source_memories`).
+`graph_entity` from the frontmatter was parsed and discarded. So synced entity sections re-entered the next scan as unprocessed memories: the cron agent was handed its own entity files as extraction sources. Severity moderate — `writeEntity` merges idempotently and the agent should just re-derive the same entities and mark the rows `complete` — but it wastes cron tokens every cycle and risks slow self-reinforcement (entity files citing entity files in `source_memories`).
 
-**Verification:** after the first full extraction pass plus one further scan cycle, run `openclaw openclaw-hyperspell network scan` and check whether entity titles (e.g. `Alice Chen — Relationships`) appear in the batch.
+**Fix (this branch):** both remedies proposed here, because each covers a case the other cannot:
 
-**Fix if confirmed (small, separate PR):** propagate `graph_entity` from frontmatter into the `metadata` object in both sync paths (readMarkdownFile already parses frontmatter; ~3 lines per path), or — cruder but zero-schema — have `scanMemories` also skip memories whose `metadata.file_path` falls under `memory/(people|projects|organizations|topics)/`. Prefer the frontmatter propagation: it honors the contract the extraction prompt already states.
+1. **Frontmatter propagation** (`sync/markdown.ts`): both sync paths now include `graph_entity: "true"` in the memory's metadata when the file's frontmatter carries it — honoring the contract the extraction prompt states. Covers all future syncs, including hand-seeded entity files.
+2. **Entity-directory path guard** (`graph/ops.ts` `isEntityFileMemory`): the scan also skips memories whose `metadata.file_path` falls under `memory/(people|projects|organizations|topics)/`. This covers records synced *before* the propagation existed — unchanged sections are content-hash skipped on re-sync, so their stale metadata would never be refreshed and propagation alone could not close the loop for them.
 
-**Second small seam:** the CLI `network scan` action (`commands/setup.ts`, `networkCmd.command("scan")`) calls `scanMemories(client, stateManager, batchSize)` **without** passing `cfg`, so the multi-user `getAllUserIds` fan-out inside `scanMemories` (ops.ts:101) is bypassed and the scan runs as the default user only. Irrelevant for single-user installs (including the first-rollout install); must be fixed before enabling on any `multiUser` install.
+Tests: `graph/ops.test.ts` proves both a tagged and a legacy (path-only) entity-derived record are skipped while a real source memory is not; `sync/markdown.test.ts` proves the propagation in both sync paths and that ordinary files stay untagged.
+
+**Residual verification for cycle 1:** after the first full extraction pass plus one further scan cycle, run `openclaw openclaw-hyperspell network scan` and confirm no entity titles (e.g. `Alice Chen — Relationships`) appear in the batch.
+
+**Second seam — multi-user CLI bypass — FIXED on this branch:** the CLI `network scan` action (`commands/setup.ts`) called `scanMemories(client, stateManager, batchSize)` **without** passing `cfg`, so the multi-user `getAllUserIds` fan-out inside `scanMemories` was bypassed and the scan ran as the default user only. The CLI now passes `cfg`, and `scanMemories` requires it (single-user installs without a `userId` still scan under the key's default identity), so no caller can silently reintroduce the bypass.
+
+### 3.4 Owner dry-run command sequence (pre-enablement)
+
+The live dry-run is owner-run. The step-by-step procedure (workspace copy, config override, scan → hand-drive extraction → complete, comparison against a hand-maintained archive) is owned by PR #114's [`docs/memory-network-migration.md`](../memory-network-migration.md) — follow its Steps 1–3 rather than a duplicated copy here. The exact sequence, condensed:
+
+```bash
+# 1. Read-only preview of the raw material (persists nothing):
+openclaw openclaw-hyperspell network scan --batch-size 20
+
+# 2. Full dry-run against a COPY of the workspace:
+cp -R ~/.openclaw/workspace /tmp/hs-network-dryrun
+cp ~/.openclaw/openclaw.json /tmp/hs-dryrun-config.json
+#    edit /tmp/hs-dryrun-config.json:
+#      agents.defaults.workspace                        → /tmp/hs-network-dryrun
+#      plugins.entries.openclaw-hyperspell.config.knowledgeGraph → { "enabled": true }
+export OPENCLAW_CONFIG_PATH=/tmp/hs-dryrun-config.json
+openclaw openclaw-hyperspell network scan
+#    hand-drive one extraction pass (agent session fed the scan output +
+#    <workspace>/HYPERSPELL-MEMORY-NETWORK.md), then:
+openclaw openclaw-hyperspell network complete --ids <resource-ids-from-scan>
+#    do NOT run `network sync` in the dry-run — it is the one step that
+#    writes to Hyperspell rather than local files.
+
+# 3. Baseline retrieval probe BEFORE enabling for real (fixture per §4.1):
+node docs/kg-eval.mjs
+
+# 4. Adopt for real (unset the override first):
+unset OPENCLAW_CONFIG_PATH
+openclaw openclaw-hyperspell setup     # yes at the Memory Network step
+
+# 5. After 2-3 cron cycles, re-probe and diff against the baseline:
+node docs/kg-eval.mjs
+```
 
 ## 4. Test plan
 
@@ -96,7 +144,7 @@ Freeze the exact wording in a fixture file before the baseline run.
 
 **After:** re-ask the identical 8 questions in fresh sessions. Grade the same way, plus **attribution**: did the winning context come from an entity file? Determine this mechanically — the sync manifest `.hyperspell-sync-hashes.json` at the workspace root maps `memory/people/alice-chen.md` → per-section `resourceId` (`sync/markdown.ts` `SyncManifest`), so cross-reference each injected `resource_id` against the manifest entries whose key starts with `memory/people/`, `memory/projects/`, `memory/organizations/`, or `memory/topics/`. A hit whose resourceId resolves to an entity file counts as "entity-file-served".
 
-**Verification script:** following the `docs/hotbuffer-verify.mjs` / `docs/issue42-resourceid-probe.mjs` precedent, add `docs/kg-eval.mjs`: reads the question fixture, calls the search API directly per question, loads the manifest, and prints per-question: top-N titles/resourceIds, which are entity files, and the score gap between the best entity-file hit and the best non-entity hit. Running it before and after gives a raw-retrieval comparison independent of the agent's answering behavior (which isolates "search surfaces the entity file" from "the agent uses it well").
+**Verification script (implemented on this branch):** following the `docs/hotbuffer-verify.mjs` precedent, `docs/kg-eval.mjs` reads the question fixture (JSON array, default `docs/kg-eval-questions.json` — owner-created with real names, per §4.1), calls the search API directly per question, loads the sync manifest, and prints per-question: top-N titles/resourceIds/scores, which hits resolve to entity files, and the score gap between the best entity-file hit and the best non-entity hit. Running it before and after gives a raw-retrieval comparison independent of the agent's answering behavior (which isolates "search surfaces the entity file" from "the agent uses it well").
 
 **Success criteria:** ≥5/8 questions improve or hold with at least 3 flipping from wrong/partial/honest-miss to correct **and** attributed to an entity file; no question regresses from correct to wrong; and no stale-fact answer (below) is presented as current.
 
@@ -113,7 +161,7 @@ Three signals, cheapest first:
 - **Cron reliability is the load-bearing assumption.** The cron job is created once by setup; nothing in the plugin monitors it. If it dies or is removed (cf. the known `plugins update` runtime-wipe footgun), entity files freeze silently while remaining boosted in ranking — the worst drift shape. Mitigation for the evaluation: check `openclaw cron list` at each measurement point; longer-term, a startup-orientation-style warning when `knowledgeGraph.enabled && lastScanAt` is ancient would be a cheap follow-up.
 - **Cost of the isolated agent session.** Every cycle spins a full agent session; each scan pages through `client.listMemories` skipping processed ids and calls `getMemory` per unprocessed row (`graph/ops.ts:103-134`) — O(corpus) listing per scan, plus LLM tokens for extraction. The first pass over a large corpus (thousands of memories) is the expensive one; steady-state cost is proportional to new-memory rate. Hourly is likely overkill after the initial build; consider retuning the cron to 6–12h once the corpus is caught up (remembering §3.1: change the cron job, not `scanIntervalMinutes`).
 - **Entity files can become a NEW chatter source — with a boost.** If extraction quality is poor (vague entities, wrong merges, over-extraction from noisy sources), the junk lands as `curated`-classified memories that *outrank* honest chatter. The extraction prompt's "Skip noise / Be selective" guidelines (`graph/cron.ts:348-349`) are the only guard. The evaluation should eyeball every entity file created in the first pass; if >~10% are junk, fix the prompt before continuing the eval rather than measuring retrieval on a polluted graph. Deleting a bad entity file does clean up remotely: the sectionized sync deletes orphaned sections' memories (`sync/markdown.ts:572-594`).
-- **Self-scan loop (§3.3)** until the `graph_entity` metadata gap is fixed: wasted cron tokens each cycle, and `source_memories` self-citation. Verify in cycle 1; land the small fix if confirmed.
+- **Self-scan loop (§3.3)** — fixed on this branch (frontmatter propagation + entity-directory path guard). Residual check in cycle 1: confirm no entity titles appear in a post-extraction `network scan`.
 - **Duplicate representation.** Facts now exist twice (fragments + entity file). This is intended — the entity file is a summary view — but it slightly crowds `maxResults`. The chatter quota already bounds fragment flooding; no action unless the eval shows entity + fragment hits jointly displacing other needed context.
 
 ## 6. Rollout
@@ -121,9 +169,9 @@ Three signals, cheapest first:
 The feature is already opt-in (`enabled: false` default, `config.ts:580`), so rollout is inherently safe for the fleet. Sequence:
 
 1. **This install first (the maintainer's own).** Enable per §3.1 on the primary personal install only. Snapshot first: copy `memory/.network-state.json` (if present) and note that all writes are additive files under `memory/` — full rollback is `openclaw cron remove --name "Hyperspell Memory Network"` (`getCronRemoveCommand`, `graph/cron.ts:362`), set `enabled: false`, and delete the four entity directories; the sectionized sync's orphan-deletion then removes the synced memories on the next pass.
-2. **Run the §4 evaluation over ~1 week** (first pass + several cycles + the drift probe). Land the §3.3 fix if the self-scan loop is confirmed.
+2. **Run the §4 evaluation over ~1 week** (first pass + several cycles + the drift probe). The §3.3 fixes are already on this branch; cycle 1 only needs the residual no-entity-titles check.
 3. **Decision gate:** only if the success criteria hold *and* steady-state cron cost is acceptable, consider promoting — and even then, the right move is probably not flipping the default (an hourly LLM cron is too costly to impose silently) but making the setup wizard's `enableNetwork` prompt default to `initialValue: true` (`commands/setup.ts:404`) and documenting the evaluation results in the README. Changing `enabled` default for all installs is out of scope for this idea.
 
 ## 7. Effort estimate
 
-**S** — the feature and its setup automation already exist end-to-end; the work is enablement, an eval fixture + one `docs/kg-eval.mjs` probe script, and observation (the only code change on the critical path is the ~6-line `graph_entity` metadata propagation, and only if cycle 1 confirms the loop).
+**S** — the feature and its setup automation already exist end-to-end. The critical-path code (the §3.3 self-scan-loop guards, the multi-user CLI fix, and the `docs/kg-eval.mjs` probe) is implemented on this branch; what remains is owner-run enablement, the eval fixture, and observation.
