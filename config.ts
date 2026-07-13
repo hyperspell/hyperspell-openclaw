@@ -1,7 +1,12 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { DEFAULT_RANKING, type RankingWeights } from "./lib/ranking.ts";
+import {
+	DEFAULT_ELBOW,
+	DEFAULT_RANKING,
+	type ElbowOptions,
+	type RankingWeights,
+} from "./lib/ranking.ts";
 
 export type HyperspellSource =
 	| "reddit"
@@ -352,6 +357,20 @@ function parseRanking(raw: unknown): RankingWeights {
 			1,
 			Math.max(0, num(r.dedupThreshold, DEFAULT_RANKING.dedupThreshold)),
 		),
+		elbow: parseElbow(r.elbow),
+	};
+}
+
+function parseElbow(raw: unknown): ElbowOptions {
+	const e = (raw ?? {}) as Record<string, unknown>;
+	const num = (v: unknown, d: number) => (typeof v === "number" ? v : d);
+	return {
+		enabled: (e.enabled as boolean) ?? DEFAULT_ELBOW.enabled,
+		// >= 2: at least one gap must exist before meanGap is defined (the
+		// first accepted result never records a gap).
+		minResults: Math.max(2, num(e.minResults, DEFAULT_ELBOW.minResults)),
+		gapRatio: Math.max(1, num(e.gapRatio, DEFAULT_ELBOW.gapRatio)),
+		minGap: Math.max(0, num(e.minGap, DEFAULT_ELBOW.minGap)),
 	};
 }
 

@@ -260,6 +260,7 @@ export function buildAutoContextHandler(
           cfg.relevanceThreshold,
           ranking.chatterQuota,
           ranking.dedupThreshold,
+          ranking.elbow,
         )
         logScoreSamples(prompt, currentSessionId, "single", explained, cfg.relevanceThreshold)
         const selected = explained.filter((e) => e.selected).map((e) => e.result)
@@ -282,6 +283,14 @@ export function buildAutoContextHandler(
         // nothing is injected (e.g. chatterQuota 0 with only chatter clearing
         // the threshold). Stable "auto-context: cut" prefix for log greps.
         // flatMap (not filter) so TS narrows to the cut member of the union.
+        // Elbow verdict — the live-validation instrument for proposal 13's
+        // rollout: firing rate + cut depth come straight from this line.
+        if (ranking.elbow.enabled && explained.some((e) => e.cut === "elbow")) {
+          log.diag(
+            `auto-context: elbow stopped at ${selected.length} (ceiling ${cfg.maxResults})`,
+          )
+        }
+
         const cuts = explained.flatMap((e) => (e.selected ? [] : [e]))
         if (cuts.length > 0) {
           const cutTally = cuts.reduce(

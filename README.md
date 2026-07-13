@@ -297,6 +297,20 @@ next-ranked *different* memory. Skipped copies never consume the chatter
 quota. Set `dedupThreshold: 0` to disable. Paraphrased duplicates (same fact,
 different words) are beyond a string measure and out of scope.
 
+An optional **elbow cutoff** (`ranking.elbow`, **off by default**) stops
+injecting at a natural score cliff instead of always filling `maxResults`: a
+narrow query backed by 3 genuinely relevant memories no longer pads the
+context with a plateau of marginal ones that happen to clear the threshold.
+It is strictly conservative — it only ever cuts *earlier*, never later, never
+below `minResults` (default 3), and when no clear cliff exists (gradual
+decline, flat plateau) selection is identical to today. A cliff means the
+drop from the last accepted result is both large against the decline seen so
+far (`gapRatio` × mean gap, default 2.5×) *and* material in absolute terms
+(`minGap`, default 0.05). Before enabling, run
+`node --experimental-strip-types docs/elbow-scan.mjs` against your real data
+to check firing rate and cut depth (with `debug: true` the live verdict shows
+in `gateway.log` as `auto-context: elbow stopped at k (ceiling N)`).
+
 Age matters too, gently: results accrue a small **recency penalty** that grows
 with age (exponential decay, 90-day half-life by default) and is hard-capped at
 `recencyMaxPenalty` (0.1) so it can break near-ties toward current information
@@ -347,7 +361,7 @@ Tips:
   The `hyperspell_search` tool and `/getcontext` return raw relevance order —
   don't test `storyTerms` there and conclude it's broken.
 - To verify it's working, enable `debug: true` and watch `gateway.log` for the
-  per-search tally (`auto-context: ranked {...} candidates → selected {...}`) and the cut tally (threshold / max-results / near-duplicate / chatter-quota) —
+  per-search tally (`auto-context: ranked {...} candidates → selected {...}`) and the cut tally (threshold / max-results / elbow / near-duplicate / chatter-quota) —
   it appears at default host log levels. The per-candidate lines
   (`[story] 0.47→0.82 The Lighthouse Keeper — Chapter 3`), which show story
   matches even when they lose to the threshold, are debug-level and also need
@@ -368,7 +382,13 @@ Full knobs and defaults:
   "recencyMaxPenalty": 0.1,   // ceiling on the recency penalty — a tiebreaker, never a burial
   "recencyCuratedFactor": 0.5, // kept memory (curated/story) ages at this fraction of the rate
   "sourceWeights": {},        // per-source multiplier on base relevance; unlisted = 1.0
-  "dedupThreshold": 0.8       // token-overlap ratio that skips a near-duplicate (0 = off)
+  "dedupThreshold": 0.8,      // token-overlap ratio that skips a near-duplicate (0 = off)
+  "elbow": {                  // stop early at a natural score cliff (opt-in)
+    "enabled": false,
+    "minResults": 3,          // never cut below this many accepted results
+    "gapRatio": 2.5,          // cliff = drop >= this multiple of the mean gap so far...
+    "minGap": 0.05            // ...AND at least this big on the raw composite scale
+  }
 }
 ```
 

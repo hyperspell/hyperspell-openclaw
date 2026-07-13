@@ -4,6 +4,7 @@ import type { SearchResult } from "../client.ts";
 import {
 	classifyResult,
 	DEFAULT_RANKING,
+	DEFAULT_ELBOW,
 	explainSelection,
 	kindTally,
 	nearDuplicate,
@@ -636,4 +637,74 @@ test("nearDuplicate — containment counts, tiny keys require equality, 0 disabl
 	assert.ok(!nearDuplicate(THEME, THEME, 0), "threshold 0 disables");
 	assert.ok(nearDuplicate("The Writing Notes!", "the writing notes", 0.8), "tiny keys: exact set equality matches");
 	assert.ok(!nearDuplicate("", THEME, 0.8), "empty key never duplicates");
+});
+
+// ---- elbow cutoff (proposal 13) ----
+
+const ELBOW = { enabled: true, minResults: 3, gapRatio: 2.5, minGap: 0.05 };
+
+test("selectRanked — elbow: stops at a clear score cliff before maxResults", () => {
+	const list = [
+		ranked("curated", 0.85, "a"),
+		ranked("curated", 0.82, "b"),
+		ranked("curated", 0.8, "c"),
+		ranked("other", 0.55, "d"), // gap 0.25 vs meanGap 0.025 → cliff
+		ranked("other", 0.53, "e"),
+		ranked("other", 0.52, "f"),
+	];
+	const sel = selectRanked(list, 10, 0.4, 2, 0, ELBOW);
+	assert.deepEqual(sel.map((r) => r.resourceId), ["a", "b", "c"]);
+	// Attribution: everything past the cliff reads "elbow".
+	const ex = explainSelection(list, 10, 0.4, 2, 0, ELBOW);
+	assert.deepEqual(ex.map((e) => e.cut), [null, null, null, "elbow", "elbow", "elbow"]);
+});
+
+test("selectRanked — elbow: gradual decline falls through to maxResults/threshold unchanged", () => {
+	const list = [0.85, 0.8, 0.75, 0.7, 0.65, 0.6].map((s, i) => ranked("curated", s, `g${i}`));
+	const withElbow = selectRanked(list, 5, 0.4, 2, 0, ELBOW);
+	const without = selectRanked(list, 5, 0.4, 2);
+	assert.deepEqual(withElbow, without, "no cliff → byte-identical selection");
+	assert.equal(withElbow.length, 5, "still fills to maxResults");
+});
+
+test("selectRanked — elbow: minResults floor holds even across a huge early gap", () => {
+	const list = [
+		ranked("curated", 0.95, "a"),
+		ranked("curated", 0.4, "b"), // 0.55 drop — but floor not met yet
+		ranked("curated", 0.38, "c"),
+		ranked("curated", 0.37, "d"),
+	];
+	const sel = selectRanked(list, 10, 0.3, 2, 0, ELBOW);
+	assert.ok(sel.length >= 3, "never cut below the floor");
+	assert.deepEqual(sel.slice(0, 3).map((r) => r.resourceId), ["a", "b", "c"]);
+});
+
+test("selectRanked — elbow: flat plateau never fires (minGap guards the meanGap-0 case)", () => {
+	const list = ["a", "b", "c", "d", "e"].map((id) => ranked("curated", 0.7, id));
+	const sel = selectRanked(list, 5, 0.4, 2, 0, ELBOW);
+	assert.equal(sel.length, 5, "meanGap 0 makes the ratio test trivially true; minGap still blocks");
+});
+
+test("selectRanked — elbow: a cliff sitting exactly at the floor fires on the first eligible check", () => {
+	const list = [
+		ranked("curated", 0.85, "a"),
+		ranked("curated", 0.84, "b"),
+		ranked("curated", 0.83, "c"),
+		ranked("other", 0.5, "d"), // first check at kept==3 — fires immediately
+	];
+	const sel = selectRanked(list, 10, 0.4, 2, 0, ELBOW);
+	assert.deepEqual(sel.map((r) => r.resourceId), ["a", "b", "c"]);
+});
+
+test("selectRanked — elbow disabled or omitted: behavior identical to today", () => {
+	const list = [
+		ranked("curated", 0.85, "a"),
+		ranked("curated", 0.82, "b"),
+		ranked("curated", 0.8, "c"),
+		ranked("other", 0.55, "d"),
+	];
+	const plain = selectRanked(list, 10, 0.4, 2);
+	assert.deepEqual(selectRanked(list, 10, 0.4, 2, 0, { ...ELBOW, enabled: false }), plain);
+	assert.deepEqual(selectRanked(list, 10, 0.4, 2, 0, DEFAULT_ELBOW), plain, "shipped default is off");
+	assert.equal(plain.length, 4);
 });
