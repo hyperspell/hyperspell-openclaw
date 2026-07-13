@@ -205,7 +205,7 @@ const ALLOWED_KEYS = [
 	"dreaming",
 ];
 
-const VALID_SOURCES: HyperspellSource[] = [
+export const VALID_SOURCES: HyperspellSource[] = [
 	"reddit",
 	"notion",
 	"slack",
@@ -284,6 +284,28 @@ function parseWatchPaths(raw: unknown): WatchPathEntry[] {
 	});
 }
 
+/** Per-source multipliers: non-numeric values silently skip (num()'s
+ * convention); explicit non-positive values throw (a 0 weight is a filtering
+ * decision wearing a weighting costume — the sources filter is the right
+ * tool, and the error says so). Keys lowercase but are NOT validated against
+ * VALID_SOURCES: the backend adds sources independently of plugin releases,
+ * and an unmatched key is a harmless neutral no-op (startup diag logs it). */
+function parseSourceWeights(raw: unknown): Record<string, number> {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+	const out: Record<string, number> = {};
+	for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+		if (typeof v !== "number") continue;
+		if (!Number.isFinite(v) || v <= 0) {
+			throw new Error(
+				`ranking.sourceWeights.${k} must be a positive number (got ${v}); ` +
+					`to exclude a source entirely, use the "sources" filter instead`,
+			);
+		}
+		out[k.trim().toLowerCase()] = v;
+	}
+	return out;
+}
+
 function parseRanking(raw: unknown): RankingWeights {
 	const r = (raw ?? {}) as Record<string, unknown>;
 	const num = (v: unknown, d: number) => (typeof v === "number" ? v : d);
@@ -325,6 +347,7 @@ function parseRanking(raw: unknown): RankingWeights {
 				num(r.recencyCuratedFactor, DEFAULT_RANKING.recencyCuratedFactor),
 			),
 		),
+		sourceWeights: parseSourceWeights(r.sourceWeights),
 	};
 }
 

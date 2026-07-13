@@ -2,7 +2,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk"
 import { HyperspellClient } from "./client.ts"
 import { registerCommands } from "./commands/slash.ts"
 import { registerCliCommands } from "./commands/setup.ts"
-import { parseConfig, hyperspellConfigSchema, getWorkspaceDir } from "./config.ts"
+import { parseConfig, hyperspellConfigSchema, getWorkspaceDir, VALID_SOURCES } from "./config.ts"
 import { buildAutoContextHandler } from "./hooks/auto-context.ts"
 import { buildAutoTraceHandler } from "./hooks/auto-trace.ts"
 import {
@@ -104,6 +104,18 @@ export default {
 		const cfg = parseConfig(api.pluginConfig);
 
 		initLogger(api.logger, cfg.debug);
+
+		// sourceWeights keys are deliberately not schema-validated (new backend
+		// sources must not fail manifest validation), so a typo is a silent
+		// neutral no-op — surface it once at startup instead.
+		const unknownWeightKeys = Object.keys(cfg.ranking.sourceWeights).filter(
+			(k) => !(VALID_SOURCES as string[]).includes(k),
+		);
+		if (unknownWeightKeys.length > 0) {
+			log.diag(
+				`ranking.sourceWeights keys not in the known source list (typo? they weight nothing): ${unknownWeightKeys.join(", ")}`,
+			);
+		}
 
 		const client = new HyperspellClient(cfg);
 

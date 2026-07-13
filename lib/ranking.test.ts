@@ -468,3 +468,70 @@ test("recency — future timestamps clamp to zero age: no accidental boost", () 
 	const present = scoreResult(mk({ ...base, createdAt: new Date(NOW).toISOString() }), DEFAULT_RANKING, NOW);
 	assert.equal(future.composite, present.composite);
 });
+
+// ---- source weighting (proposal 11) ----
+
+test("sourceWeights — identical title+relevance: unweighted ties, weighted differentiates", () => {
+	const notionDoc = mk({
+		title: "Q3 retrieval roadmap",
+		resourceId: "notion-abc123",
+		source: "notion" as SearchResult["source"],
+		score: 0.6,
+	});
+	const slackAside = mk({
+		title: "Q3 retrieval roadmap",
+		resourceId: "slack-C042-p1699",
+		source: "slack" as SearchResult["source"],
+		score: 0.6,
+	});
+
+	// Default {}: both classify curated, exact composite tie (today's behavior).
+	const plain = rerank([slackAside, notionDoc], DEFAULT_RANKING);
+	assert.ok(Math.abs(plain[0]._composite - plain[1]._composite) < 1e-9);
+
+	// Weighted: the Notion doc clearly outranks the same-topic Slack aside.
+	const w = { ...DEFAULT_RANKING, sourceWeights: { notion: 1.15, slack: 0.85 } };
+	const out = rerank([slackAside, notionDoc], w);
+	assert.equal(out[0].source, "notion");
+	// notion: 0.6×1.15 + 0.2 = 0.89 ; slack: 0.6×0.85 + 0.2 = 0.71
+	assert.ok(Math.abs(out[0]._composite - 0.89) < 1e-9);
+	assert.ok(Math.abs(out[1]._composite - 0.71) < 1e-9);
+	// _base stays the unweighted relevance for debuggability.
+	assert.equal(out[0]._base, 0.6);
+});
+
+test("sourceWeights — unlisted and unknown sources default to neutral 1.0", () => {
+	const w = { ...DEFAULT_RANKING, sourceWeights: { notion: 1.15 } };
+	const vaultNote = mk({ title: "Writing Notes", resourceId: "mem-1", score: 0.5 }); // source: vault, unlisted
+	const future = mk({
+		title: "Linear ticket",
+		resourceId: "lin-1",
+		source: "linear" as SearchResult["source"], // a source this plugin has never heard of
+		score: 0.5,
+	});
+	for (const r of [vaultNote, future]) {
+		const { composite } = scoreResult(r, w);
+		assert.ok(Math.abs(composite - (0.5 + w.curationBoost)) < 1e-9, "weight is exactly 1.0");
+	}
+});
+
+test("sourceWeights — weight multiplies base only: kind adjustments keep their magnitude", () => {
+	// Pins the multiplier-on-base decision (proposal 11 §3.1): a slack 0.8
+	// weight must NOT shrink the chatterPenalty for slack results.
+	const echo = mk({
+		title: "Unnamed Conversation",
+		resourceId: UUID,
+		source: "slack" as SearchResult["source"],
+		score: 0.5,
+	});
+	const w = { ...DEFAULT_RANKING, sourceWeights: { slack: 0.8 } };
+	const { composite } = scoreResult(echo, w);
+	// 0.5×0.8 − 0.2 = 0.20 — the full penalty, not 0.8× of it.
+	assert.ok(Math.abs(composite - (0.5 * 0.8 - DEFAULT_RANKING.chatterPenalty)) < 1e-9);
+});
+
+test("sourceWeights — empty map is a strict no-op (default behavior unchanged)", () => {
+	const r = mk({ title: "A note", resourceId: "n", score: 0.47 });
+	const { composite } = scoreResult(r, DEFAULT_RANKING);
+	assert.ok(Math.abs(composite - 0.67) < 1e-9, "0.47 + 0.2, bit-identical to pre-weighting");
+});

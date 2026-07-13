@@ -389,6 +389,38 @@ export const EVAL_CASES: EvalCase[] = [
 		},
 	},
 	{
+		name: "source weights: the journaled page outranks the same-topic titled aside",
+		note:
+			"Proposal 11's core case: a Notion doc and a Slack message with the SAME " +
+			"title and relevance 0.60 both classify curated and tie exactly under " +
+			"default weights. sourceWeights { notion: 1.15, slack: 0.85 } breaks the " +
+			"tie by provenance: notion 0.60×1.15+0.20=0.890 > slack 0.60×0.85+0.20=" +
+			"0.710. Slack-first input proves reordering.",
+		pool: [
+			make({
+				resourceId: "slack-C042-p1699",
+				title: "Q3 retrieval roadmap",
+				source: "slack",
+				score: 0.6,
+				highlights: [{ id: "h1", score: 0.6, text: "roadmap thoughts in passing" }],
+			}),
+			make({
+				resourceId: "notion-roadmap",
+				title: "Q3 retrieval roadmap",
+				source: "notion",
+				score: 0.6,
+				highlights: [{ id: "h1", score: 0.6, text: "the authored roadmap page" }],
+			}),
+		],
+		weights: { ...DEFAULT_RANKING, sourceWeights: { notion: 1.15, slack: 0.85 } },
+		maxResults: 5,
+		threshold: 0.6,
+		expect: {
+			mustSelect: ["notion-roadmap", "slack-C042-p1699"],
+			order: [["notion-roadmap", "slack-C042-p1699"]],
+		},
+	},
+	{
 		name: "recency: the fresh near-tie beats the stale one (proposal 07's core case)",
 		note:
 			"Two curated notes at identical relevance 0.60; one 2 days old, one 2 " +

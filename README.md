@@ -271,6 +271,21 @@ composite = relevance
 Chatter is additionally capped at `chatterQuota` results per injection,
 regardless of score.
 
+Provenance is a signal too: an optional `sourceWeights` map multiplies a
+result's **base relevance** (before the kind boosts/penalties are added) by a
+per-source factor, so "a journaled Notion page is more intentional memory than
+a titled Slack aside on the same topic" is expressible. Any source not listed
+— including sources that don't exist yet — is neutral (`1.0`); the shipped
+default is `{}`, a strict no-op. It weights sources already in the result set;
+to *exclude* a source, use the `sources` filter instead (weights of 0 are
+rejected at load with exactly that pointer). Suggested starting points, priors
+to seed your own tuning rather than measured truth: authored systems slightly
+up (`notion` 1.15, drive/box/dropbox 1.1), conversational exhaust slightly
+down (`slack`/`microsoft_teams` 0.85, `trace` 0.8) — magnitudes small enough
+to break ties, never to override a real relevance gap. Typos in weight keys
+are not schema errors (new backend sources must not fail validation); with
+`debug: true` unknown keys are flagged once at startup in `gateway.log`.
+
 Age matters too, gently: results accrue a small **recency penalty** that grows
 with age (exponential decay, 90-day half-life by default) and is hard-capped at
 `recencyMaxPenalty` (0.1) so it can break near-ties toward current information
@@ -340,7 +355,8 @@ Full knobs and defaults:
   "chatterQuota": 2,        // hard cap on chatter results per injection
   "recencyHalfLifeDays": 90,  // age at which half the recency penalty has accrued (0 = off)
   "recencyMaxPenalty": 0.1,   // ceiling on the recency penalty — a tiebreaker, never a burial
-  "recencyCuratedFactor": 0.5 // kept memory (curated/story) ages at this fraction of the rate
+  "recencyCuratedFactor": 0.5, // kept memory (curated/story) ages at this fraction of the rate
+  "sourceWeights": {}         // per-source multiplier on base relevance; unlisted = 1.0
 }
 ```
 

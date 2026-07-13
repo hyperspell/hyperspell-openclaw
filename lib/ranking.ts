@@ -42,6 +42,10 @@ export type RankingWeights = {
 	/** Fraction of the penalty applied to curated/story results (0..1). Kept
 	 * memory describes durable truths; it ages slower than chatter. */
 	recencyCuratedFactor: number;
+	/** Per-source multiplier on BASE relevance (applied before the kind-based
+	 * boost/penalty). Keyed by Hyperspell source name; any source not listed —
+	 * including sources that don't exist yet — is neutral (1.0). */
+	sourceWeights: Record<string, number>;
 };
 
 export const DEFAULT_RANKING: RankingWeights = {
@@ -55,6 +59,7 @@ export const DEFAULT_RANKING: RankingWeights = {
 	recencyHalfLifeDays: 90,
 	recencyMaxPenalty: 0.1,
 	recencyCuratedFactor: 0.5,
+	sourceWeights: {},
 };
 
 const UUID_RE =
@@ -171,6 +176,14 @@ function recencyPenalty(
 	return w.recencyMaxPenalty * (1 - decay) * factor;
 }
 
+/** Weight for a source; anything unlisted or malformed is neutral, never zero.
+ * The lookup-time guard is the safety floor: an unrecognized or unweighted
+ * source degrades to 1.0 — it never crashes and never zeroes a result out. */
+export function sourceWeight(w: RankingWeights, source: string): number {
+	const v = w.sourceWeights[source];
+	return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 1;
+}
+
 /** Composite score + classification for one result. `now` is injectable so
  * tests and the eval harness stay deterministic; runtime callers omit it. */
 export function scoreResult(
@@ -180,7 +193,11 @@ export function scoreResult(
 ): { kind: ResultKind; base: number; composite: number } {
 	const kind = classifyResult(r, w.storyTerms);
 	const base = baseScore(r);
-	let composite = base;
+	// The weight multiplies BASE only — kind boosts/penalties stay in the same
+	// additive currency regardless of source, so tuning sourceWeights can never
+	// silently retune chatterPenalty/curationBoost (proposal 11 §3.1). _base
+	// stays unweighted for debuggability; the weight shows only in _composite.
+	let composite = base * sourceWeight(w, r.source);
 	if (kind === "story")
 		composite += w.storyBoost + w.curationBoost; // the story is kept memory too
 	else if (kind === "curated") composite += w.curationBoost;
