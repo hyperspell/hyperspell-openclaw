@@ -23,6 +23,12 @@ const MIN_CONVERSATION_LENGTH = 100;
  * heartbeat overwrite the register from a deep conversation (the whipsaw).
  * `ctx.trigger` is one of cron|heartbeat|manual|memory|overflow|user; we store
  * only for user-driven turns (and `overflow`, a continuation of a user run).
+ *
+ * Lifetime (verified against openclaw core, issue #70): `trigger` is PER-RUN,
+ * not session-fixed — core rebuilds the hook ctx from each run's own params
+ * (embedded-agent-runner/run.ts), and inbound human replies always start a new
+ * run with trigger="user" even inside a cron-originated session. So a scheduled
+ * check-in that becomes a real conversation IS stored on the human turns.
  */
 const NON_CONVERSATIONAL_TRIGGERS = new Set(["cron", "heartbeat", "memory"]);
 
