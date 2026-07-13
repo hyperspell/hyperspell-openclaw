@@ -393,3 +393,78 @@ test("explainSelection — quota 0 cuts every above-threshold chatter as 'chatte
 	const ex = explainSelection(list, 10, 0.6, 0);
 	assert.deepEqual(ex.map((e) => e.cut), ["chatter-quota", "chatter-quota", null]);
 });
+
+// ---- recency decay (proposal 07) ----
+
+const NOW = Date.parse("2026-07-01T00:00:00Z");
+const daysAgo = (d: number) => new Date(NOW - d * 86_400_000).toISOString();
+
+test("recency — same relevance, different ages: the fresh curated note ranks first (#66's case)", () => {
+	const old = mk({ title: "Editor config", resourceId: "old", score: 0.6, createdAt: daysAgo(730) });
+	const fresh = mk({ title: "Editor config", resourceId: "fresh", score: 0.6, createdAt: daysAgo(2) });
+	// Old-first input: the assertion proves reordering, not input order.
+	const out = rerank([old, fresh], DEFAULT_RANKING, NOW);
+	assert.deepEqual(out.map((r) => r.resourceId), ["fresh", "old"]);
+	// Curated gap ≈ maxPenalty × curatedFactor × (decay(2d) − decay(730d)) ≈ 0.049
+	const gap = out[0]._composite - out[1]._composite;
+	assert.ok(gap > 0.045 && gap < 0.055, `expected ~0.049 gap, got ${gap}`);
+});
+
+test("recency — old-but-still-true curated beats shallow-but-recent chatter (the risk case)", () => {
+	const truth = mk({ title: "2024-06-01 — Writing Notes", resourceId: "note", score: 0.55, createdAt: daysAgo(730) });
+	const echo = mk({
+		title: "Unnamed Conversation",
+		resourceId: UUID,
+		score: 0.62,
+		createdAt: daysAgo(1),
+		highlights: [{ id: "h", text: "you have the book inside you", score: 0.62 }],
+	});
+	const out = rerank([echo, truth], DEFAULT_RANKING, NOW);
+	assert.equal(out[0].resourceId, "note", "aged kept truth still outranks the fresh echo");
+	// note: 0.55 + 0.2 − ~0.05 ≈ 0.70 ; echo: 0.62 − 0.2 − ~0.001 ≈ 0.42
+	assert.ok(Math.abs(out[0]._composite - 0.7) < 0.005);
+	assert.ok(Math.abs(out[1]._composite - 0.419) < 0.005);
+});
+
+test("recency — createdAt null or unparseable: no penalty (fail open)", () => {
+	const base = { title: "A note", resourceId: "n", score: 0.6 };
+	const atNow = scoreResult(mk({ ...base, createdAt: new Date(NOW).toISOString() }), DEFAULT_RANKING, NOW);
+	const noDate = scoreResult(mk({ ...base, createdAt: null }), DEFAULT_RANKING, NOW);
+	const badDate = scoreResult(mk({ ...base, createdAt: "not-a-date" }), DEFAULT_RANKING, NOW);
+	assert.equal(noDate.composite, atNow.composite);
+	assert.equal(badDate.composite, atNow.composite);
+});
+
+test("recency — halfLife 0 or maxPenalty 0 disables the term exactly", () => {
+	const ancient = mk({ title: "A note", resourceId: "n", score: 0.6, createdAt: daysAgo(3650) });
+	const off1 = scoreResult(ancient, { ...DEFAULT_RANKING, recencyHalfLifeDays: 0 }, NOW);
+	const off2 = scoreResult(ancient, { ...DEFAULT_RANKING, recencyMaxPenalty: 0 }, NOW);
+	// Today's exact formula: 0.6 + curationBoost 0.2
+	assert.equal(off1.composite, 0.8);
+	assert.equal(off2.composite, 0.8);
+});
+
+test("recency — the cap holds: an arbitrarily old result loses at most recencyMaxPenalty", () => {
+	const relic = mk({ title: null, resourceId: UUID, score: 0.6, createdAt: daysAgo(365 * 50) });
+	const { composite } = scoreResult(relic, DEFAULT_RANKING, NOW);
+	const penalty = 0.6 - DEFAULT_RANKING.chatterPenalty - composite;
+	// 1e-9 tolerance: the penalty is reconstructed by float subtraction here.
+	assert.ok(penalty <= DEFAULT_RANKING.recencyMaxPenalty + 1e-9, "never exceeds the cap");
+	assert.ok(penalty > 0.099, "asymptotically close to the cap");
+});
+
+test("recency — kept memory ages at the curated factor (half the chatter penalty)", () => {
+	const at = daysAgo(365);
+	const curatedNote = mk({ title: "Kept note", resourceId: "k", score: 0.6, createdAt: at });
+	const echo = mk({ title: "Unnamed Conversation", resourceId: UUID, score: 0.6, createdAt: at });
+	const curPenalty = 0.6 + DEFAULT_RANKING.curationBoost - scoreResult(curatedNote, DEFAULT_RANKING, NOW).composite;
+	const chatPenalty = 0.6 - DEFAULT_RANKING.chatterPenalty - scoreResult(echo, DEFAULT_RANKING, NOW).composite;
+	assert.ok(Math.abs(curPenalty - chatPenalty * DEFAULT_RANKING.recencyCuratedFactor) < 1e-9);
+});
+
+test("recency — future timestamps clamp to zero age: no accidental boost", () => {
+	const base = { title: "A note", resourceId: "n", score: 0.6 };
+	const future = scoreResult(mk({ ...base, createdAt: daysAgo(-1) }), DEFAULT_RANKING, NOW);
+	const present = scoreResult(mk({ ...base, createdAt: new Date(NOW).toISOString() }), DEFAULT_RANKING, NOW);
+	assert.equal(future.composite, present.composite);
+});

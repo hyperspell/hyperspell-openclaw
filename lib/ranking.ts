@@ -33,6 +33,15 @@ export type RankingWeights = {
 	 * the quota guarantees it can inform but never flood, keeping slots for real
 	 * memory. Penalty alone can't bound the count. */
 	chatterQuota: number;
+	/** Half-life in days for the recency penalty — a result this old has accrued
+	 * half of recencyMaxPenalty. 0 disables the recency term entirely. */
+	recencyHalfLifeDays: number;
+	/** Ceiling on the recency penalty — the most an arbitrarily old result can
+	 * lose. Keeps recency a tiebreaker, never a dominant signal. */
+	recencyMaxPenalty: number;
+	/** Fraction of the penalty applied to curated/story results (0..1). Kept
+	 * memory describes durable truths; it ages slower than chatter. */
+	recencyCuratedFactor: number;
 };
 
 export const DEFAULT_RANKING: RankingWeights = {
@@ -43,6 +52,9 @@ export const DEFAULT_RANKING: RankingWeights = {
 	storyTerms: [],
 	candidateMultiplier: 3,
 	chatterQuota: 2,
+	recencyHalfLifeDays: 90,
+	recencyMaxPenalty: 0.1,
+	recencyCuratedFactor: 0.5,
 };
 
 const UUID_RE =
@@ -131,10 +143,40 @@ export function classifyResult(
 	return "other";
 }
 
-/** Composite score + classification for one result. */
+/**
+ * Age-based additive penalty: exponential decay with a configurable half-life,
+ * capped at recencyMaxPenalty so recency stays a tiebreaker with teeth, never
+ * a dominant signal — an infinitely old result loses at most the cap, so it
+ * can reorder near-ties but never bury a result that out-relevances a rival
+ * by more than the cap. Additive (not a relevance multiplier) to stay on the
+ * same tuned scale as the boost/penalty algebra above.
+ */
+function recencyPenalty(
+	createdAt: string | null,
+	kind: ResultKind,
+	w: RankingWeights,
+	now: number,
+): number {
+	if (w.recencyHalfLifeDays <= 0 || w.recencyMaxPenalty <= 0) return 0;
+	if (!createdAt) return 0; // unknown age — never punish missing data
+	const ts = Date.parse(createdAt);
+	if (Number.isNaN(ts)) return 0; // unparseable — same fail-open rule
+	// max(0, …) clamps future timestamps (clock skew) to zero age, never a boost.
+	const ageDays = Math.max(0, (now - ts) / 86_400_000);
+	const decay = 0.5 ** (ageDays / w.recencyHalfLifeDays);
+	// Kept memory (curated/story) is deliberately durable — it ages at the
+	// reduced curated factor so old truths keep their edge over old chatter.
+	const kept = kind === "curated" || kind === "story";
+	const factor = kept ? w.recencyCuratedFactor : 1;
+	return w.recencyMaxPenalty * (1 - decay) * factor;
+}
+
+/** Composite score + classification for one result. `now` is injectable so
+ * tests and the eval harness stay deterministic; runtime callers omit it. */
 export function scoreResult(
 	r: SearchResult,
 	w: RankingWeights,
+	now: number = Date.now(),
 ): { kind: ResultKind; base: number; composite: number } {
 	const kind = classifyResult(r, w.storyTerms);
 	const base = baseScore(r);
@@ -143,17 +185,20 @@ export function scoreResult(
 		composite += w.storyBoost + w.curationBoost; // the story is kept memory too
 	else if (kind === "curated") composite += w.curationBoost;
 	else if (kind === "chatter") composite -= w.chatterPenalty;
+	composite -= recencyPenalty(r.createdAt, kind, w, now);
 	return { kind, base, composite };
 }
 
-/** Re-rank results by composite score (descending). Pure; stable enough. */
+/** Re-rank results by composite score (descending). Pure; stable enough.
+ * One `now` per call so every candidate scores against a consistent clock. */
 export function rerank(
 	results: SearchResult[],
 	w: RankingWeights,
+	now: number = Date.now(),
 ): RankedResult[] {
 	return results
 		.map((r) => {
-			const s = scoreResult(r, w);
+			const s = scoreResult(r, w, now);
 			return Object.assign({}, r, {
 				_kind: s.kind,
 				_base: s.base,
