@@ -442,3 +442,25 @@ test("parseConfig — knowledgeGraph accepts overrides", () => {
   // Unspecified fields keep their defaults.
   assert.equal(cfg.knowledgeGraph.scanIntervalMinutes, 60)
 })
+
+test("parseConfig — sourceWeights absent defaults to empty (neutral no-op)", () => {
+  const cfg = parseConfig({ ...base, ranking: {} })
+  assert.deepEqual(cfg.ranking.sourceWeights, {})
+})
+
+test("parseConfig — sourceWeights keys lowercased, non-numeric values skipped", () => {
+  const cfg = parseConfig({
+    ...base,
+    ranking: { sourceWeights: { Notion: 1.15, slack: "0.8", github: 1.0 } },
+  })
+  assert.deepEqual(cfg.ranking.sourceWeights, { notion: 1.15, github: 1.0 })
+})
+
+test("parseConfig — explicit non-positive sourceWeights throw with the sources-filter pointer", () => {
+  for (const bad of [0, -1]) {
+    assert.throws(
+      () => parseConfig({ ...base, ranking: { sourceWeights: { slack: bad } } }),
+      /must be a positive number.*sources.*filter/s,
+    )
+  }
+})
