@@ -14,6 +14,7 @@ import {
   resolveSyncSource,
   saveManifest,
   syncAllFilesSectionized,
+  syncMarkdownFile,
   syncMarkdownFileSectionized,
   withSyncLock,
 } from "./markdown.ts"
@@ -684,6 +685,67 @@ test("syncAllFilesSectionized — dot-dir under a watchPath is excluded from the
     assert.equal(r.synced, 1)
     assert.equal(addCalls.length, 1)
     assert.match(String(addCalls[0].options.metadata?.file_path), /2026-07-06\.md$/)
+  } finally {
+    ws.cleanup()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// graph_entity frontmatter propagation (Memory Network self-scan loop guard)
+// ---------------------------------------------------------------------------
+
+type CapturedMetadata = { metadata?: Record<string, unknown> }
+
+const ENTITY_FILE = [
+  "---",
+  "title: Alice Chen",
+  "type: person",
+  "graph_entity: true",
+  "---",
+  "# Alice Chen",
+  "",
+  BODY_A,
+].join("\n")
+
+test("syncMarkdownFileSectionized — graph_entity frontmatter lands in every section's metadata", async () => {
+  const ws = workspace()
+  const { client, addCalls } = makeClient()
+  try {
+    fs.writeFileSync(ws.note, ENTITY_FILE)
+    const r = await syncMarkdownFileSectionized(client, ws.note, ws.dir)
+
+    assert.equal(r.synced, 1)
+    const metadata = (addCalls[0].options as CapturedMetadata).metadata
+    assert.equal(metadata?.graph_entity, "true")
+  } finally {
+    ws.cleanup()
+  }
+})
+
+test("syncMarkdownFileSectionized — ordinary files get no graph_entity metadata", async () => {
+  const ws = workspace()
+  const { client, addCalls } = makeClient()
+  try {
+    fs.writeFileSync(ws.note, `## A\n${BODY_A}`)
+    await syncMarkdownFileSectionized(client, ws.note, ws.dir)
+
+    const metadata = (addCalls[0].options as CapturedMetadata).metadata
+    assert.equal(metadata?.graph_entity, undefined)
+  } finally {
+    ws.cleanup()
+  }
+})
+
+test("syncMarkdownFile (legacy whole-file) — graph_entity frontmatter lands in metadata", async () => {
+  const ws = workspace()
+  const { client, addCalls } = makeClient()
+  try {
+    fs.writeFileSync(ws.note, ENTITY_FILE)
+    const r = await syncMarkdownFile(client, ws.note)
+
+    assert.equal(r.success, true)
+    const metadata = (addCalls[0].options as CapturedMetadata).metadata
+    assert.equal(metadata?.graph_entity, "true")
   } finally {
     ws.cleanup()
   }
