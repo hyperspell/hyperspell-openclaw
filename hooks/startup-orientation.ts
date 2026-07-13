@@ -381,7 +381,10 @@ export function buildStartupOrientationHandler(
 		const blocks = [gathered.recentBlock, gathered.loopsBlock].filter(
 			(b): b is string => b !== null,
 		);
-		log.debug(
+		// log.diag, not debug: this one-line injection summary is the operator's
+		// only live signal that orientation fired (issue #118 — host drops plugin
+		// debug output from gateway.log).
+		log.diag(
 			`startup-orientation: injecting recent=${gathered.recentCount} loops=${gathered.loopsCount}`,
 		);
 		return { prependContext: blocks.join("\n\n") };

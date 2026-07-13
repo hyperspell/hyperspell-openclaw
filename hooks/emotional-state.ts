@@ -283,7 +283,9 @@ export function buildEmotionalStateFetchHandler(
 				return moodBlock ? { prependContext: moodBlock } : undefined;
 			}
 
-			log.debug(
+			// log.diag, not debug: the exact line issue #118's live audit proved
+			// invisible — one line per injection, operator-meaningful.
+			log.diag(
 				`emotional-context: injecting ${usable.length} recent register(s)`,
 			);
 			// Mood block comes AFTER the arc so it reads as today's override on top
