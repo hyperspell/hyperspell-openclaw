@@ -297,6 +297,13 @@ next-ranked *different* memory. Skipped copies never consume the chatter
 quota. Set `dedupThreshold: 0` to disable. Paraphrased duplicates (same fact,
 different words) are beyond a string measure and out of scope.
 
+Within each selected memory, the second excerpt earns its place: a result
+renders up to two highlight bullets, and the runner-up rides along only when
+its score is within 0.15 of the top one's — a .95/.40 pair renders one bullet
+(the distant second is usually a weaker paraphrase), a .95/.85 pair renders
+both. The top highlight is always kept, so a selected memory never disappears
+from the injection because of this rule.
+
 An optional **elbow cutoff** (`ranking.elbow`, **off by default**) stops
 injecting at a natural score cliff instead of always filling `maxResults`: a
 narrow query backed by 3 genuinely relevant memories no longer pads the
