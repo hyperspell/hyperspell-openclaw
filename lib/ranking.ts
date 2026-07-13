@@ -50,6 +50,29 @@ export type RankingWeights = {
 	 * duplicate of an already-SELECTED result (its slot passes to different
 	 * content). 0 disables the check. */
 	dedupThreshold: number;
+	/** Elbow cutoff: stop injecting early at a natural score cliff instead of
+	 * always filling maxResults. Strictly conservative — only ever cuts
+	 * earlier, never later; off by default until live scans pick parameters. */
+	elbow: ElbowOptions;
+};
+
+export type ElbowOptions = {
+	enabled: boolean;
+	/** Never stop before this many accepted results (clamped >= 2). */
+	minResults: number;
+	/** Fire only if the drop is this multiple of the mean accepted-gap so far. */
+	gapRatio: number;
+	/** Fire only if the drop is at least this big in absolute composite terms.
+	 * Meaningful on the CURRENT composite scale (boosts of 0.15-0.2); revisit
+	 * if the ranking weights are substantially retuned. */
+	minGap: number;
+};
+
+export const DEFAULT_ELBOW: ElbowOptions = {
+	enabled: false,
+	minResults: 3,
+	gapRatio: 2.5,
+	minGap: 0.05,
 };
 
 export const DEFAULT_RANKING: RankingWeights = {
@@ -65,6 +88,7 @@ export const DEFAULT_RANKING: RankingWeights = {
 	recencyCuratedFactor: 0.5,
 	sourceWeights: {},
 	dedupThreshold: 0.8,
+	elbow: DEFAULT_ELBOW,
 };
 
 const UUID_RE =
@@ -287,6 +311,7 @@ export function nearDuplicate(a: string, b: string, threshold: number): boolean 
 export type SelectionCut =
 	| "threshold"
 	| "max-results"
+	| "elbow"
 	| "near-duplicate"
 	| "chatter-quota";
 
@@ -313,6 +338,7 @@ export function explainSelection(
 	threshold: number,
 	chatterQuota: number,
 	dedupThreshold = 0,
+	elbow?: ElbowOptions,
 ): SelectionExplained[] {
 	const out: SelectionExplained[] = [];
 	// Dedup state is exactly "what was accepted": only SELECTED results record
@@ -323,6 +349,12 @@ export function explainSelection(
 	const keys: string[] = [];
 	let chatter = 0;
 	let kept = 0;
+	// Elbow bookkeeping: gaps between consecutive ACCEPTED results only —
+	// threshold/quota/dup-skipped rows widen the observed gap on purpose (the
+	// drop that matters is between results that could actually be injected).
+	let gapSum = 0;
+	let lastAccepted = 0;
+	let elbowFired = false;
 	for (const r of ranked) {
 		if (r._composite < threshold) {
 			out.push({ result: r, selected: false, cut: "threshold" });
@@ -330,6 +362,20 @@ export function explainSelection(
 		}
 		if (kept >= maxResults) {
 			out.push({ result: r, selected: false, cut: "max-results" });
+			continue;
+		}
+		// Cliff = outlier vs the decline so far AND material in absolute terms;
+		// the two-part test keeps flat lists (tiny meanGap) and steady declines
+		// (every gap "big") from tripping it. Gated on the minResults floor, so
+		// a huge gap right after result #1 is never even examined — the elbow
+		// can only ever cut EARLIER than maxResults, never below the floor.
+		if (!elbowFired && elbow?.enabled && kept >= Math.max(2, elbow.minResults)) {
+			const gap = lastAccepted - r._composite;
+			if (gap >= elbow.minGap && gap >= elbow.gapRatio * (gapSum / (kept - 1)))
+				elbowFired = true;
+		}
+		if (elbowFired) {
+			out.push({ result: r, selected: false, cut: "elbow" });
 			continue;
 		}
 		// After max-results (a dup past a full cap was cut regardless — the cap
@@ -345,6 +391,8 @@ export function explainSelection(
 			continue;
 		}
 		if (r._kind === "chatter") chatter++;
+		if (kept > 0) gapSum += lastAccepted - r._composite;
+		lastAccepted = r._composite;
 		kept++;
 		keys.push(key);
 		out.push({ result: r, selected: true, cut: null });
@@ -370,8 +418,9 @@ export function selectRanked(
 	threshold: number,
 	chatterQuota: number,
 	dedupThreshold = 0,
+	elbow?: ElbowOptions,
 ): RankedResult[] {
-	return explainSelection(ranked, maxResults, threshold, chatterQuota, dedupThreshold)
+	return explainSelection(ranked, maxResults, threshold, chatterQuota, dedupThreshold, elbow)
 		.filter((e) => e.selected)
 		.map((e) => e.result);
 }

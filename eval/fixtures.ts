@@ -389,6 +389,35 @@ export const EVAL_CASES: EvalCase[] = [
 		},
 	},
 	{
+		name: "elbow cutoff: the narrow query stops at the cliff instead of padding with near-noise",
+		note:
+			"Proposal 13's core case: three genuinely relevant results (0.82/0.80/" +
+			"0.78 composite) then a cliff to a plateau of marginal 0.55-ish results " +
+			"that still clear the threshold. With elbow enabled (minResults 3, " +
+			"gapRatio 2.5, minGap 0.05) selection stops at 3; without it the " +
+			"plateau pads the context to maxResults. Elbow ships OFF by default — " +
+			"this case opts in explicitly, exactly like a tuned live config.",
+		pool: [
+			curated("note-a", "Heath and Junii — the confrontation", 0.62, "Heath confronts Junii at the tower"),
+			curated("note-b", "Omuerta binding notes", 0.6, "what the binding cost Tevre"),
+			curated("note-c", "Night of storms — draft", 0.58, "the storm scene as written"),
+			curated("pad-1", "Weather small talk", 0.35, "it rained again on Tuesday"),
+			curated("pad-2", "Errands list", 0.34, "post office then the market"),
+			curated("pad-3", "Old bookmark", 0.33, "an article about lighthouses"),
+		],
+		weights: {
+			...DEFAULT_RANKING,
+			elbow: { enabled: true, minResults: 3, gapRatio: 2.5, minGap: 0.05 },
+		},
+		maxResults: 6,
+		threshold: 0.5,
+		expect: {
+			mustSelect: ["note-a", "note-b", "note-c"],
+			mustNotSelect: ["pad-1", "pad-2", "pad-3"],
+			order: [["note-a", "note-c"]],
+		},
+	},
+	{
 		name: "near-duplicate dedup: the re-saved memory yields its slot to different content",
 		note:
 			"Proposal 09's core case: the same memory exists as a synced doc section " +

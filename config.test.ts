@@ -475,3 +475,24 @@ test("parseConfig — dedupThreshold defaults to 0.8, clamps to [0,1]", () => {
   assert.equal(parseConfig({ ...base, ranking: { dedupThreshold: 1.5 } }).ranking.dedupThreshold, 1)
   assert.equal(parseConfig({ ...base, ranking: { dedupThreshold: -1 } }).ranking.dedupThreshold, 0)
 })
+
+test("parseConfig — elbow defaults off with documented parameters", () => {
+  const cfg = parseConfig({ ...base, ranking: {} })
+  assert.deepEqual(cfg.ranking.elbow, {
+    enabled: false,
+    minResults: 3,
+    gapRatio: 2.5,
+    minGap: 0.05,
+  })
+})
+
+test("parseConfig — elbow overrides respected; minResults clamps to >= 2, gapRatio to >= 1", () => {
+  const cfg = parseConfig({
+    ...base,
+    ranking: { elbow: { enabled: true, minResults: 1, gapRatio: 0.5, minGap: 0.08 } },
+  })
+  assert.equal(cfg.ranking.elbow.enabled, true)
+  assert.equal(cfg.ranking.elbow.minResults, 2, "one gap must exist before meanGap is defined")
+  assert.equal(cfg.ranking.elbow.gapRatio, 1)
+  assert.equal(cfg.ranking.elbow.minGap, 0.08)
+})
