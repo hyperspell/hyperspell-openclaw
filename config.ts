@@ -310,6 +310,21 @@ function parseRanking(raw: unknown): RankingWeights {
 			num(r.candidateMultiplier, DEFAULT_RANKING.candidateMultiplier),
 		),
 		chatterQuota: Math.max(0, num(r.chatterQuota, DEFAULT_RANKING.chatterQuota)),
+		recencyHalfLifeDays: Math.max(
+			0,
+			num(r.recencyHalfLifeDays, DEFAULT_RANKING.recencyHalfLifeDays),
+		),
+		recencyMaxPenalty: Math.max(
+			0,
+			num(r.recencyMaxPenalty, DEFAULT_RANKING.recencyMaxPenalty),
+		),
+		recencyCuratedFactor: Math.min(
+			1,
+			Math.max(
+				0,
+				num(r.recencyCuratedFactor, DEFAULT_RANKING.recencyCuratedFactor),
+			),
+		),
 	};
 }
 

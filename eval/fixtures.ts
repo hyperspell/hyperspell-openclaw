@@ -59,6 +59,28 @@ function curated(
 	});
 }
 
+/** Curated fixture with an explicit age — for the recency-decay cases, dated
+ * relative to the harness clock (EVAL_NOW == FIXED_CREATED_AT). */
+function curated2(
+	id: string,
+	title: string,
+	score: number,
+	text: string,
+	createdAt: string,
+): SearchResult {
+	return { ...curated(id, title, score, text), createdAt };
+}
+
+/** Chatter fixture with an explicit age — see curated2. */
+function chatter2(
+	uuid: string,
+	score: number,
+	text: string,
+	createdAt: string,
+): SearchResult {
+	return { ...chatter(uuid, score, text), createdAt };
+}
+
 export const EVAL_CASES: EvalCase[] = [
 	{
 		name: "production defaults: kept note beats a louder chatter echo",
@@ -364,6 +386,45 @@ export const EVAL_CASES: EvalCase[] = [
 		threshold: 0.6,
 		expect: {
 			mustNotSelect: [UUID_C, "note-weak", "import-weak"],
+		},
+	},
+	{
+		name: "recency: the fresh near-tie beats the stale one (proposal 07's core case)",
+		note:
+			"Two curated notes at identical relevance 0.60; one 2 days old, one 2 " +
+			"years old (vs the harness clock EVAL_NOW). Recency breaks the tie " +
+			"toward the current note: fresh 0.60+0.20−0.001=0.799 > stale " +
+			"0.60+0.20−0.050=0.750. Stale-first input proves reordering.",
+		pool: [
+			curated2("note-stale", "Editor config", 0.6, "uses emacs bindings", "2024-05-31T12:00:00Z"),
+			curated2("note-fresh", "Editor config", 0.6, "switched to vim bindings", "2026-05-30T12:00:00Z"),
+		],
+		weights: { ...DEFAULT_RANKING },
+		maxResults: 5,
+		threshold: 0.6,
+		expect: {
+			mustSelect: ["note-fresh", "note-stale"],
+			order: [["note-fresh", "note-stale"]],
+		},
+	},
+	{
+		name: "recency: an old kept truth still beats fresh shallow chatter (the risk case)",
+		note:
+			"The load-bearing guard on the 90-day/0.1-cap/0.5-curated defaults: a " +
+			"2-year-old curated note (0.55+0.20−0.050=0.700) must still outrank a " +
+			"1-day-old louder echo (0.62−0.20−0.001=0.419). If tuning ever flips " +
+			"this, the half-life or cap is wrong — recency must never hand chatter " +
+			"back the advantage the penalty/quota took away.",
+		pool: [
+			chatter2(UUID_D, 0.62, "you should write something today", "2026-05-31T12:00:00Z"),
+			curated2("note-truth", "2024-06-01 — Writing Notes", 0.55, "Heath, Junii, Tevre; the Omuerta", "2024-06-01T12:00:00Z"),
+		],
+		weights: { ...DEFAULT_RANKING },
+		maxResults: 5,
+		threshold: 0.35,
+		expect: {
+			mustSelect: ["note-truth", UUID_D],
+			order: [["note-truth", UUID_D]],
 		},
 	},
 ];

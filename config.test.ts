@@ -401,6 +401,30 @@ test("parseConfig — non-array ranking.storyTerms falls back to the empty defau
   assert.deepEqual(cfg.ranking.storyTerms, [])
 })
 
+test("parseConfig — recency fields default when absent", () => {
+  const cfg = parseConfig({ ...base, ranking: {} })
+  assert.equal(cfg.ranking.recencyHalfLifeDays, 90)
+  assert.equal(cfg.ranking.recencyMaxPenalty, 0.1)
+  assert.equal(cfg.ranking.recencyCuratedFactor, 0.5)
+})
+
+test("parseConfig — recency fields respected when present, clamped when out of range", () => {
+  const cfg = parseConfig({
+    ...base,
+    ranking: { recencyHalfLifeDays: 180, recencyMaxPenalty: 0.05, recencyCuratedFactor: 2 },
+  })
+  assert.equal(cfg.ranking.recencyHalfLifeDays, 180)
+  assert.equal(cfg.ranking.recencyMaxPenalty, 0.05)
+  assert.equal(cfg.ranking.recencyCuratedFactor, 1, "factor clamps to 1")
+  const neg = parseConfig({
+    ...base,
+    ranking: { recencyHalfLifeDays: -5, recencyMaxPenalty: -1, recencyCuratedFactor: -0.5 },
+  })
+  assert.equal(neg.ranking.recencyHalfLifeDays, 0)
+  assert.equal(neg.ranking.recencyMaxPenalty, 0)
+  assert.equal(neg.ranking.recencyCuratedFactor, 0)
+})
+
 test("parseConfig — knowledgeGraph defaults to disabled with sensible values", () => {
   const cfg = parseConfig(base)
   assert.equal(cfg.knowledgeGraph.enabled, false)

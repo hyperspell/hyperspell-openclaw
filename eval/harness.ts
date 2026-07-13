@@ -21,6 +21,13 @@ import {
  * filter happen upstream of the pool and are out of scope here; the live-API
  * runner (scripts/eval-retrieval.ts) covers that end of the pipeline.
  */
+/** The harness's fixed clock — equal to the fixtures' FIXED_CREATED_AT, so
+ * age-0 results accrue zero recency penalty and every pre-recency case's
+ * composite stays byte-identical to the pre-recency pipeline. Recency cases
+ * date their fixtures relative to this instant. Never Date.now(): output must
+ * be byte-stable across runs and days. */
+export const EVAL_NOW = Date.parse("2026-06-01T12:00:00Z");
+
 export type EvalCase = {
 	name: string;
 	/** Which ranking behavior this case pins, and why it matters. */
@@ -68,7 +75,7 @@ function selectionDiff(c: EvalCase, selected: RankedResult[]): string {
 
 /** Run one eval case through the production pipeline and check expectations. */
 export function runCase(c: EvalCase): CaseResult {
-	const ranked = rerank(c.pool, c.weights);
+	const ranked = rerank(c.pool, c.weights, EVAL_NOW);
 	// NOTE: baselined against main's selectRanked(ranked, max, threshold, quota).
 	// When the explainSelection refactor of selectRanked lands (proposal/02),
 	// this call site (and scripts/eval-retrieval.ts) needs a trivial API sync.

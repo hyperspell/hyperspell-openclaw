@@ -271,6 +271,14 @@ composite = relevance
 Chatter is additionally capped at `chatterQuota` results per injection,
 regardless of score.
 
+Age matters too, gently: results accrue a small **recency penalty** that grows
+with age (exponential decay, 90-day half-life by default) and is hard-capped at
+`recencyMaxPenalty` (0.1) so it can break near-ties toward current information
+but never bury a strong old match. Deliberately-kept memory (curated/story)
+ages at half rate (`recencyCuratedFactor`) — an old truth you chose to keep
+still beats a fresh shallow echo. Results without a timestamp are never
+penalized. Set `recencyHalfLifeDays: 0` to disable.
+
 **`storyBoost` does nothing until you set `storyTerms`.** The default is `[]`,
 so no result ever classifies as "story". Set it to the distinctive proper nouns
 of your active work — the title, character names, a project codename, invented
@@ -329,7 +337,10 @@ Full knobs and defaults:
   "storyBoost": 0.15,       // extra lift for storyTerms matches (stacks with curationBoost)
   "storyTerms": [],         // REQUIRED for storyBoost to do anything
   "candidateMultiplier": 3, // fetch this × maxResults candidates before re-ranking
-  "chatterQuota": 2         // hard cap on chatter results per injection
+  "chatterQuota": 2,        // hard cap on chatter results per injection
+  "recencyHalfLifeDays": 90,  // age at which half the recency penalty has accrued (0 = off)
+  "recencyMaxPenalty": 0.1,   // ceiling on the recency penalty — a tiebreaker, never a burial
+  "recencyCuratedFactor": 0.5 // kept memory (curated/story) ages at this fraction of the rate
 }
 ```
 
