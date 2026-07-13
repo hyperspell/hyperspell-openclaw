@@ -251,6 +251,24 @@ export default {
 		// Register memory network tools
 		if (cfg.knowledgeGraph.enabled) {
 			registerNetworkTools(api, client, cfg);
+		} else {
+			// Discoverability (issue #81): the Memory Network ships fully built but
+			// default-off. If memories are accumulating (hot buffer / auto-trace /
+			// emotional state) and the operator never made a knowledgeGraph decision,
+			// say so once at startup — otherwise the feature is undetectable without
+			// reading source. Keyed off the RAW config: an explicit `knowledgeGraph`
+			// key (even { enabled: false }) is a decision and suppresses this.
+			const memoryAccumulating =
+				cfg.hotBuffer.enabled || cfg.autoTrace.enabled || cfg.emotionalContext;
+			if (rawConfig?.knowledgeGraph === undefined && memoryAccumulating) {
+				log.info(
+					"memories are accumulating but the Memory Network (knowledgeGraph) is not configured — " +
+						"no entity extraction into memory/people|projects|organizations|topics will run. " +
+						"Enable it via 'openclaw openclaw-hyperspell setup' (Memory Network step) or set " +
+						"knowledgeGraph.enabled: true, or silence this note with knowledgeGraph: { enabled: false }. " +
+						"See README § Memory Network.",
+				);
+			}
 		}
 
 		// Register slash commands
