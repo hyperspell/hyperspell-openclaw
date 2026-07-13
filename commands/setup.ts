@@ -740,7 +740,10 @@ export function registerCliCommands(program: Command, pluginConfig: unknown): vo
         const stateManager = new NetworkStateManager(workspaceDir)
         const batchSize = Number.parseInt(opts.batchSize, 10) || 20
 
-        const memories = await scanMemories(client, stateManager, batchSize)
+        // cfg drives the multiUser fan-out inside scanMemories; omitting it
+        // made the CLI scan the default user only, silently skipping every
+        // mapped user's memories on multiUser installs.
+        const memories = await scanMemories(client, stateManager, batchSize, cfg)
         const text = formatScanResults(memories, stateManager.getProcessedCount(), stateManager.getLastScanAt())
         process.stdout.write(text + "\n")
       } catch (err) {
