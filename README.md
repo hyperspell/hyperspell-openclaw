@@ -142,6 +142,8 @@ Matching uses the same semantics as the quarantine check itself: exact id or thr
 | `debug` | boolean | `false` | Enable verbose logging |
 | `dreaming.enabled` | boolean | `false` | Allow `memory-core` to sidecar-load so Dreaming can consolidate local session transcripts into `workspace/MEMORY.md`. See [Running alongside Dreaming](#running-alongside-dreaming). |
 
+Stored emotional-state registers (`emotionalContext`) are fetchable by external processes (e.g. a nightly consolidator reconciling its own day-read) — the verified fetch contract lives in [docs/emotional-state-external-reconciliation.md](docs/emotional-state-external-reconciliation.md).
+
 ## Slash Commands
 
 ### `/getcontext <query>`
