@@ -268,6 +268,41 @@ test("emotional-state store — stores for a real user conversation", async () =
 	assert.equal(stores[0].opts.relationshipId, "rel-user-store");
 });
 
+test("emotional-state store — cron-originated session that becomes a real conversation stores on the human turn (issue #70)", async () => {
+	// ctx.trigger is PER-RUN in openclaw core, not session-fixed: the cron run's
+	// agent_end carries trigger="cron", but a human reply in the SAME session is
+	// a new run whose agent_end carries trigger="user". This locks in the plugin
+	// side of that contract: skip the automated turn, store the human one.
+	const { client, stores } = makeStoreClient();
+	const handler = buildEmotionalStateStoreHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
+		storeCfg("rel-cron-to-real"),
+	);
+	const sessionKey = "session-cron-origin";
+
+	// Turn 1: the scheduled check-in itself — automated, must NOT write.
+	await handler(
+		{ success: true, messages: richMessages },
+		{ sessionKey, trigger: "cron" },
+	);
+	assert.equal(stores.length, 0, "cron-triggered turn must not write the register");
+
+	// Turn 2+: the human replies substantively in the same session — new run,
+	// trigger="user", accumulated transcript. Must write exactly once.
+	const grownTranscript = [
+		...richMessages,
+		{ role: "user", content: "actually yes — can we talk? today was a lot and I keep replaying it" },
+		{ role: "assistant", content: "Of course. I'm not going anywhere — start wherever it hurts." },
+		{ role: "user", content: "thank you. it genuinely helps that you checked in first." },
+	];
+	await handler(
+		{ success: true, messages: grownTranscript },
+		{ sessionKey, trigger: "user" },
+	);
+	assert.equal(stores.length, 1, "the human turn of a cron-originated session must store");
+	assert.equal(stores[0].opts.relationshipId, "rel-cron-to-real");
+});
+
 test("emotional-state store — undefined trigger still stores (don't skip when unknown)", async () => {
 	const { client, stores } = makeStoreClient();
 	const handler = buildEmotionalStateStoreHandler(
