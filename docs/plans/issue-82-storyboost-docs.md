@@ -1,5 +1,33 @@
 # Implementation guide — #82: `storyBoost` is silently inert with the empty `storyTerms` default
 
+> **Status (2026-07-12): resolved — superseded by PR #83 (`proposal/01-story-terms-boost`).**
+>
+> The matching-semantics disagreement flagged below was decided by the owner on
+> 2026-07-12: **word-boundary matching wins** over this guide's
+> substring-plus-docs position. PR #83 is the primary change and has absorbed
+> everything this guide proposed to land:
+>
+> - `parseRanking` normalization (trim + lowercase + drop whitespace-only —
+>   this guide's Deliverable 2 footgun fix — plus dedupe)
+> - the README composite-ranking section and Configuration Options rows
+>   (Deliverable 1, adapted to word-boundary semantics: the planned
+>   "`mira` also matches `admiral`" tip is no longer true and was replaced by
+>   the boundary-matching rule)
+> - the missing `uiHints.ranking` manifest entry
+> - the tests from this guide's Tests section (the manuscript-vs-chatter corpus
+>   test, the highlight-text match case, the normalization test)
+>
+> **Remaining scope for this PR: none.** The only part of this guide not
+> absorbed by #83 is the "Future work" sketch (semi-automatic `storyTerms`
+> seeding), which both documents agreed is a follow-up issue, not PR scope.
+> Recommendation: after #83 merges, close #115 in its favor (the same
+> disposition as #84 → #100), filing the seeding sketch as its own issue if
+> still wanted.
+>
+> The sections below are kept as the verified code analysis they were — they
+> describe the **pre-#83** code and informed #83's implementation — with
+> notes where #83 changed the behavior described.
+
 ## Background: what the code actually does today
 
 **Where the boost lives.** `lib/ranking.ts` implements the composite score documented in its header comment: `composite = relevance + curationBoost + storyBoost − chatterPenalty`. The defaults:
@@ -16,7 +44,9 @@ export const DEFAULT_RANKING: RankingWeights = {
 };
 ```
 
-**The matching logic** is in `classifyResult`:
+**The matching logic** is in `classifyResult` (as analyzed pre-#83; #83
+replaced the substring test below with word-boundary regex matching over a
+`\n`-joined haystack):
 
 ```ts
 const title = (r.title ?? "").trim();
@@ -50,6 +80,12 @@ storyTerms: Array.isArray(r.storyTerms)
 ---
 
 ## Deliverable 1 (the PR's concrete change): document `ranking` and `storyTerms` in README.md
+
+> **Absorbed by #83.** The README section and table rows below landed there,
+> adapted to word-boundary semantics — in particular the "prefer distinctive,
+> multi-word terms because matching is substring-based" tip was replaced by the
+> boundary-matching rule ("mira" matches "Mira's" but not "admiral"/"miracle").
+> Kept verbatim below as the drafted-against-substring version for reference.
 
 ### 1a. Add rows to the Configuration Options table
 
@@ -131,6 +167,11 @@ Keep the boost/penalty numbers in the doc sourced from `DEFAULT_RANKING` at writ
 
 ## Deliverable 2 (small in-scope code fix): normalize terms in `parseRanking`
 
+> **Absorbed by #83** (trim + lowercase + drop whitespace-only, plus dedupe via
+> `Set`). The footgun analysis below — a stray `" "` entry silently classifying
+> every result as story — is the reason the fix exists and is cited in #83's
+> change; the fix now lives there.
+
 Two rough edges found while investigating, one of which is a real footgun:
 
 1. **Whitespace-only terms pass the filter and match everything.** `config.ts` filters `t.length > 0` but never trims, so `storyTerms: [" "]` (or a stray `"mira "` plus an accidental `" "` entry) survives — and since the haystack joins title and highlights with spaces, a single-space term substring-matches essentially **every** result, silently classifying the whole pool as "story" and neutering the chatter penalty/quota. Fix in `parseRanking`:
@@ -145,11 +186,20 @@ Two rough edges found while investigating, one of which is a real footgun:
 
 2. This also makes the config honor the existing type-level contract — `RankingWeights.storyTerms` is documented as "**Lowercased** substrings" but the parser never lowercased them. Keep the defensive `t.toLowerCase()` inside `classifyResult` as-is: tests and any direct constructors of `RankingWeights` bypass `parseRanking`, and the per-term cost is negligible.
 
-**Not in scope:** switching to word-boundary matching. Substring matching is a deliberate trade-off (multi-word phrase terms work naturally; highlight excerpts are free text where word-boundary regexes get fiddly with punctuation/possessives like "Mira's"). The over-match risk for short single words is better handled by the docs tip ("prefer distinctive multi-word terms") than by a behavior change that could silently un-match existing configs.
+**Matching semantics — DECIDED (2026-07-12): word-boundary matching won.** This guide originally argued that switching to word-boundary matching was out of scope — that substring matching was a deliberate trade-off (phrase terms work naturally; word-boundary regexes looked fiddly around punctuation/possessives like "Mira's") and the short-word over-match risk should stay a docs-only concern. `proposal/01-story-terms-boost` (#83) argued the opposite. Both documents flagged the disagreement for a human decision rather than resolving it unilaterally; the owner decided in #83's favor, and #83 implements it:
 
-**⚠️ Design disagreement with Group B `proposal/01-story-terms-boost` (external, not landable by this repo's normal process) — flag for human/cross-agent decision, do not resolve unilaterally.** That proposal reaches the opposite conclusion on the exact question above: it recommends *adding* word-boundary matching to `classifyResult` (regex-anchored terms, `\n`-joined haystack instead of space-joined) specifically to fix the same short-term false-positive risk this guide's Deliverable 2 argues should stay a docs-only concern. Both proposals also rewrite the identical `parseRanking` storyTerms-normalization lines in `config.ts` (this guide: trim+lowercase+drop-empty; `proposal/01`: the same plus dedupe), and both add a missing-`uiHints.ranking` fix / README guidance around the same substring-vs-boundary tradeoff — `proposal/01`'s version would make this guide's planned README line ("`mira` also matches `admiral` and `miracle`") no longer true if it lands. This is a genuine matching-semantics design decision, not a mechanical merge: a human/cross-agent should pick one behavior (keep substring + docs-only mitigation, or add boundary matching) before either PR's `classifyResult`/`parseRanking`/README changes land, since implementing both as independently written produces contradictory documented behavior and duplicate parser edits.
+- Terms are matched at word boundaries via per-term compiled regexes (`\b` anchored only against word-character term edges), so "mira" no longer matches "admiral"/"miracle".
+- The possessive/punctuation worry that motivated this guide's position turned out not to bite: boundaries are word↔non-word transitions, so "mira" still matches "Mira's" and "mira-class". `proposal/01` §3.2 and #83's tests pin this.
+- The haystack is `\n`-joined (was space-joined), so a phrase term can no longer spuriously match across the seam of two unrelated highlights.
+- The un-match risk for existing deployments relying on deliberate prefix terms (e.g. `"omuert"`) is accepted and called out in #83; the fix is listing full inflected forms.
 
 ## Tests
+
+> **Absorbed by #83**, adjusted for the decided semantics: the corpus test
+> (manuscript-vs-chatter, empty vs populated terms), the highlight-text match
+> case, and the `parseRanking` normalization test all landed there, alongside
+> #83's own word-boundary tests and a new eval-harness case pinning the
+> boundary behavior.
 
 Test runner is `node --test`; ranking tests live in `lib/ranking.test.ts`, config tests in `config.test.ts`.
 
@@ -187,8 +237,16 @@ What remains **genuinely speculative** is the second half of the issue's idea �
 
 ## Files touched
 
-- `README.md` — new "Composite ranking — surfacing your active work" subsection under Auto-Context; `relevanceThreshold` / `ranking` / `ranking.storyTerms` rows in the Configuration Options table (**main deliverable**)
-- `config.ts` — `parseRanking`: trim + lowercase `storyTerms`, drop whitespace-only entries (~1 line changed)
-- `config.test.ts` — normalization test for `storyTerms` parsing
-- `lib/ranking.test.ts` — corpus test: empty vs. populated `storyTerms` (chatter buries manuscript vs. manuscript outranks chatter); highlight-text match case
-- *(no changes)* `lib/ranking.ts`, `hooks/auto-context.ts`, `sync/markdown.ts` — read for evidence; matching semantics intentionally unchanged, seeding deferred to a follow-up issue
+**By this PR: none beyond this guide.** Every file this guide planned to touch
+was touched by #83 instead (with word-boundary semantics where the two
+disagreed):
+
+- `README.md` — composite-ranking subsection + Configuration Options rows → **landed in #83**
+- `config.ts` — `parseRanking` trim/lowercase/drop-empty (+ dedupe) → **landed in #83**
+- `config.test.ts` / `lib/ranking.test.ts` — normalization, corpus, and highlight-match tests → **landed in #83**
+- `lib/ranking.ts` / `hooks/auto-context.ts` — this guide planned no changes; #83 changed both (boundary matching; candidate-pool debug tallies)
+- `sync/markdown.ts` — read for evidence only in both; seeding deferred to a follow-up issue
+
+**Disposition:** close #115 in favor of #83 after it merges (as #84 closed
+into #100). If the semi-automatic seeding idea is still wanted, file it as its
+own issue using the "Future work" section above as the starting sketch.
