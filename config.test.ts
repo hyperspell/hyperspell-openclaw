@@ -399,6 +399,7 @@ test("parseConfig — ranking.storyTerms are trimmed, lowercased, deduped; white
 test("parseConfig — non-array ranking.storyTerms falls back to the empty default", () => {
   const cfg = parseConfig({ ...base, ranking: { storyTerms: "omuerta" } })
   assert.deepEqual(cfg.ranking.storyTerms, [])
+})
 
 test("parseConfig — knowledgeGraph defaults to disabled with sensible values", () => {
   const cfg = parseConfig(base)

@@ -1,5 +1,27 @@
 # Implementation guide — #81: Surface the dormant Memory Network (knowledge-graph) feature
 
+> **Status: implemented on this branch (post-0.19.0 rebase).** Reconciliations made
+> against current `main` and against `proposal/06-knowledge-graph-enablement` (PR #99):
+>
+> - **Anchor drift**: the `allowConversationAccess` warn block referenced below as the
+>   `index.ts` placement anchor never landed on `main` (#69/#103 is still open). The
+>   shipped precedents are the `moodWeatherChance === 0` info log (from #72/#96) and the
+>   startup-orientation inert-source warn. The discoverability log is placed on the
+>   `else` side of the `cfg.knowledgeGraph.enabled` registration gate, following those
+>   precedents (`log.info`, raw-config-keyed).
+> - **`scanIntervalMinutes` remedy (Part 4)**: reconciled with proposal/06 §3.1 into ONE
+>   approach — **wire it in the wizard and persist it**: the wizard uses one
+>   `scanIntervalMinutes` value (60) for both `--every ${n}m` and the persisted
+>   `knowledgeGraph: { enabled: true, scanIntervalMinutes }`, so config and cron are born
+>   in agreement. The cron job remains the runtime source of truth (no runtime
+>   rescheduling); the config field is an honest record of the cron the wizard created.
+>   proposal/06's doc records the same decision.
+> - **`graph_entity` re-scan gap (Part 2c)**: the honest README wording below is kept,
+>   pointing at PR #99, which now implements the fix (frontmatter propagation into sync
+>   metadata in both sync paths + an entity-directory path guard in `scanMemories`).
+> - **Dry-run ownership**: `docs/memory-network-migration.md` owns the dry-run command
+>   sequence; proposal/06's evaluation references it instead of duplicating it.
+
 ## What the code actually shows
 
 The feature is complete and shipped, but invisible unless you already know the config key:
