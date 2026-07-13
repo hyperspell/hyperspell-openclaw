@@ -191,17 +191,24 @@ When `syncMemories: true`, the plugin syncs markdown files from your agent's wor
 - Startup sync runs in the **background** — the agent boots immediately and sync proceeds without blocking it
 - A per-section content hash is tracked in `<workspace>/.hyperspell-sync-hashes.json`, so unchanged sections are skipped on subsequent syncs (no re-ingestion)
 
+**Provenance:** every synced memory carries an `openclaw_sync_source` metadata key recording where the content came from: `"memory"` for files under `memory/`, and the watchPath's `source` label (or a slug derived from its path, e.g. `notes/brainstem` → `notes_brainstem`) for watchPath files. This lets retrieval distinguish curated memory files from machine-generated content. The key is additive — `openclaw_source` (which pipeline wrote the row) is unchanged. Already-synced content is **not retroactively retagged**: uploads are gated by per-section content hash, so previously synced sections keep their old metadata until their content next changes.
+
 **Tuning sync (object form):**
 
 ```jsonc
 "syncMemories": {
   "enabled": true,
   "sectionize": true,     // split files on ## headings into separate memories
-  "watchPaths": [],        // extra files/dirs to sync beyond memory/
+  "watchPaths": [          // extra files/dirs to sync beyond memory/
+    "notes",                                                  // plain path — tagged with slug "notes"
+    { "path": "notes/brainstem", "source": "brainstem_daily" } // labeled — tagged openclaw_sync_source: "brainstem_daily"
+  ],
   "debounceMs": 2000,      // wait for writes to settle before syncing
   "maxAgeDays": 30          // startup skips already-synced files older than this
 }
 ```
+
+`watchPaths` is how you make **externally generated notes** searchable: tools that write dated markdown reports under the workspace (nightly consolidators, journal generators — e.g. a Brainstem consolidator writing `notes/brainstem/YYYY-MM-DD.md`) are invisible to sync until their file or directory is listed here. Watched paths are picked up by the startup bulk sync. Use the labeled object form so machine-generated content is distinguishable from curated memories at retrieval time. Sectionized mode (the default) is **recommended for external directories**: legacy whole-file mode (`sectionize: false`) writes a `hyperspell_id` frontmatter line back into the source file — i.e. the plugin edits another tool's files — while sectionized mode tracks state in the sync manifest and leaves watched files untouched.
 
 `maxAgeDays` bounds steady-state load: on startup, files whose mtime is older than the cutoff **and** already recorded in the sync manifest are skipped without re-reading. Files not yet in the manifest are always synced once regardless of age, and editing an old file bumps its mtime back into the window. Set to `0` to disable the cutoff.
 

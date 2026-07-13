@@ -107,12 +107,23 @@ export function normalizeScope(scope: ScopeName): string {
 	return scope.replace(/[^a-zA-Z0-9_]/g, "_");
 }
 
+export type WatchPathEntry = {
+	/** Relative to workspace root, or absolute. */
+	path: string;
+	/**
+	 * Provenance label stamped as `openclaw_sync_source` metadata on every
+	 * memory synced from under this path. Defaults to a slug of `path`
+	 * (e.g. "notes/brainstem" -> "notes_brainstem").
+	 */
+	source?: string;
+};
+
 export type SyncMemoriesConfig = {
 	enabled: boolean;
 	/** Split files by ## headings into separate memories (default: true) */
 	sectionize: boolean;
 	/** Additional paths to watch beyond memory/ (relative to workspace or absolute) */
-	watchPaths: string[];
+	watchPaths: WatchPathEntry[];
 	/** Debounce file changes in ms to avoid syncing mid-write (default: 2000) */
 	debounceMs: number;
 	/**
@@ -228,6 +239,48 @@ function resolveEnvVars(value: string): string {
 			throw new Error(`Environment variable ${envVar} is not set`);
 		}
 		return envValue;
+	});
+}
+
+/**
+ * Normalize `syncMemories.watchPaths` entries: the shipped/documented string
+ * form stays valid and is additive-upgraded to `{ path }`; the object form
+ * carries an optional provenance `source` label. Labels are sanitized with the
+ * same character rule as normalizeScope — metadata values must be alphanumeric
+ * + underscore or Hyperspell metadata filters silently miss.
+ */
+function parseWatchPaths(raw: unknown): WatchPathEntry[] {
+	if (!Array.isArray(raw)) return [];
+	return (raw as unknown[]).map((wp) => {
+		if (typeof wp === "string") {
+			if (!wp.trim()) {
+				throw new Error(
+					"hyperspell.syncMemories.watchPaths[] entry needs a non-empty path",
+				);
+			}
+			return { path: wp };
+		}
+		if (typeof wp !== "object" || wp === null || Array.isArray(wp)) {
+			throw new Error(
+				"hyperspell.syncMemories.watchPaths[] entries must be a string or { path, source? }",
+			);
+		}
+		const entry = wp as Record<string, unknown>;
+		assertAllowedKeys(
+			entry,
+			["path", "source"],
+			"hyperspell.syncMemories.watchPaths[]",
+		);
+		if (typeof entry.path !== "string" || !entry.path.trim()) {
+			throw new Error(
+				"hyperspell.syncMemories.watchPaths[] entry needs a non-empty path",
+			);
+		}
+		if (!entry.source) return { path: entry.path };
+		return {
+			path: entry.path,
+			source: String(entry.source).replace(/[^a-zA-Z0-9_]/g, "_"),
+		};
 	});
 }
 
@@ -576,9 +629,7 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 		syncMemoriesConfig: {
 			enabled: syncMemoriesEnabled,
 			sectionize: (smObj.sectionize as boolean) ?? true,
-			watchPaths: Array.isArray(smObj.watchPaths)
-				? (smObj.watchPaths as string[])
-				: [],
+			watchPaths: parseWatchPaths(smObj.watchPaths),
 			debounceMs: (smObj.debounceMs as number) ?? 2000,
 			maxAgeDays: (smObj.maxAgeDays as number) ?? 30,
 			ignorePaths: Array.isArray(smObj.ignorePaths)
