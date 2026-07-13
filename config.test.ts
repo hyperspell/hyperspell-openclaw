@@ -258,7 +258,10 @@ test("parseConfig — syncMemories object form parses and enables by default", (
   })
   assert.equal(cfg.syncMemories, true) // object without explicit enabled => on
   assert.equal(cfg.syncMemoriesConfig.sectionize, false)
-  assert.deepEqual(cfg.syncMemoriesConfig.watchPaths, ["MEMORY.md", "notes/"])
+  assert.deepEqual(cfg.syncMemoriesConfig.watchPaths, [
+    { path: "MEMORY.md" },
+    { path: "notes/" },
+  ])
   assert.equal(cfg.syncMemoriesConfig.debounceMs, 500)
   assert.equal(cfg.syncMemoriesConfig.maxAgeDays, 7)
   assert.deepEqual(cfg.syncMemoriesConfig.ignorePaths, ["dreaming", "scratch"])
@@ -269,6 +272,62 @@ test("parseConfig — syncMemories object with a typo'd key throws", () => {
     () => parseConfig({ ...base, syncMemories: { sectionise: true } }),
     /hyperspell\.syncMemories has unknown keys: sectionise/,
   )
+})
+
+test("parseConfig — watchPaths string entries normalize to { path }", () => {
+  const cfg = parseConfig({
+    ...base,
+    syncMemories: { watchPaths: ["notes/brainstem"] },
+  })
+  assert.deepEqual(cfg.syncMemoriesConfig.watchPaths, [{ path: "notes/brainstem" }])
+})
+
+test("parseConfig — watchPaths object entry keeps source, sanitized to metadata-safe chars", () => {
+  const cfg = parseConfig({
+    ...base,
+    syncMemories: {
+      watchPaths: [{ path: "notes/brainstem", source: "brainstem-daily" }],
+    },
+  })
+  assert.deepEqual(cfg.syncMemoriesConfig.watchPaths, [
+    { path: "notes/brainstem", source: "brainstem_daily" },
+  ])
+})
+
+test("parseConfig — watchPaths entry with an unknown key throws", () => {
+  assert.throws(
+    () =>
+      parseConfig({
+        ...base,
+        syncMemories: {
+          watchPaths: [{ path: "notes", sources: "typo" }],
+        },
+      }),
+    /hyperspell\.syncMemories\.watchPaths\[\] has unknown keys: sources/,
+  )
+})
+
+test("parseConfig — watchPaths entry missing path throws", () => {
+  assert.throws(
+    () =>
+      parseConfig({
+        ...base,
+        syncMemories: { watchPaths: [{ source: "brainstem_daily" }] },
+      }),
+    /needs a non-empty path/,
+  )
+})
+
+test("parseConfig — watchPaths empty-string entry throws", () => {
+  assert.throws(
+    () => parseConfig({ ...base, syncMemories: { watchPaths: ["  "] } }),
+    /needs a non-empty path/,
+  )
+})
+
+test("parseConfig — watchPaths defaults to empty", () => {
+  const cfg = parseConfig({ ...base, syncMemories: {} })
+  assert.deepEqual(cfg.syncMemoriesConfig.watchPaths, [])
 })
 
 test("parseConfig — hotBuffer defaults to disabled with safe defaults", () => {

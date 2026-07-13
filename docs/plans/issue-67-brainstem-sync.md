@@ -4,6 +4,16 @@
 
 `syncMemoriesConfig.watchPaths` defaults to `[]` (`config.ts:565-567`), so the sync pipeline only ever sees `<workspace>/memory/`. A nightly consolidator writing `notes/brainstem/YYYY-MM-DD.md` under the workspace root is invisible to both the startup bulk sync (`syncAllFilesSectionized` → `getSyncableFiles`) and the live watcher (`startFileWatcher` / `buildFileSyncHandler`), so `hyperspell_search` can never surface that content. Additionally, even when a user *does* configure `watchPaths`, everything synced is tagged identically (`openclaw_source: "memory_sync_section"`, `sync/markdown.ts:543`) — there is no way to tell a curated `MEMORY.md` fragment from a machine-generated brainstem daily at retrieval time.
 
+## Scope reconciliation (2026-07-12, implemented against main @ 0.19.0)
+
+Verified against `origin/main` (release 0.19.0): `index.ts:244-245` registers `buildFileSyncHandler` on the **phantom `file_changed` hook** (OpenClaw never emits it — live watch is inert; startup bulk sync at `index.ts:274` works), and there is **no `startFileWatcher`** on main. The WIP-only pieces below are therefore **deferred as WIP-gated follow-ups**, to land with (or after) the maintainer's watcher WIP:
+
+- **§4/§5 `startFileWatcher` + the `fs.watch` rewrite** — does not exist on main; nothing to wire.
+- **§5 `buildFileSyncHandler` `workspaceDir` param refactor** — only needed for the fs.watch-based tests; handler keeps calling `getWorkspaceDir()` internally.
+- **`hooks/memory-sync.test.ts`** — its fixtures assume the `workspaceDir` param + real `fs.watch`; not added (and not added to `package.json`'s test list).
+
+Everything WIP-independent **was implemented**: §1 (`WatchPathEntry` config), §2 (shared resolvers), §3 (`openclaw_sync_source` threading incl. `syncAllMemoryFiles` tagged `"memory"`), §4's non-watcher parts (`resolveWatchPath`/`resolveSyncSource` in the existing handler, plus the `isIgnoredPath` generalization — that asymmetry exists on main's `hooks/memory-sync.ts`, not only in WIP), §6 README, and the `config.test.ts`/`sync/markdown.test.ts` tests. No `index.ts` change was needed: types flow through the existing `syncMemoriesOnStartup` call, and there is no watcher call to map entries for.
+
 **⚠️ Verify against `origin/main` before implementing, not the local working tree.** This guide's `index.ts:295-308` wiring citation (§5 below) and its `hooks/memory-sync.test.ts` fixtures describe the maintainer's uncommitted local WIP — on `origin/main`, `index.ts` does not yet wire `syncMemoriesOnStartup`/`startFileWatcher`, and `hooks/memory-sync.test.ts` is untracked (not in `package.json`'s test list). Confirm the actual current `index.ts` memory-sync wiring and test-file state before implementing §5, rather than assuming this snapshot is what's on the remote.
 
 ## Design decision: do NOT widen the default watch scope
