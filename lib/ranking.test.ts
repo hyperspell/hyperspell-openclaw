@@ -4,8 +4,10 @@ import type { SearchResult } from "../client.ts";
 import {
 	classifyResult,
 	DEFAULT_RANKING,
+	DEFAULT_ELBOW,
 	explainSelection,
 	kindTally,
+	nearDuplicate,
 	rerank,
 	type RankedResult,
 	scoreResult,
@@ -467,4 +469,242 @@ test("recency — future timestamps clamp to zero age: no accidental boost", () 
 	const future = scoreResult(mk({ ...base, createdAt: daysAgo(-1) }), DEFAULT_RANKING, NOW);
 	const present = scoreResult(mk({ ...base, createdAt: new Date(NOW).toISOString() }), DEFAULT_RANKING, NOW);
 	assert.equal(future.composite, present.composite);
+});
+
+// ---- source weighting (proposal 11) ----
+
+test("sourceWeights — identical title+relevance: unweighted ties, weighted differentiates", () => {
+	const notionDoc = mk({
+		title: "Q3 retrieval roadmap",
+		resourceId: "notion-abc123",
+		source: "notion" as SearchResult["source"],
+		score: 0.6,
+	});
+	const slackAside = mk({
+		title: "Q3 retrieval roadmap",
+		resourceId: "slack-C042-p1699",
+		source: "slack" as SearchResult["source"],
+		score: 0.6,
+	});
+
+	// Default {}: both classify curated, exact composite tie (today's behavior).
+	const plain = rerank([slackAside, notionDoc], DEFAULT_RANKING);
+	assert.ok(Math.abs(plain[0]._composite - plain[1]._composite) < 1e-9);
+
+	// Weighted: the Notion doc clearly outranks the same-topic Slack aside.
+	const w = { ...DEFAULT_RANKING, sourceWeights: { notion: 1.15, slack: 0.85 } };
+	const out = rerank([slackAside, notionDoc], w);
+	assert.equal(out[0].source, "notion");
+	// notion: 0.6×1.15 + 0.2 = 0.89 ; slack: 0.6×0.85 + 0.2 = 0.71
+	assert.ok(Math.abs(out[0]._composite - 0.89) < 1e-9);
+	assert.ok(Math.abs(out[1]._composite - 0.71) < 1e-9);
+	// _base stays the unweighted relevance for debuggability.
+	assert.equal(out[0]._base, 0.6);
+});
+
+test("sourceWeights — unlisted and unknown sources default to neutral 1.0", () => {
+	const w = { ...DEFAULT_RANKING, sourceWeights: { notion: 1.15 } };
+	const vaultNote = mk({ title: "Writing Notes", resourceId: "mem-1", score: 0.5 }); // source: vault, unlisted
+	const future = mk({
+		title: "Linear ticket",
+		resourceId: "lin-1",
+		source: "linear" as SearchResult["source"], // a source this plugin has never heard of
+		score: 0.5,
+	});
+	for (const r of [vaultNote, future]) {
+		const { composite } = scoreResult(r, w);
+		assert.ok(Math.abs(composite - (0.5 + w.curationBoost)) < 1e-9, "weight is exactly 1.0");
+	}
+});
+
+test("sourceWeights — weight multiplies base only: kind adjustments keep their magnitude", () => {
+	// Pins the multiplier-on-base decision (proposal 11 §3.1): a slack 0.8
+	// weight must NOT shrink the chatterPenalty for slack results.
+	const echo = mk({
+		title: "Unnamed Conversation",
+		resourceId: UUID,
+		source: "slack" as SearchResult["source"],
+		score: 0.5,
+	});
+	const w = { ...DEFAULT_RANKING, sourceWeights: { slack: 0.8 } };
+	const { composite } = scoreResult(echo, w);
+	// 0.5×0.8 − 0.2 = 0.20 — the full penalty, not 0.8× of it.
+	assert.ok(Math.abs(composite - (0.5 * 0.8 - DEFAULT_RANKING.chatterPenalty)) < 1e-9);
+});
+
+test("sourceWeights — empty map is a strict no-op (default behavior unchanged)", () => {
+	const r = mk({ title: "A note", resourceId: "n", score: 0.47 });
+	const { composite } = scoreResult(r, DEFAULT_RANKING);
+	assert.ok(Math.abs(composite - 0.67) < 1e-9, "0.47 + 0.2, bit-identical to pre-weighting");
+});
+
+// ---- diversity / near-duplicate dedup (proposal 09) ----
+
+const rankedH = (
+	kind: RankedResult["_kind"],
+	composite: number,
+	id: string,
+	text: string,
+): RankedResult => ({
+	...mk({ resourceId: id, title: `note ${id}`, highlights: [{ id: "h", text, score: composite }] }),
+	_kind: kind,
+	_base: composite,
+	_composite: composite,
+});
+
+const THEME =
+	"Heath finally confronts Junii about the Omuerta binding and what it cost Tevre on the night of storms";
+
+test("selectRanked — five near-identical curated hits: default-off floods, dedup collapses to one", () => {
+	const five = [
+		rankedH("curated", 0.9, "d1", THEME),
+		rankedH("curated", 0.88, "d2", `2026-02-09 — ${THEME}`),
+		rankedH("curated", 0.86, "d3", `${THEME}. She kept the letter.`),
+		rankedH("curated", 0.84, "d4", THEME.replace("finally", "at last")),
+		rankedH("curated", 0.82, "d5", THEME),
+	];
+	// Backward compat: the omitted parameter reproduces today's flood exactly.
+	assert.equal(selectRanked(five, 4, 0.6, 2).length, 4, "status quo floods the slots");
+	const sel = selectRanked(five, 4, 0.6, 2, 0.8);
+	assert.equal(sel.length, 1);
+	assert.equal(sel[0].resourceId, "d1", "highest-ranked copy wins");
+});
+
+test("selectRanked — freed slot goes to genuinely different lower-scored content", () => {
+	const list = [
+		rankedH("curated", 0.9, "d1", THEME),
+		rankedH("curated", 0.88, "d2", `2026-02-09 — ${THEME}`),
+		rankedH("curated", 0.86, "d3", `${THEME}. She kept the letter.`),
+		rankedH("curated", 0.7, "k1", "Grocery run Thursday; Alinea prefers oat milk and dark rye"),
+	];
+	const sel = selectRanked(list, 2, 0.6, 2, 0.8);
+	assert.deepEqual(
+		sel.map((r) => r.resourceId),
+		["d1", "k1"],
+		"duplicates are skipped with continue, not break — k1 fills the freed slot",
+	);
+});
+
+test("selectRanked — a diversity-skipped chatter item does not consume chatter quota", () => {
+	const list = [
+		rankedH("chatter", 0.9, "c1", THEME),
+		rankedH("chatter", 0.88, "c2", `${THEME}.`), // near-dup of c1 → diversity-skipped
+		rankedH("chatter", 0.86, "c3", "we argued about whether the sandbox should allow git push"),
+		rankedH("curated", 0.7, "k1", "Grocery run Thursday; Alinea prefers oat milk and dark rye"),
+	];
+	const sel = selectRanked(list, 10, 0.6, 2, 0.8);
+	// If the quota were charged before the dedup skip, c2 would burn slot 2 and c3 would be blocked.
+	assert.deepEqual(sel.map((r) => r.resourceId), ["c1", "c3", "k1"]);
+	assert.equal(sel.filter((r) => r._kind === "chatter").length, 2);
+});
+
+test("selectRanked — over-quota chatter does not shadow later results in the dedup set", () => {
+	const list = [
+		rankedH("chatter", 0.9, "c1", "morning chatter about coffee and half-remembered dreams"),
+		rankedH("chatter", 0.88, "c2", "afternoon chatter about trains and the queue at the station"),
+		rankedH("chatter", 0.86, "c3", THEME), // over quota (quota=2) → skipped, key NOT recorded
+		rankedH("curated", 0.8, "k1", THEME), // must still be accepted
+	];
+	const sel = selectRanked(list, 10, 0.6, 2, 0.8);
+	assert.deepEqual(sel.map((r) => r.resourceId), ["c1", "c2", "k1"]);
+});
+
+test("explainSelection — cut attribution: duplicate reads 'near-duplicate'; past a full cap it reads 'max-results'", () => {
+	const dupWithinCap = [
+		rankedH("curated", 0.9, "d1", THEME),
+		rankedH("curated", 0.88, "d2", `${THEME}.`),
+	];
+	assert.deepEqual(
+		explainSelection(dupWithinCap, 5, 0.6, 2, 0.8).map((e) => e.cut),
+		[null, "near-duplicate"],
+	);
+	// Cap already full: the dup would have been cut regardless — the cap, not
+	// the dedup, was the binding constraint (same semantics as chatter-quota).
+	const dupPastCap = [
+		rankedH("curated", 0.9, "a", "an entirely different first memory about the garden"),
+		rankedH("curated", 0.88, "d2", `${THEME}.`),
+		rankedH("curated", 0.86, "d3", THEME),
+	];
+	assert.deepEqual(
+		explainSelection(dupPastCap, 1, 0.6, 2, 0.8).map((e) => e.cut),
+		[null, "max-results", "max-results"],
+	);
+});
+
+test("nearDuplicate — containment counts, tiny keys require equality, 0 disables", () => {
+	assert.ok(nearDuplicate(THEME, `${THEME} and more happened after, much more, that evening`, 0.8));
+	assert.ok(!nearDuplicate("the writing notes", THEME, 0.8), "short key needs exact match");
+	assert.ok(!nearDuplicate(THEME, THEME, 0), "threshold 0 disables");
+	assert.ok(nearDuplicate("The Writing Notes!", "the writing notes", 0.8), "tiny keys: exact set equality matches");
+	assert.ok(!nearDuplicate("", THEME, 0.8), "empty key never duplicates");
+});
+
+// ---- elbow cutoff (proposal 13) ----
+
+const ELBOW = { enabled: true, minResults: 3, gapRatio: 2.5, minGap: 0.05 };
+
+test("selectRanked — elbow: stops at a clear score cliff before maxResults", () => {
+	const list = [
+		ranked("curated", 0.85, "a"),
+		ranked("curated", 0.82, "b"),
+		ranked("curated", 0.8, "c"),
+		ranked("other", 0.55, "d"), // gap 0.25 vs meanGap 0.025 → cliff
+		ranked("other", 0.53, "e"),
+		ranked("other", 0.52, "f"),
+	];
+	const sel = selectRanked(list, 10, 0.4, 2, 0, ELBOW);
+	assert.deepEqual(sel.map((r) => r.resourceId), ["a", "b", "c"]);
+	// Attribution: everything past the cliff reads "elbow".
+	const ex = explainSelection(list, 10, 0.4, 2, 0, ELBOW);
+	assert.deepEqual(ex.map((e) => e.cut), [null, null, null, "elbow", "elbow", "elbow"]);
+});
+
+test("selectRanked — elbow: gradual decline falls through to maxResults/threshold unchanged", () => {
+	const list = [0.85, 0.8, 0.75, 0.7, 0.65, 0.6].map((s, i) => ranked("curated", s, `g${i}`));
+	const withElbow = selectRanked(list, 5, 0.4, 2, 0, ELBOW);
+	const without = selectRanked(list, 5, 0.4, 2);
+	assert.deepEqual(withElbow, without, "no cliff → byte-identical selection");
+	assert.equal(withElbow.length, 5, "still fills to maxResults");
+});
+
+test("selectRanked — elbow: minResults floor holds even across a huge early gap", () => {
+	const list = [
+		ranked("curated", 0.95, "a"),
+		ranked("curated", 0.4, "b"), // 0.55 drop — but floor not met yet
+		ranked("curated", 0.38, "c"),
+		ranked("curated", 0.37, "d"),
+	];
+	const sel = selectRanked(list, 10, 0.3, 2, 0, ELBOW);
+	assert.ok(sel.length >= 3, "never cut below the floor");
+	assert.deepEqual(sel.slice(0, 3).map((r) => r.resourceId), ["a", "b", "c"]);
+});
+
+test("selectRanked — elbow: flat plateau never fires (minGap guards the meanGap-0 case)", () => {
+	const list = ["a", "b", "c", "d", "e"].map((id) => ranked("curated", 0.7, id));
+	const sel = selectRanked(list, 5, 0.4, 2, 0, ELBOW);
+	assert.equal(sel.length, 5, "meanGap 0 makes the ratio test trivially true; minGap still blocks");
+});
+
+test("selectRanked — elbow: a cliff sitting exactly at the floor fires on the first eligible check", () => {
+	const list = [
+		ranked("curated", 0.85, "a"),
+		ranked("curated", 0.84, "b"),
+		ranked("curated", 0.83, "c"),
+		ranked("other", 0.5, "d"), // first check at kept==3 — fires immediately
+	];
+	const sel = selectRanked(list, 10, 0.4, 2, 0, ELBOW);
+	assert.deepEqual(sel.map((r) => r.resourceId), ["a", "b", "c"]);
+});
+
+test("selectRanked — elbow disabled or omitted: behavior identical to today", () => {
+	const list = [
+		ranked("curated", 0.85, "a"),
+		ranked("curated", 0.82, "b"),
+		ranked("curated", 0.8, "c"),
+		ranked("other", 0.55, "d"),
+	];
+	const plain = selectRanked(list, 10, 0.4, 2);
+	assert.deepEqual(selectRanked(list, 10, 0.4, 2, 0, { ...ELBOW, enabled: false }), plain);
+	assert.deepEqual(selectRanked(list, 10, 0.4, 2, 0, DEFAULT_ELBOW), plain, "shipped default is off");
+	assert.equal(plain.length, 4);
 });

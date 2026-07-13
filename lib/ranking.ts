@@ -42,6 +42,37 @@ export type RankingWeights = {
 	/** Fraction of the penalty applied to curated/story results (0..1). Kept
 	 * memory describes durable truths; it ages slower than chatter. */
 	recencyCuratedFactor: number;
+	/** Per-source multiplier on BASE relevance (applied before the kind-based
+	 * boost/penalty). Keyed by Hyperspell source name; any source not listed —
+	 * including sources that don't exist yet — is neutral (1.0). */
+	sourceWeights: Record<string, number>;
+	/** Token-overlap ratio above which a candidate is skipped as a near-
+	 * duplicate of an already-SELECTED result (its slot passes to different
+	 * content). 0 disables the check. */
+	dedupThreshold: number;
+	/** Elbow cutoff: stop injecting early at a natural score cliff instead of
+	 * always filling maxResults. Strictly conservative — only ever cuts
+	 * earlier, never later; off by default until live scans pick parameters. */
+	elbow: ElbowOptions;
+};
+
+export type ElbowOptions = {
+	enabled: boolean;
+	/** Never stop before this many accepted results (clamped >= 2). */
+	minResults: number;
+	/** Fire only if the drop is this multiple of the mean accepted-gap so far. */
+	gapRatio: number;
+	/** Fire only if the drop is at least this big in absolute composite terms.
+	 * Meaningful on the CURRENT composite scale (boosts of 0.15-0.2); revisit
+	 * if the ranking weights are substantially retuned. */
+	minGap: number;
+};
+
+export const DEFAULT_ELBOW: ElbowOptions = {
+	enabled: false,
+	minResults: 3,
+	gapRatio: 2.5,
+	minGap: 0.05,
 };
 
 export const DEFAULT_RANKING: RankingWeights = {
@@ -55,6 +86,9 @@ export const DEFAULT_RANKING: RankingWeights = {
 	recencyHalfLifeDays: 90,
 	recencyMaxPenalty: 0.1,
 	recencyCuratedFactor: 0.5,
+	sourceWeights: {},
+	dedupThreshold: 0.8,
+	elbow: DEFAULT_ELBOW,
 };
 
 const UUID_RE =
@@ -171,6 +205,14 @@ function recencyPenalty(
 	return w.recencyMaxPenalty * (1 - decay) * factor;
 }
 
+/** Weight for a source; anything unlisted or malformed is neutral, never zero.
+ * The lookup-time guard is the safety floor: an unrecognized or unweighted
+ * source degrades to 1.0 — it never crashes and never zeroes a result out. */
+export function sourceWeight(w: RankingWeights, source: string): number {
+	const v = w.sourceWeights[source];
+	return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 1;
+}
+
 /** Composite score + classification for one result. `now` is injectable so
  * tests and the eval harness stay deterministic; runtime callers omit it. */
 export function scoreResult(
@@ -180,7 +222,11 @@ export function scoreResult(
 ): { kind: ResultKind; base: number; composite: number } {
 	const kind = classifyResult(r, w.storyTerms);
 	const base = baseScore(r);
-	let composite = base;
+	// The weight multiplies BASE only — kind boosts/penalties stay in the same
+	// additive currency regardless of source, so tuning sourceWeights can never
+	// silently retune chatterPenalty/curationBoost (proposal 11 §3.1). _base
+	// stays unweighted for debuggability; the weight shows only in _composite.
+	let composite = base * sourceWeight(w, r.source);
 	if (kind === "story")
 		composite += w.storyBoost + w.curationBoost; // the story is kept memory too
 	else if (kind === "curated") composite += w.curationBoost;
@@ -208,10 +254,66 @@ export function rerank(
 		.sort((a, b) => b._composite - a._composite);
 }
 
+/** The text a result would lead its injection with: its highest-scored
+ * highlight, falling back to the title. Near-duplicate KEYS ≈ near-duplicate
+ * injected content, which is exactly what the diversity check must catch. */
+export function dedupKey(r: SearchResult): string {
+	let best = "";
+	let bestScore = -1;
+	for (const h of r.highlights) {
+		const s = h.score ?? 0;
+		if (s > bestScore) {
+			bestScore = s;
+			best = h.text;
+		}
+	}
+	return best !== "" ? best : (r.title ?? "");
+}
+
+function tokens(s: string): Set<string> {
+	return new Set(
+		s
+			.toLowerCase()
+			.replace(/[^\p{L}\p{N}\s]/gu, " ")
+			.split(/\s+/)
+			.filter((t) => t.length > 0),
+	);
+}
+
+/**
+ * Token-set OVERLAP COEFFICIENT (|A∩B| / min|A|,|B|), not Jaccard: duplicated
+ * memories here typically differ mainly by length (a note vs the doc it
+ * quotes), and containment must read as duplication — 10 tokens fully inside
+ * 40 scores 1.0 here but only 0.25 under Jaccard. Dependency-free and linear;
+ * this runs synchronously in the ranking hot path.
+ */
+export function nearDuplicate(a: string, b: string, threshold: number): boolean {
+	if (threshold <= 0) return false;
+	const ta = tokens(a);
+	const tb = tokens(b);
+	const min = Math.min(ta.size, tb.size);
+	if (min === 0) return false;
+	// Tiny keys (short titles, 2-3 common words) make overlap-coefficient
+	// trigger-happy; require exact token-set equality below 5 tokens.
+	if (min < 5) {
+		if (ta.size !== tb.size) return false;
+		for (const t of ta) if (!tb.has(t)) return false;
+		return true;
+	}
+	let inter = 0;
+	for (const t of ta) if (tb.has(t)) inter++;
+	return inter / min >= threshold;
+}
+
 /** Why a candidate was cut from injection. Closed set — the tuning analysis
  * (proposal 02) and the chatter-quota instrumentation (proposal 03) both key
  * off it. */
-export type SelectionCut = "threshold" | "max-results" | "chatter-quota";
+export type SelectionCut =
+	| "threshold"
+	| "max-results"
+	| "elbow"
+	| "near-duplicate"
+	| "chatter-quota";
 
 /** Selected entries carry `cut: null`; cut entries carry the binding reason.
  * Discriminated on `selected` so a cut entry can never lack a reason. */
@@ -235,10 +337,24 @@ export function explainSelection(
 	maxResults: number,
 	threshold: number,
 	chatterQuota: number,
+	dedupThreshold = 0,
+	elbow?: ElbowOptions,
 ): SelectionExplained[] {
 	const out: SelectionExplained[] = [];
+	// Dedup state is exactly "what was accepted": only SELECTED results record
+	// keys (and only they consume quota), so a skipped candidate — whatever cut
+	// it — can never shadow later different-kind content sharing its text, and
+	// a diversity-skipped chatter echo never burns a quota slot (proposal 09's
+	// double-count invariant).
+	const keys: string[] = [];
 	let chatter = 0;
 	let kept = 0;
+	// Elbow bookkeeping: gaps between consecutive ACCEPTED results only —
+	// threshold/quota/dup-skipped rows widen the observed gap on purpose (the
+	// drop that matters is between results that could actually be injected).
+	let gapSum = 0;
+	let lastAccepted = 0;
+	let elbowFired = false;
 	for (const r of ranked) {
 		if (r._composite < threshold) {
 			out.push({ result: r, selected: false, cut: "threshold" });
@@ -248,12 +364,37 @@ export function explainSelection(
 			out.push({ result: r, selected: false, cut: "max-results" });
 			continue;
 		}
+		// Cliff = outlier vs the decline so far AND material in absolute terms;
+		// the two-part test keeps flat lists (tiny meanGap) and steady declines
+		// (every gap "big") from tripping it. Gated on the minResults floor, so
+		// a huge gap right after result #1 is never even examined — the elbow
+		// can only ever cut EARLIER than maxResults, never below the floor.
+		if (!elbowFired && elbow?.enabled && kept >= Math.max(2, elbow.minResults)) {
+			const gap = lastAccepted - r._composite;
+			if (gap >= elbow.minGap && gap >= elbow.gapRatio * (gapSum / (kept - 1)))
+				elbowFired = true;
+		}
+		if (elbowFired) {
+			out.push({ result: r, selected: false, cut: "elbow" });
+			continue;
+		}
+		// After max-results (a dup past a full cap was cut regardless — the cap
+		// was binding), before chatter-quota (a dup echo injects nothing, so the
+		// quota was not the binding constraint and must not be charged).
+		const key = dedupKey(r);
+		if (keys.some((k) => nearDuplicate(k, key, dedupThreshold))) {
+			out.push({ result: r, selected: false, cut: "near-duplicate" });
+			continue;
+		}
 		if (r._kind === "chatter" && chatter >= chatterQuota) {
 			out.push({ result: r, selected: false, cut: "chatter-quota" });
 			continue;
 		}
 		if (r._kind === "chatter") chatter++;
+		if (kept > 0) gapSum += lastAccepted - r._composite;
+		lastAccepted = r._composite;
 		kept++;
+		keys.push(key);
 		out.push({ result: r, selected: true, cut: null });
 	}
 	return out;
@@ -276,8 +417,10 @@ export function selectRanked(
 	maxResults: number,
 	threshold: number,
 	chatterQuota: number,
+	dedupThreshold = 0,
+	elbow?: ElbowOptions,
 ): RankedResult[] {
-	return explainSelection(ranked, maxResults, threshold, chatterQuota)
+	return explainSelection(ranked, maxResults, threshold, chatterQuota, dedupThreshold, elbow)
 		.filter((e) => e.selected)
 		.map((e) => e.result);
 }

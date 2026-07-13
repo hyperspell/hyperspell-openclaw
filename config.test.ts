@@ -452,3 +452,57 @@ test("parseConfig — coverageLog is an accepted key and opts in explicitly", ()
   const cfg = parseConfig({ ...base, coverageLog: true })
   assert.equal(cfg.coverageLog, true)
 })
+
+test("parseConfig — sourceWeights absent defaults to empty (neutral no-op)", () => {
+  const cfg = parseConfig({ ...base, ranking: {} })
+  assert.deepEqual(cfg.ranking.sourceWeights, {})
+})
+
+test("parseConfig — sourceWeights keys lowercased, non-numeric values skipped", () => {
+  const cfg = parseConfig({
+    ...base,
+    ranking: { sourceWeights: { Notion: 1.15, slack: "0.8", github: 1.0 } },
+  })
+  assert.deepEqual(cfg.ranking.sourceWeights, { notion: 1.15, github: 1.0 })
+})
+
+test("parseConfig — explicit non-positive sourceWeights throw with the sources-filter pointer", () => {
+  for (const bad of [0, -1]) {
+    assert.throws(
+      () => parseConfig({ ...base, ranking: { sourceWeights: { slack: bad } } }),
+      /must be a positive number.*sources.*filter/s,
+    )
+  }
+})
+
+test("parseConfig — dedupThreshold defaults to 0.8, clamps to [0,1]", () => {
+  assert.equal(parseConfig({ ...base, ranking: {} }).ranking.dedupThreshold, 0.8)
+  assert.equal(
+    parseConfig({ ...base, ranking: { dedupThreshold: 0 } }).ranking.dedupThreshold,
+    0,
+    "0 is a valid explicit off-switch",
+  )
+  assert.equal(parseConfig({ ...base, ranking: { dedupThreshold: 1.5 } }).ranking.dedupThreshold, 1)
+  assert.equal(parseConfig({ ...base, ranking: { dedupThreshold: -1 } }).ranking.dedupThreshold, 0)
+})
+
+test("parseConfig — elbow defaults off with documented parameters", () => {
+  const cfg = parseConfig({ ...base, ranking: {} })
+  assert.deepEqual(cfg.ranking.elbow, {
+    enabled: false,
+    minResults: 3,
+    gapRatio: 2.5,
+    minGap: 0.05,
+  })
+})
+
+test("parseConfig — elbow overrides respected; minResults clamps to >= 2, gapRatio to >= 1", () => {
+  const cfg = parseConfig({
+    ...base,
+    ranking: { elbow: { enabled: true, minResults: 1, gapRatio: 0.5, minGap: 0.08 } },
+  })
+  assert.equal(cfg.ranking.elbow.enabled, true)
+  assert.equal(cfg.ranking.elbow.minResults, 2, "one gap must exist before meanGap is defined")
+  assert.equal(cfg.ranking.elbow.gapRatio, 1)
+  assert.equal(cfg.ranking.elbow.minGap, 0.08)
+})
