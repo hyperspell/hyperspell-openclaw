@@ -367,6 +367,7 @@ async function runSetup(): Promise<void> {
         maxResults: 10,
         relevanceThreshold: 0.6,
         ranking: DEFAULT_RANKING,
+        coverageLog: false,
         debug: false,
         knowledgeGraph: { enabled: false, scanIntervalMinutes: 60, batchSize: 20 },
         startupOrientation: {

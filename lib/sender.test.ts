@@ -33,6 +33,7 @@ function cfg(overrides: Partial<HyperspellConfig["multiUser"]> = {}): Hyperspell
     maxResults: 5,
     relevanceThreshold: 0.6,
     ranking: DEFAULT_RANKING,
+    coverageLog: false,
     debug: false,
     knowledgeGraph: { enabled: false, scanIntervalMinutes: 60, batchSize: 20 },
     startupOrientation: {
@@ -278,6 +279,7 @@ function singleUserCfg(userId = "alinea"): HyperspellConfig {
     maxResults: 5,
     relevanceThreshold: 0.6,
     ranking: DEFAULT_RANKING,
+    coverageLog: false,
     debug: false,
     knowledgeGraph: { enabled: false, scanIntervalMinutes: 60, batchSize: 20 },
     startupOrientation: {

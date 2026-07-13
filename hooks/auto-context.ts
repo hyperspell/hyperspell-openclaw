@@ -15,6 +15,10 @@ import {
   rerank,
   type SelectionExplained,
 } from "../lib/ranking.ts"
+import {
+  type CoverageLane,
+  recordCoverageEvent,
+} from "../lib/coverage-log.ts"
 import { classifySearchError, logSearchError } from "../lib/search-error.ts"
 import { resolveCurrentSessionId } from "../lib/session.ts"
 import { recordSender, senderIdFromCtx } from "../lib/speaker-tracker.ts"
@@ -208,9 +212,16 @@ export function dropCurrentSession(
   return kept
 }
 
+/** Highest raw relevance among candidates — `topScore 0.54` vs `threshold 0.6`
+ * is a ranking near-miss; `0.12` means the vault has nothing close (capture). */
+function topScoreOf(results: SearchResult[]): number | null {
+  return results.length ? Math.max(...results.map((r) => r.score ?? 0)) : null
+}
+
 export function buildAutoContextHandler(
   client: HyperspellClient,
   cfg: HyperspellConfig,
+  opts?: { stateRoot?: string },
 ) {
   return async (
     event: Record<string, unknown>,
@@ -231,7 +242,7 @@ export function buildAutoContextHandler(
     // Multi-user path
     if (cfg.multiUser) {
       const resolved = resolveUser(ctx, cfg)
-      return multiUserSearch(client, cfg, prompt, resolved, currentSessionId)
+      return multiUserSearch(client, cfg, prompt, resolved, currentSessionId, opts?.stateRoot)
     }
 
     // Single-user path — preserves main's highlights + threshold behavior
@@ -244,10 +255,13 @@ export function buildAutoContextHandler(
       const limit = ranking.enabled
         ? cfg.maxResults * ranking.candidateMultiplier
         : cfg.maxResults
-      const results = dropCurrentSession(
-        await client.search(prompt, { limit, filter: excludeFilterFor(cfg) }),
-        currentSessionId,
-      )
+      // Kept as two steps so the coverage event below can report the pre-drop
+      // fetch count (a session-echo-dominated pool must be visible as such).
+      const rawResults = await client.search(prompt, {
+        limit,
+        filter: excludeFilterFor(cfg),
+      })
+      const results = dropCurrentSession(rawResults, currentSessionId)
 
       let formatted: string | null
       if (ranking.enabled) {
@@ -312,6 +326,26 @@ export function buildAutoContextHandler(
       // every-turn banner (which reads as framing and trains search-as-ritual).
       if (!formatted) {
         log.debug("auto-context: no relevant memories found")
+        // Coverage signal (proposal 15): search SUCCEEDED but injected nothing —
+        // durably distinguish "never captured" (empty) from "captured but ranked
+        // out" (below_threshold). Thrown searches never reach here (the catch
+        // below owns them), so availability blips can't pollute the log.
+        if (cfg.coverageLog) {
+          recordCoverageEvent(
+            {
+              outcome: results.length > 0 ? "below_threshold" : "empty",
+              prompt,
+              fetched: rawResults.length,
+              candidates: results.length,
+              droppedCurrentSession: rawResults.length - results.length,
+              topScore: topScoreOf(results),
+              threshold: cfg.relevanceThreshold,
+              ranking: ranking.enabled,
+              sessionId: currentSessionId,
+            },
+            opts?.stateRoot,
+          )
+        }
         return
       }
       return { prependContext: wrapContext(formatted) }
@@ -336,6 +370,7 @@ async function multiUserSearch(
   prompt: string,
   resolved: ResolvedUser | undefined,
   currentSessionId: string | undefined,
+  stateRoot?: string,
 ) {
   const multiUser = cfg.multiUser!
   const isKnownSender = !!resolved?.resolved
@@ -385,10 +420,19 @@ async function multiUserSearch(
   let idx = 0
   let personalResults: SearchResult[] = []
   let sharedResults: SearchResult[] = []
+  // Per-lane fulfillment + pre-drop counts feed the coverage event below: a
+  // lane that REJECTED must never be recorded as "zero candidates" (#39's
+  // unavailable-is-not-empty distinction, kept intact in the log schema).
+  let personalOk = false
+  let sharedOk = false
+  let rawPersonalCount = 0
+  let rawSharedCount = 0
 
   if (personalSearch) {
     const r = settled[idx++]
     if (r.status === "fulfilled") {
+      personalOk = true
+      rawPersonalCount = r.value.length
       personalResults = dropCurrentSession(r.value, currentSessionId)
     } else {
       logSearchError(
@@ -402,6 +446,8 @@ async function multiUserSearch(
   if (sharedSearch) {
     const r = settled[idx++]
     if (r.status === "fulfilled") {
+      sharedOk = true
+      rawSharedCount = r.value.length
       sharedResults = dropCurrentSession(r.value, currentSessionId)
     } else {
       logSearchError(
@@ -459,6 +505,56 @@ async function multiUserSearch(
 
   if (!haveMemorySections) {
     log.debug("auto-context: no relevant memories found")
+    // Coverage signal (proposal 15): one event per turn (not per lane), with
+    // per-lane detail so "personal lane was down" is never misread as
+    // "personal memory is empty". Written only when at least one lane
+    // fulfilled — every-lane-failed is an availability event (#39), already
+    // logged by logSearchError above, and "unknown" is not "zero".
+    if (cfg.coverageLog) {
+      const lanes: CoverageLane[] = []
+      if (personalSearch)
+        lanes.push(
+          personalOk
+            ? {
+                lane: "personal",
+                status: "ok",
+                candidates: personalResults.length,
+                topScore: topScoreOf(personalResults),
+              }
+            : { lane: "personal", status: "error" },
+        )
+      if (sharedSearch)
+        lanes.push(
+          sharedOk
+            ? {
+                lane: "shared",
+                status: "ok",
+                candidates: sharedResults.length,
+                topScore: topScoreOf(sharedResults),
+              }
+            : { lane: "shared", status: "error" },
+        )
+      if (lanes.some((l) => l.status === "ok")) {
+        const candidates = personalResults.length + sharedResults.length
+        const fetched = rawPersonalCount + rawSharedCount
+        recordCoverageEvent(
+          {
+            outcome: candidates > 0 ? "below_threshold" : "empty",
+            prompt,
+            fetched,
+            candidates,
+            droppedCurrentSession: fetched - candidates,
+            topScore: topScoreOf([...personalResults, ...sharedResults]),
+            threshold: cfg.relevanceThreshold,
+            ranking: cfg.ranking.enabled,
+            sessionId: currentSessionId,
+            userId: resolved?.userId,
+            lanes,
+          },
+          stateRoot,
+        )
+      }
+    }
     if (isKnownSender && resolved) {
       const contextLine = resolved.context ? ` ${resolved.context}` : ""
       return {

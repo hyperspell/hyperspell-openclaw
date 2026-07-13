@@ -5,6 +5,7 @@ import path from "node:path"
 import { test } from "node:test"
 import type { HyperspellClient, SearchResult } from "../client.ts"
 import type { HyperspellConfig } from "../config.ts"
+import { COVERAGE_LOG_NAME } from "../lib/coverage-log.ts"
 import { DEFAULT_RANKING } from "../lib/ranking.ts"
 import { initLogger } from "../logger.ts"
 import { buildAutoContextHandler, dropCurrentSession } from "./auto-context.ts"
@@ -84,6 +85,7 @@ function makeCfg(overrides?: Partial<HyperspellConfig>): HyperspellConfig {
     maxResults: 10,
     relevanceThreshold: 0.6,
     ranking: DEFAULT_RANKING,
+    coverageLog: false,
     debug: false,
     knowledgeGraph: { enabled: false, scanIntervalMinutes: 60, batchSize: 20 },
     ...overrides,
@@ -295,4 +297,230 @@ test("auto-context — debug lines carry cut reasons and the injected composite 
     injectLine.includes(`{"curated":1,"chatter":2} from 5 candidates (chatter cap 2, composite 0.65–0.90)`),
     `tally line extended with the injected composite range: ${injectLine}`,
   )
+})
+
+// ---------------------------------------------------------------------------
+// Zero-result coverage log (proposal 15): a SUCCESSFUL search that injects
+// nothing appends one local JSONL event distinguishing "never captured"
+// (empty) from "captured but ranked out" (below_threshold). OFF by default —
+// events carry prompt text, so nothing reaches disk without explicit opt-in —
+// and failed searches never produce events (#39: unavailable is not empty).
+// ---------------------------------------------------------------------------
+
+function mkStateRoot(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "hs-coverage-"))
+}
+
+function makeSearchClient(results: SearchResult[] | Error): HyperspellClient {
+  return {
+    async search() {
+      if (results instanceof Error) throw results
+      return results
+    },
+  } as unknown as HyperspellClient
+}
+
+function readCoverage(stateRoot: string) {
+  return fs
+    .readFileSync(path.join(stateRoot, COVERAGE_LOG_NAME), "utf-8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l))
+}
+
+const COVERAGE_PROMPT = "what did we decide about the staging DB migration?"
+
+test("auto-context coverage — zero-result search writes an 'empty' event", async () => {
+  const stateRoot = mkStateRoot()
+  const handler = buildAutoContextHandler(
+    makeSearchClient([]),
+    makeCfg({ coverageLog: true }),
+    { stateRoot },
+  )
+  const out = await handler({ prompt: COVERAGE_PROMPT }, {})
+  assert.equal(out, undefined, "still injects nothing")
+
+  const entries = readCoverage(stateRoot)
+  assert.equal(entries.length, 1)
+  const entry = entries[0]
+  assert.equal(entry.v, 1)
+  assert.equal(entry.outcome, "empty")
+  assert.equal(entry.fetched, 0)
+  assert.equal(entry.candidates, 0)
+  assert.equal(entry.droppedCurrentSession, 0)
+  assert.equal(entry.topScore, null)
+  assert.equal(entry.threshold, 0.6)
+  assert.equal(entry.ranking, true)
+  assert.match(entry.prompt, /staging DB migration/)
+  fs.rmSync(stateRoot, { recursive: true, force: true })
+})
+
+test("auto-context coverage — candidates below threshold write a 'below_threshold' event", async () => {
+  const stateRoot = mkStateRoot()
+  const low = searchResult({
+    resourceId: "mem-low",
+    title: "Low Note",
+    score: 0.2,
+    highlights: [{ id: "h1", text: "quiet note", score: 0.2 }],
+  })
+  const handler = buildAutoContextHandler(
+    makeSearchClient([low]),
+    makeCfg({ coverageLog: true }),
+    { stateRoot },
+  )
+  const out = await handler({ prompt: COVERAGE_PROMPT }, {})
+  assert.equal(out, undefined)
+
+  const [entry] = readCoverage(stateRoot)
+  assert.equal(entry.outcome, "below_threshold")
+  assert.equal(entry.fetched, 1)
+  assert.equal(entry.candidates, 1)
+  assert.equal(entry.topScore, 0.2)
+  assert.equal(entry.threshold, 0.6)
+  fs.rmSync(stateRoot, { recursive: true, force: true })
+})
+
+test("auto-context coverage — OFF by default: no file even on a zero-result turn", async () => {
+  const stateRoot = mkStateRoot()
+  const handler = buildAutoContextHandler(makeSearchClient([]), makeCfg(), {
+    stateRoot,
+  })
+  await handler({ prompt: COVERAGE_PROMPT }, {})
+  assert.ok(
+    !fs.existsSync(path.join(stateRoot, COVERAGE_LOG_NAME)),
+    "coverageLog defaults false — prompts never reach disk without opt-in",
+  )
+  fs.rmSync(stateRoot, { recursive: true, force: true })
+})
+
+test("auto-context coverage — an injecting turn writes no event", async () => {
+  const stateRoot = mkStateRoot()
+  const handler = buildAutoContextHandler(
+    makeSearchClient(fixturePool()),
+    makeCfg({ coverageLog: true }),
+    { stateRoot },
+  )
+  const out = (await handler({ prompt: COVERAGE_PROMPT }, {})) as
+    | { prependContext: string }
+    | undefined
+  assert.ok(out?.prependContext, "fixture pool injects")
+  assert.ok(!fs.existsSync(path.join(stateRoot, COVERAGE_LOG_NAME)))
+  fs.rmSync(stateRoot, { recursive: true, force: true })
+})
+
+test("auto-context coverage — a FAILED search writes no event (availability is not coverage)", async () => {
+  const stateRoot = mkStateRoot()
+  const handler = buildAutoContextHandler(
+    makeSearchClient(new Error("boom")),
+    makeCfg({ coverageLog: true }),
+    { stateRoot },
+  )
+  const out = await handler({ prompt: COVERAGE_PROMPT }, {})
+  assert.equal(out, undefined, "existing behavior: silent on failure")
+  assert.ok(!fs.existsSync(path.join(stateRoot, COVERAGE_LOG_NAME)))
+  fs.rmSync(stateRoot, { recursive: true, force: true })
+})
+
+test("auto-context coverage — unwritable stateRoot degrades safely (turn still resolves)", async () => {
+  const stateRoot = mkStateRoot()
+  const notADir = path.join(stateRoot, "not-a-dir")
+  fs.writeFileSync(notADir, "plain file")
+  const handler = buildAutoContextHandler(
+    makeSearchClient([]),
+    makeCfg({ coverageLog: true }),
+    { stateRoot: notADir },
+  )
+  const out = await handler({ prompt: COVERAGE_PROMPT }, {})
+  assert.equal(out, undefined, "coverage write failure never throws into the turn")
+  fs.rmSync(stateRoot, { recursive: true, force: true })
+})
+
+// --- multi-user parity -------------------------------------------------------
+
+const MULTI_USER = {
+  senderMap: { dave: { userId: "u-dave", name: "Dave" } },
+  sharedUserId: "shared",
+  includeSharedInSearch: true,
+} as HyperspellConfig["multiUser"]
+
+function makeLaneClient(
+  personal: SearchResult[] | Error,
+  shared: SearchResult[] | Error,
+): HyperspellClient {
+  return {
+    async search(_prompt: string, options?: { userId?: string }) {
+      const outcome = options?.userId === "shared" ? shared : personal
+      if (outcome instanceof Error) throw outcome
+      return outcome
+    },
+  } as unknown as HyperspellClient
+}
+
+test("auto-context coverage — multi-user: failed lane recorded as error, not as empty", async () => {
+  const stateRoot = mkStateRoot()
+  const handler = buildAutoContextHandler(
+    makeLaneClient(new Error("personal down"), []),
+    makeCfg({ coverageLog: true, multiUser: MULTI_USER }),
+    { stateRoot },
+  )
+  const out = (await handler({ prompt: COVERAGE_PROMPT }, { senderId: "dave" })) as
+    | { prependContext: string }
+    | undefined
+  assert.ok(
+    out?.prependContext.includes("You are speaking with Dave"),
+    "identity preamble still injected (identity, not memory)",
+  )
+
+  const entries = readCoverage(stateRoot)
+  assert.equal(entries.length, 1, "one event per turn, not per lane")
+  const entry = entries[0]
+  assert.equal(entry.outcome, "empty")
+  assert.equal(entry.userId, "u-dave")
+  assert.deepEqual(entry.lanes, [
+    { lane: "personal", status: "error" },
+    { lane: "shared", status: "ok", candidates: 0, topScore: null },
+  ])
+  fs.rmSync(stateRoot, { recursive: true, force: true })
+})
+
+test("auto-context coverage — multi-user: every lane failing writes no event", async () => {
+  const stateRoot = mkStateRoot()
+  const handler = buildAutoContextHandler(
+    makeLaneClient(new Error("down"), new Error("down")),
+    makeCfg({ coverageLog: true, multiUser: MULTI_USER }),
+    { stateRoot },
+  )
+  await handler({ prompt: COVERAGE_PROMPT }, { senderId: "dave" })
+  assert.ok(
+    !fs.existsSync(path.join(stateRoot, COVERAGE_LOG_NAME)),
+    "all-lanes-failed is an availability event (#39), never coverage",
+  )
+  fs.rmSync(stateRoot, { recursive: true, force: true })
+})
+
+test("auto-context coverage — multi-user: below_threshold when a fulfilled lane had candidates", async () => {
+  const stateRoot = mkStateRoot()
+  const low = searchResult({
+    resourceId: "mem-low",
+    title: "Low Note",
+    score: 0.2,
+    highlights: [{ id: "h1", text: "quiet note", score: 0.2 }],
+  })
+  const handler = buildAutoContextHandler(
+    makeLaneClient([low], []),
+    makeCfg({ coverageLog: true, multiUser: MULTI_USER }),
+    { stateRoot },
+  )
+  await handler({ prompt: COVERAGE_PROMPT }, { senderId: "dave" })
+
+  const [entry] = readCoverage(stateRoot)
+  assert.equal(entry.outcome, "below_threshold")
+  assert.equal(entry.fetched, 1)
+  assert.equal(entry.candidates, 1)
+  assert.equal(entry.topScore, 0.2)
+  assert.deepEqual(entry.lanes, [
+    { lane: "personal", status: "ok", candidates: 1, topScore: 0.2 },
+    { lane: "shared", status: "ok", candidates: 0, topScore: null },
+  ])
+  fs.rmSync(stateRoot, { recursive: true, force: true })
 })

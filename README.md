@@ -149,6 +149,7 @@ files back to Hyperspell.
 | `knowledgeGraph.enabled` | boolean | `false` | Memory Network: extract entities (people, projects, organizations, topics) from memories into `memory/` markdown files. See [Memory Network](#memory-network). |
 | `knowledgeGraph.scanIntervalMinutes` | number | `60` | Extraction cadence the setup wizard bakes into the cron job it creates. The cron job is the runtime source of truth — to change cadence after setup, edit the cron job (and keep this field in sync). |
 | `knowledgeGraph.batchSize` | number | `20` | Memories per extraction scan batch |
+| `coverageLog` | boolean | `false` | **Opt-in.** Append a local-only JSONL event whenever auto-context finds no relevant memories, so capture gaps can be told apart from ranking misses. Events include prompt text — see [Coverage log](#coverage-log). |
 | `debug` | boolean | `false` | Enable diagnostic logging. One-line diagnostics (auto-context ranked/cut/injection summaries, orientation and emotional-context injection counts) are emitted at **info** level, so they appear in `gateway.log` at default host log levels — no host `logging.level` change needed. Verbose output (per-request/response dumps, per-candidate score lines) stays at debug level. |
 | `dreaming.enabled` | boolean | `false` | Allow `memory-core` to sidecar-load so Dreaming can consolidate local session transcripts into `workspace/MEMORY.md`. See [Running alongside Dreaming](#running-alongside-dreaming). |
 
@@ -343,6 +344,19 @@ Full knobs and defaults:
   "recencyCuratedFactor": 0.5 // kept memory (curated/story) ages at this fraction of the rate
 }
 ```
+
+### Coverage log
+
+No ranking tweak can surface a memory that was never captured — and by default nothing distinguishes "ranking failed" from "it was never stored." With `coverageLog: true`, every auto-context turn that injects **no** memory sections appends one line to `<workspaceDir>/.hyperspell-coverage.jsonl`:
+
+- `outcome: "empty"` — the search succeeded but returned zero candidates (a capture question: was this ever stored?)
+- `outcome: "below_threshold"` — candidates existed but none cleared `relevanceThreshold`; `topScore` vs `threshold` says how near the miss was (a ranking question)
+
+Failed searches never produce events — backend-unavailable is not "no memories." In multi-user mode there is one event per turn with per-lane detail, and a lane whose search failed is recorded as `status: "error"`, never as zero candidates.
+
+**Local-only guarantee:** the log is written only to the workspace directory and is never sent to Hyperspell or anywhere remote. Because each event carries the triggering prompt (truncated to 500 chars), the feature is **off by default** — prompt text reaches disk only if you explicitly opt in. The file is capped at 5 MB with one `.old` rotation generation (~10 MB total), so content ages out instead of accumulating.
+
+Review with `jq`, e.g.: `jq -r '[.ts, .outcome, .topScore, .prompt] | @tsv' ~/.openclaw/workspace/.hyperspell-coverage.jsonl` — after a week or two of labeling (capture gap / ranking near-miss / correct absence), the tallies say whether the next investment belongs in capture or ranking. Delete the file when done.
 
 ### `excludeChannels` is forward-only
 

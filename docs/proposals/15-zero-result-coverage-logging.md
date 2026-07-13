@@ -305,6 +305,8 @@ Run the plugin normally for **two weeks** (alinea is the natural venue — verif
 
 ## 6. Rollout
 
+> **Decision at implementation time (locked, maintainer):** shipped as **default OFF** — `coverageLog: false`. Prompt text must not be written to disk unless explicitly enabled in config, matching the stance of the `HYPERSPELL_SCORE_LOG` instrumentation (proposal 02). The paragraph below records the proposal's original always-on argument; the observation-window tradeoff it describes is accepted: an operator turns `coverageLog: true` on for a review window, then reads the log.
+
 **Always-on by default — not gated behind `cfg.debug`.** Debug-gating would be self-defeating: `cfg.debug` is off during exactly the long, boring, production-like periods this log exists to observe, and coverage gaps are by nature discovered *after* the fact — you can't retroactively enable logging for last week. The event is cheap, local, and fires only on no-injection turns, so always-on costs effectively nothing. Provide an explicit opt-out for the privacy-sensitive: a `coverageLog: boolean` config key (default `true`) in `config.ts`, checked at the top of `recordCoverageEvent`'s call sites — mirroring how other feature flags in `parseConfig` default (`config.ts:576` area). Defaults: path `<workspaceDir>/.hyperspell-coverage.jsonl`, 500-char prompt truncation, 5 MB cap with one `.old` generation. README gets a short "Coverage log" section stating the local-only guarantee, the location, and the opt-out.
 
 ## 7. Effort estimate

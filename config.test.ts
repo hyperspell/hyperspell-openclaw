@@ -442,3 +442,13 @@ test("parseConfig — knowledgeGraph accepts overrides", () => {
   // Unspecified fields keep their defaults.
   assert.equal(cfg.knowledgeGraph.scanIntervalMinutes, 60)
 })
+
+test("parseConfig — coverageLog defaults OFF (prompts must not reach disk without opt-in)", () => {
+  const cfg = parseConfig(base)
+  assert.equal(cfg.coverageLog, false)
+})
+
+test("parseConfig — coverageLog is an accepted key and opts in explicitly", () => {
+  const cfg = parseConfig({ ...base, coverageLog: true })
+  assert.equal(cfg.coverageLog, true)
+})
