@@ -12,6 +12,13 @@ interface MarkdownFile {
   title: string
   content: string
   hyperspellId: string | null
+  /**
+   * True when the frontmatter carries `graph_entity: true` (Memory Network
+   * entity files). Must be propagated into every synced memory's metadata —
+   * it is what lets `scanMemories` skip entity files instead of re-scanning
+   * the extractor's own output as new source memories (self-scan loop).
+   */
+  graphEntity: boolean
 }
 
 interface MarkdownSection {
@@ -93,6 +100,7 @@ function readMarkdownFile(filePath: string): MarkdownFile | null {
       title,
       content: body.trim(),
       hyperspellId: frontmatter.hyperspell_id || null,
+      graphEntity: frontmatter.graph_entity === "true",
     }
   } catch (err) {
     log.error(`Failed to read markdown file: ${filePath}`, err)
@@ -467,6 +475,9 @@ export async function syncMarkdownFile(
         // openclaw_source stays the pipeline discriminator that retrieval
         // filters and startup-orientation dedupe depend on.
         ...(options?.syncSource ? { openclaw_sync_source: options.syncSource } : {}),
+        // Honor the extraction prompt's contract: entity files synced back
+        // to Hyperspell must be skippable by the Memory Network scan.
+        ...(file.graphEntity ? { graph_entity: "true" } : {}),
       },
       userId: options?.userId,
     })
@@ -592,6 +603,10 @@ export async function syncMarkdownFileSectionized(
               // openclaw_source stays the pipeline discriminator that retrieval
               // filters and startup-orientation dedupe depend on.
               ...(options?.syncSource ? { openclaw_sync_source: options.syncSource } : {}),
+              // Honor the extraction prompt's contract: entity files synced
+              // back to Hyperspell must be skippable by the Memory Network
+              // scan, or the extractor is re-fed its own output every cycle.
+              ...(file.graphEntity ? { graph_entity: "true" } : {}),
             },
             userId: options?.userId,
           })
