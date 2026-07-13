@@ -17,9 +17,19 @@ type State = {
 	sessionId: string | null;
 	relationshipId: string | null;
 };
+type AddedMemory = {
+	text: string;
+	options?: {
+		title?: string;
+		collection?: string;
+		metadata?: Record<string, string | number | boolean>;
+	};
+};
 type FakeClient = {
 	getEmotionalState: (relId?: string) => Promise<State | null>;
 	getRecentEmotionalStates: (relId?: string, limit?: number) => Promise<State[] | null>;
+	addMemory: (text: string, options?: AddedMemory["options"]) => Promise<{ resourceId: string }>;
+	added: AddedMemory[];
 	callCount: number;
 };
 
@@ -36,6 +46,7 @@ function makeClient(
 ): { client: FakeClient } {
 	const client: FakeClient = {
 		callCount: 0,
+		added: [],
 		// Default mock: /recent unavailable (null) → handler falls back to getEmotionalState.
 		async getRecentEmotionalStates() {
 			return null;
@@ -43,6 +54,11 @@ function makeClient(
 		async getEmotionalState() {
 			client.callCount++;
 			return summary === null ? null : st(summary);
+		},
+		// Records recordMoodRoll's fire-and-forget observability write (#71).
+		async addMemory(text, options) {
+			client.added.push({ text, options });
+			return { resourceId: `mem-${client.added.length}` };
 		},
 	};
 	return { client };
@@ -52,9 +68,10 @@ function makeClient(
 function makeArcClient(states: State[] | null): {
 	client: FakeClient & { recentCalls: number };
 } {
-	const client = {
+	const client: FakeClient & { recentCalls: number } = {
 		callCount: 0,
 		recentCalls: 0,
+		added: [],
 		async getRecentEmotionalStates() {
 			client.recentCalls++;
 			return states;
@@ -62,6 +79,10 @@ function makeArcClient(states: State[] | null): {
 		async getEmotionalState() {
 			client.callCount++;
 			return null;
+		},
+		async addMemory(text, options) {
+			client.added.push({ text, options });
+			return { resourceId: `mem-${client.added.length}` };
 		},
 	};
 	return { client };
@@ -542,6 +563,9 @@ test("mood weather — a still-extracting turn does not consume the roll", async
 				? st("user: hi\nassistant: hey")
 				: st("Settled and warm.");
 		},
+		async addMemory() {
+			return { resourceId: "mem-x" };
+		},
 	};
 	const handler = buildEmotionalStateFetchHandler(
 		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
@@ -559,4 +583,111 @@ test("mood weather — a still-extracting turn does not consume the roll", async
 		String((second as { prependContext?: string })?.prependContext ?? ""),
 		/Settled and warm/,
 	);
+});
+
+// ---- mood weather: roll observability record (issue #71) --------------------
+
+/** recordMoodRoll is fire-and-forget (un-awaited) — flush microtasks/immediates before asserting. */
+const flushAsyncWrites = () => new Promise((r) => setImmediate(r));
+
+const MOOD_IDS = MOOD_TABLE.map((m) => m.id);
+
+test("mood weather observability — a landed roll writes exactly one tagged record", async () => {
+	const { client } = makeClient("Warm and steady.");
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-obs-write"),
+		{ now: () => 1_000_000, rng: () => 0 },
+	);
+
+	const first = await handler({}, { sessionKey: "obs-s1" });
+	assert.ok(hasMood(first), "chance=1 → weather lands");
+	await flushAsyncWrites();
+
+	assert.equal(client.added.length, 1, "exactly one observability record per roll");
+	const rec = client.added[0];
+	assert.equal(rec.options?.collection, "mood-weather");
+	assert.equal(rec.options?.metadata?.openclaw_source, "mood_weather");
+	assert.ok(
+		MOOD_IDS.includes(String(rec.options?.metadata?.mood)),
+		"metadata.mood is a valid mood id",
+	);
+	const rolledAt = String(rec.options?.metadata?.rolled_at);
+	assert.ok(!Number.isNaN(new Date(rolledAt).getTime()), "rolled_at is a valid timestamp");
+	assert.equal(rec.options?.metadata?.session, "obs-s1");
+	assert.equal(rec.options?.metadata?.relationship_id, "rel-obs-write");
+
+	const second = await handler({}, { sessionKey: "obs-s1" });
+	assert.equal(second, undefined, "inject-once cache holds");
+	await flushAsyncWrites();
+	assert.equal(client.added.length, 1, "no second record for the same session");
+});
+
+test("mood weather observability — post-compaction replay does NOT record a second roll", async () => {
+	// The recordMoodRoll call lives inside the !priorMood guard: a replay of an
+	// already-rolled mood is not a new roll and must not double-log.
+	const { client } = makeClient("Warm and steady.");
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-obs-replay"),
+		{ now: () => 1_000_000, rng: () => 0 },
+	);
+	const onCompaction = buildEmotionalStateCompactionHandler();
+	const ctx = { sessionKey: "obs-replay" };
+
+	const first = await handler({}, ctx);
+	assert.ok(hasMood(first));
+	await onCompaction({}, ctx);
+	const replay = await handler({}, ctx);
+	assert.ok(hasMood(replay), "replay re-injects the same mood");
+	await flushAsyncWrites();
+	assert.equal(client.added.length, 1, "one roll, one record — replay does not double-log");
+});
+
+test("mood weather observability — a failing record write never breaks the session", async () => {
+	const { client } = makeClient("Warm and steady.");
+	client.addMemory = async () => {
+		throw new Error("backend down");
+	};
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-obs-fail"),
+		{ now: () => 1_000_000, rng: () => 0 },
+	);
+
+	const out = await handler({}, { sessionKey: "obs-fail" });
+	assert.ok(hasMood(out), "injection succeeds even though the record write rejects");
+	// Flush the rejected write — recordMoodRoll's .catch must swallow it (an
+	// unhandled rejection would fail the test run).
+	await flushAsyncWrites();
+});
+
+test("mood weather observability — a discarded roll is not recorded", async () => {
+	// Only raw-transcript placeholders → the still-extracting early return fires
+	// BEFORE the roll, so nothing lands and nothing may be written.
+	const { client } = makeArcClient([st("user: hi\nassistant: hey")]);
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-obs-discard"),
+		{ now: () => 1_000_000, rng: () => 0 },
+	);
+
+	const out = await handler({}, { sessionKey: "obs-discard" });
+	assert.equal(out, undefined, "still extracting — no injection");
+	await flushAsyncWrites();
+	assert.equal(client.added.length, 0, "no record for weather that never happened");
+});
+
+test("mood weather observability — chance 0 writes nothing", async () => {
+	const { client } = makeClient("Warm and steady.");
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-obs-zero", 0),
+		{ now: () => 1_000_000, rng: () => 0 },
+	);
+
+	const out = await handler({}, { sessionKey: "obs-zero" });
+	assert.ok(!hasMood(out), "no dice → no weather");
+	await flushAsyncWrites();
+	assert.equal(client.added.length, 0);
 });

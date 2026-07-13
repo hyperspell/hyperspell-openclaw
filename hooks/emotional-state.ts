@@ -5,7 +5,12 @@ import { resolveCurrentSessionId } from "../lib/session.ts";
 import { isMultiSpeaker } from "../lib/speaker-tracker.ts";
 import { log } from "../logger.ts";
 import { sanitizeTraceText } from "./auto-trace.ts";
-import { buildMoodWeatherContext, type MoodSpec, rollMood } from "./mood-weather.ts";
+import {
+	buildMoodWeatherContext,
+	type MoodSpec,
+	recordMoodRoll,
+	rollMood,
+} from "./mood-weather.ts";
 
 /** How many recent registers to surface as the "arc" at session start. */
 export const EMOTIONAL_ARC_LIMIT = 3;
@@ -259,12 +264,15 @@ export function buildEmotionalStateFetchHandler(
 				lastMoodRollAt.set(relId, now());
 				if (sessionKey) sessionMoods.set(sessionKey, mood);
 				log.info(`mood-weather: rolled "${mood.id}" this session`);
-				// Coordination with issue #71 (mood-weather observability): if #71's
-				// recordMoodRoll(client, mood, {...}) has landed, its call belongs
-				// HERE — inside this `!priorMood` guard — not on a bare `if (mood)`
-				// at the two return sites below. A priorMood replay (post-compaction
-				// re-injection of an already-rolled mood) is not a new roll; calling
-				// recordMoodRoll on replay would log the same event twice.
+				// Observability record (issue #71) — fire-and-forget, recall-excluded.
+				// Stays inside the !priorMood guard: a post-compaction replay of an
+				// already-rolled mood is NOT a new roll and must not double-log. Rolls
+				// only happen past the still-extracting early return above, so every
+				// recorded roll is one that actually lands in this session's context.
+				recordMoodRoll(client, mood, {
+					sessionKey,
+					relationshipId: cfg.relationshipId,
+				});
 			}
 			const moodBlock = mood ? buildMoodWeatherContext(mood) : "";
 

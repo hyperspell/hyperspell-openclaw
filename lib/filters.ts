@@ -8,7 +8,16 @@
  */
 
 /** Minimal slice of config the exclude logic needs (avoids a config-module cycle). */
-type ExcludeCfg = { autoTrace: { enabled: boolean } }
+type ExcludeCfg = {
+  autoTrace: { enabled: boolean }
+  emotionalContext: boolean
+  moodWeatherChance: number
+}
+
+/** Metadata tag on auto-trace session-end rows (see `sendTrace` in client.ts). */
+export const AGENT_END_SOURCE = "agent_end"
+/** Metadata tag on mood-weather roll records (see `recordMoodRoll` in hooks/mood-weather.ts). */
+export const MOOD_WEATHER_SOURCE = "mood_weather"
 
 /**
  * Memories produced by the auto-trace session-end hook are tagged in metadata
@@ -38,25 +47,46 @@ type ExcludeCfg = { autoTrace: { enabled: boolean } }
  * "openclaw_agent_end" — wrong on BOTH counts (the tag lives in metadata under
  * `openclaw_source`, value `"agent_end"`), so it silently matched nothing.
  */
-export const EXCLUDE_SESSION_END_FILTER: Record<string, unknown> = {
-  openclaw_source: { $ne: "agent_end" },
-}
 
 /**
  * The exclude clause to apply for a given config — or `undefined` to skip the
- * filter. `agent_end` rows are written ONLY by the auto-trace hook, so when
- * auto-trace is OFF there are none to hide and we skip the filter to avoid its
- * ~1s/search latency cost (pure overhead otherwise — verified live against an
- * auto-trace-off agent with zero `agent_end` rows).
+ * filter. Each excluded tag is gated on the feature that writes it, for
+ * PERFORMANCE, not correctness (see the header comment): with the feature off
+ * there are no tagged rows to hide, so the ~1s predicate would be pure latency.
  *
- * When auto-trace is ON we apply `{$ne:"agent_end"}`, which post-#1921 drops the
- * traces while KEEPING untagged hot-buffer rows — so that path is correct now
- * (the old #40 hot-row-drop is fixed by the backend, not by gating).
+ *  - `agent_end` rows are written ONLY by the auto-trace hook → gate on
+ *    `autoTrace.enabled` (verified live against an auto-trace-off agent with
+ *    zero `agent_end` rows).
+ *  - `mood_weather` rolls are recorded ONLY when the emotional-context handler
+ *    is registered AND the dice are live → gate on both flags.
+ *
+ * Shape: a single excluded value keeps the proven plain-`$ne` form (byte-
+ * identical to the shipped filter, and post-#1921 it drops the tag while
+ * KEEPING untagged hot-buffer rows). Two values use `$nin`.
+ *
+ * ⚠️ The `$nin` two-value shape has NOT been re-verified live post-#1921 (the
+ * pre-#1921 truth table showed `$nin` diverging from `$ne`). Owner's post-merge
+ * step: run `node docs/filter-dialect-test.mjs` — the `$nin[agent_end,mood_weather]`
+ * row must show U=Y, A=N, M=N. Fallback plan if it fails: try the
+ * `$and[$ne,$ne]` probe row; if that also fails, gate back to single-value
+ * `$ne` for the two common one-feature-on configs, log a warning when both
+ * features are enabled, and file a backend dialect follow-up
+ * (docs/hyperspell-backend-followups.md style) for the both-on combo.
  */
 export function excludeFilterFor(
   cfg: ExcludeCfg,
 ): Record<string, unknown> | undefined {
-  return cfg.autoTrace.enabled ? EXCLUDE_SESSION_END_FILTER : undefined
+  const excluded: string[] = []
+  if (cfg.autoTrace.enabled) excluded.push(AGENT_END_SOURCE)
+  // Mood rolls are recorded only when the emotional-context handler is
+  // registered AND the dice are live — same "no rows to hide → skip the
+  // ~1s predicate" gate as auto-trace.
+  if (cfg.emotionalContext && cfg.moodWeatherChance > 0) {
+    excluded.push(MOOD_WEATHER_SOURCE)
+  }
+  if (excluded.length === 0) return undefined
+  if (excluded.length === 1) return { openclaw_source: { $ne: excluded[0] } }
+  return { openclaw_source: { $nin: excluded } }
 }
 
 /**
