@@ -123,6 +123,13 @@ Matching uses the same semantics as the quarantine check itself: exact id or thr
 
 **Finding session ids for `--session`:** OpenClaw session keys embed the conversation id (`agent:<agentId>:<provider>:channel:<channelId>[...]` — the same format the plugin's quarantine matching parses). Look up the quarantined conversation's sessions in OpenClaw's session store and pass their session ids; each hot-buffer resource id equals its session id.
 
+### `openclaw openclaw-hyperspell network scan|complete|sync`
+
+Memory Network primitives, used by the extraction cron's isolated session (and handy for
+manual dry-runs — `scan` is read-only). `scan` lists unprocessed memories with content
+summaries, `complete --ids <ids>` marks them processed, `sync` pushes `memory/` entity
+files back to Hyperspell.
+
 ## Configuration Options
 
 | Option | Type | Default | Description |
@@ -139,6 +146,9 @@ Matching uses the same semantics as the quarantine check itself: exact id or thr
 | `ranking` | object | see below | Composite re-ranking of auto-context results — see [Composite ranking](#composite-ranking--surfacing-your-active-work) |
 | `ranking.storyTerms` | string[] | `[]` | **Off until you set it.** Words/phrases identifying your active creative work, so it outranks conversation chatter (matched at word boundaries, case-insensitive) |
 | `excludeChannels` | string[] | `[]` | Conversation/channel ids fully quarantined from memory: no context injection, no memory writes, no memory tools. Threads inherit. **Forward-only** — see [below](#excludechannels-is-forward-only). |
+| `knowledgeGraph.enabled` | boolean | `false` | Memory Network: extract entities (people, projects, organizations, topics) from memories into `memory/` markdown files. See [Memory Network](#memory-network). |
+| `knowledgeGraph.scanIntervalMinutes` | number | `60` | Extraction cadence the setup wizard bakes into the cron job it creates. The cron job is the runtime source of truth — to change cadence after setup, edit the cron job (and keep this field in sync). |
+| `knowledgeGraph.batchSize` | number | `20` | Memories per extraction scan batch |
 | `debug` | boolean | `false` | Enable verbose logging |
 | `dreaming.enabled` | boolean | `false` | Allow `memory-core` to sidecar-load so Dreaming can consolidate local session transcripts into `workspace/MEMORY.md`. See [Running alongside Dreaming](#running-alongside-dreaming). |
 
@@ -365,16 +375,84 @@ The purge command prints these standing limitations on every run.
 ### Other
 - `web_crawler` - Crawled web pages
 
-## Knowledge Graph
+## Memory Network
 
-The plugin can automatically build a local knowledge graph from your memories:
+The Memory Network (config key: `knowledgeGraph`) automatically builds a local knowledge
+graph from your memories. A periodic cron job runs in an isolated session and:
 
-1. **Scan** memories for entities (people, organizations, projects, topics)
-2. **Extract** structured information and relationships
-3. **Write** entity files to `memory/people/`, `memory/organizations/`, etc.
-4. **Link** entities via markdown relationship references
+1. **Scans** unprocessed memories (`hyperspell_network_scan` / `network scan`)
+2. **Extracts** people, projects, organizations, and topics with relationships
+3. **Writes** one markdown file per entity into `memory/people/`, `memory/projects/`,
+   `memory/organizations/`, `memory/topics/` (`hyperspell_network_write`)
+4. **Marks** the batch processed so it is never re-scanned (`hyperspell_network_complete`;
+   state lives in `memory/.network-state.json`)
+5. **Syncs** the entity files back to Hyperspell so they are searchable (`network sync`)
 
-Enable the graph tools by using `hyperspell_network_scan`, `hyperspell_network_write`, and `hyperspell_network_complete` in your agent workflows.
+If you also maintain a hand-written people/projects reference file, this feature
+automates most of that by hand-off — see
+[Migrating from a hand-maintained archive](docs/memory-network-migration.md) for a safe
+dry-run and comparison procedure before adopting it.
+
+### Enabling it
+
+The easiest path is the setup wizard, which flips the config, writes the extraction
+prompt to `<workspace>/HYPERSPELL-MEMORY-NETWORK.md`, and creates the extraction cron
+(interval from `knowledgeGraph.scanIntervalMinutes`, default 60 minutes):
+
+```bash
+openclaw openclaw-hyperspell setup   # answer "yes" at the Memory Network step
+```
+
+Or manually: set the plugin config and create the cron yourself:
+
+```json
+"knowledgeGraph": { "enabled": true }
+```
+
+```bash
+openclaw cron add --name "Hyperspell Memory Network" --every 60m --session isolated \
+  --message "Read the file at <workspace>/HYPERSPELL-MEMORY-NETWORK.md and follow the instructions inside it."
+```
+
+The `hyperspell_network_*` tools only register when `knowledgeGraph.enabled` is true.
+
+### What an extracted entity file looks like
+
+`memory/people/alice-chen.md`:
+
+```markdown
+---
+title: Alice Chen
+type: person
+graph_entity: true
+email: alice@hyperspell.com
+source_memories: {"slack":["C073WR69EPM"],"google_mail":["19bbe68026553623"]}
+relationships: ["works-at:organizations/hyperspell","leads:projects/memory-network"]
+last_extracted: 2026-07-07T12:00:00Z
+---
+# Alice Chen
+
+Engineering Manager at Hyperspell. Leads the Memory Network project.
+
+## Contact
+
+- Email: alice@hyperspell.com
+
+## Relationships
+
+- works-at: [hyperspell](../organizations/hyperspell.md)
+- leads: [memory network](../projects/memory-network.md)
+```
+
+Re-extraction **merges**: existing `source_memories`, `relationships`, and
+`hyperspell_id` are preserved and unioned, so files are safe to hand-edit between runs.
+
+Re-extraction is idempotent by design (the cron agent re-derives the same entities and
+marks rows complete). A previously known gap meant entity files synced back to Hyperspell
+re-entered future scans as unprocessed source memories; the fix lands alongside
+[`proposal/06-knowledge-graph-enablement`](docs/proposals/06-knowledge-graph-enablement.md)
+(PR #99), which propagates the `graph_entity` frontmatter into sync metadata and makes
+the scanner skip memories synced from the entity directories.
 
 ---
 
