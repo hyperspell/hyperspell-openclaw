@@ -2,6 +2,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import type { HyperspellClient } from "../client.ts"
 import type { HyperspellConfig } from "../config.ts"
+import { MOOD_WEATHER_SOURCE } from "../lib/filters.ts"
 import { getAllUserIds } from "../lib/sender.ts"
 import { log } from "../logger.ts"
 import { NetworkStateManager } from "./state.ts"
@@ -105,6 +106,9 @@ export async function scanMemories(
       if (stateManager.isProcessed(mem.resourceId)) continue
       if (mem.metadata?.graph_entity === "true" || mem.metadata?.graph_entity === true) continue
       if ((mem.metadata?.status as string) !== "completed") continue
+      // Mood-weather roll records are observability-only (issue #71): the graph
+      // feeds context, so ingesting them would leak the rolls back into recall.
+      if (mem.metadata?.openclaw_source === MOOD_WEATHER_SOURCE) continue
 
       let summary = ""
       try {

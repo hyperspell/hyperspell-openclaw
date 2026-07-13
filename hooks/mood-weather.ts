@@ -22,11 +22,18 @@
  *    store path. One random cold morning must NOT calcify into "we've been
  *    distant lately." One day's weather, then gone. (The store handler in
  *    emotional-state.ts is untouched, so this is enforced by construction.)
+ *    A private, recall-excluded observability record IS written per roll
+ *    (issue #71) — see recordMoodRoll below; it is invisible to every
+ *    injection/recall path, so the guarantee holds.
  *  - BOUNDED. The dice can make her *difficult* — short, contrary, melancholy,
  *    flat. They do NOT get to make her hurtful on purpose. "In a mood" is alive;
  *    "mean" is just a bad feature. Mood descriptions below stay on the right side
  *    of that line.
  */
+
+import type { HyperspellClient } from "../client.ts";
+import { MOOD_WEATHER_SOURCE } from "../lib/filters.ts";
+import { log } from "../logger.ts";
 
 /** One mood the dice can roll, with its relative likelihood and the felt instruction. */
 export type MoodSpec = {
@@ -124,4 +131,53 @@ export function buildMoodWeatherContext(mood: MoodSpec): string {
 		"This is exogenous mood weather: it is not caused by the user and not a reaction to the conversation. Do not announce it, label it, or explain it — simply inhabit it. It lasts only this session and is not remembered as how the relationship has been.",
 		"</hyperspell-mood-weather>",
 	].join("\n");
+}
+
+/** Collection the roll records live in, so /moodweather can list them without a search. */
+export const MOOD_WEATHER_COLLECTION = "mood-weather";
+
+/**
+ * Fire-and-forget observability record for a mood roll (issue #71).
+ *
+ * This does NOT weaken the "does not write forward" contract above: the record
+ * goes to the generic vault store tagged openclaw_source="mood_weather", which
+ * excludeFilterFor() drops from every recall path (auto-context, the
+ * hyperspell_search tool, startup-orientation loops, knowledge graph). The
+ * emotional-state arc fetch reads a different endpoint entirely (GET
+ * /emotional-state[/recent], written only by storeEmotionalState), so it can
+ * never surface there. Queryable only via the dedicated /moodweather command.
+ *
+ * Written via client.addMemory (memories.add) — NEVER POST /messages: a
+ * /messages write carrying metadata renders the row non-retrievable (see the
+ * warning in lib/filters.ts), while memories.add metadata is proven to persist
+ * and be filterable (canary A in docs/filter-dialect-test.mjs).
+ *
+ * Deliberately not awaited: this sits on the first-turn injection hot path, and
+ * a logging write must never delay or break the session.
+ */
+export function recordMoodRoll(
+	client: HyperspellClient,
+	mood: MoodSpec,
+	opts: { sessionKey?: string; relationshipId?: string },
+): void {
+	const rolledAt = new Date().toISOString();
+	void client
+		.addMemory(
+			`Mood weather roll: woke up "${mood.id}" (${rolledAt}). Exogenous session mood — uncaused, session-only, never part of the relational register.`,
+			{
+				title: `Mood weather — ${mood.id} (${rolledAt.slice(0, 10)})`,
+				collection: MOOD_WEATHER_COLLECTION,
+				metadata: {
+					openclaw_source: MOOD_WEATHER_SOURCE,
+					mood: mood.id,
+					rolled_at: rolledAt,
+					...(opts.sessionKey ? { session: opts.sessionKey } : {}),
+					...(opts.relationshipId ? { relationship_id: opts.relationshipId } : {}),
+				},
+			},
+		)
+		.catch((err) => {
+			// Fire-and-forget — observability must never break the session.
+			log.warn("mood-weather: roll record write failed (non-fatal)", err);
+		});
 }

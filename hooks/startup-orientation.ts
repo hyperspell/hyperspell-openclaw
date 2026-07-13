@@ -1,5 +1,6 @@
 import type { HyperspellClient, SearchResult } from "../client.ts";
 import type { HyperspellConfig } from "../config.ts";
+import { excludeFilterFor } from "../lib/filters.ts";
 import { resolveUser } from "../lib/sender.ts";
 import { resolveCurrentSessionId } from "../lib/session.ts";
 import { isMultiSpeaker } from "../lib/speaker-tracker.ts";
@@ -257,9 +258,14 @@ export async function gatherOrientation(
 
 	const [recentSettled, loopsSettled] = await Promise.allSettled([
 		recentFetch,
+		// Loops feed agent context, so tagged observability rows (agent_end
+		// traces, mood_weather rolls) must be dropped like on every other recall
+		// path — this also closes a pre-existing gap where agent_end traces
+		// could surface in the loops block.
 		client.search(so.loopsQuery, {
 			limit: so.loopsLimit,
 			userId,
+			filter: excludeFilterFor(cfg),
 		}),
 	]);
 
