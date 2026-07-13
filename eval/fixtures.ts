@@ -222,6 +222,36 @@ export const EVAL_CASES: EvalCase[] = [
 		},
 	},
 	{
+		name: "word-boundary story matching: short terms don't false-positive inside words",
+		note:
+			"Boundary semantics (proposal 01 §3.2): storyTerm 'mira' no longer " +
+			"substring-matches 'admiral', so the admiral log stays curated " +
+			"(0.5 -> 0.7) while Mira's chapter — possessive, still a word " +
+			"boundary — is story (0.45 -> 0.8) and outranks it. Under the old " +
+			"substring matcher the admiral log was story (0.85) and won.",
+		pool: [
+			curated(
+				"note-admiral",
+				"the admiral's log",
+				0.5,
+				"fleet logistics and rations",
+			),
+			curated(
+				"story-mira-ch2",
+				"Mira's chapter — the storm",
+				0.45,
+				"Mira watched the lamp gutter",
+			),
+		],
+		weights: { ...DEFAULT_RANKING, storyTerms: ["mira"] },
+		maxResults: 10,
+		threshold: 0.6,
+		expect: {
+			mustSelect: ["story-mira-ch2", "note-admiral"],
+			order: [["story-mira-ch2", "note-admiral"]],
+		},
+	},
+	{
 		name: "null doc score is backed by the best highlight score",
 		note:
 			"baseScore = max(doc score, best highlight): a synced section with " +

@@ -135,6 +135,9 @@ Matching uses the same semantics as the quarantine check itself: exact id or thr
 | `syncMemories` | boolean | `false` | Sync markdown files in `workspace/memory/` to Hyperspell |
 | `sources` | string | - | Comma-separated sources to search (e.g., `vault,notion,slack`) |
 | `maxResults` | number | `10` | Maximum memories per context injection |
+| `relevanceThreshold` | number | `0.6` | Minimum (composite) score a memory needs to be injected by auto-context |
+| `ranking` | object | see below | Composite re-ranking of auto-context results — see [Composite ranking](#composite-ranking--surfacing-your-active-work) |
+| `ranking.storyTerms` | string[] | `[]` | **Off until you set it.** Words/phrases identifying your active creative work, so it outranks conversation chatter (matched at word boundaries, case-insensitive) |
 | `excludeChannels` | string[] | `[]` | Conversation/channel ids fully quarantined from memory: no context injection, no memory writes, no memory tools. Threads inherit. **Forward-only** — see [below](#excludechannels-is-forward-only). |
 | `debug` | boolean | `false` | Enable verbose logging |
 | `dreaming.enabled` | boolean | `false` | Allow `memory-core` to sidecar-load so Dreaming can consolidate local session transcripts into `workspace/MEMORY.md`. See [Running alongside Dreaming](#running-alongside-dreaming). |
@@ -231,6 +234,83 @@ When `autoContext: true` (default), the plugin automatically:
 3. Injects matching context into the AI's prompt
 
 This ensures the AI always has access to relevant information from your connected sources.
+
+### Composite ranking — surfacing your active work
+
+Raw semantic relevance rewards *frequency*: a phrase repeated across a hundred
+auto-saved conversation fragments looks "most similar" to everything and buries
+quieter, truer memory — like the manuscript you're actually writing. When
+`ranking.enabled` is on (default), auto-context re-scores candidates:
+
+```
+composite = relevance
+          + curationBoost   (a memory you deliberately kept: journals, notes, synced files)
+          + storyBoost      (your active story/manuscript — matched via storyTerms)
+          − chatterPenalty  (an auto-saved conversation fragment)
+```
+
+Chatter is additionally capped at `chatterQuota` results per injection,
+regardless of score.
+
+**`storyBoost` does nothing until you set `storyTerms`.** The default is `[]`,
+so no result ever classifies as "story". Set it to the distinctive proper nouns
+of your active work — the title, character names, a project codename, invented
+terminology:
+
+```jsonc
+"config": {
+  "ranking": {
+    "storyTerms": ["lighthouse keeper", "mira", "the shoal chapters"]
+  }
+}
+```
+
+For example: if you're writing a novel called *The Lighthouse Keeper* with a
+protagonist named Mira, the config above makes any memory whose **title or
+highlight excerpt** contains those terms rank as "story" — it gets
+`storyBoost + curationBoost` (+0.35 by default) and is exempt from the chatter
+cap. If you sync the manuscript via `syncMemories` with `sectionize: true`,
+every section is titled `The Lighthouse Keeper — <section>`, so the title term
+alone catches the whole manuscript.
+
+**How matching works:** terms are matched case-insensitively at **word
+boundaries** against the result's title and highlight excerpts. `"mira"`
+matches "Mira", "Mira's", and "mira-class", but **not** "ad**mira**l" or
+"**mira**cle" — a short name can't false-positive inside longer words.
+Multi-word phrases (`"lighthouse keeper"`) match the same way. There is no
+prefix/stem matching: to catch inflected or partial forms, add each full form
+as its own term.
+
+Tips:
+
+- **Use 3–15 distinctive terms.** Every term is checked per result per search;
+  more terms means more false-positive surface, not more recall. Never add a
+  word that appears in unrelated conversation ("book", "chapter", "draft").
+- Terms are normalized on load — trimmed, lowercased, deduplicated — so casing
+  and stray whitespace in your config don't matter.
+- **Update the list when the active story changes.** A stale term is worse than
+  a missing one: it keeps granting the boost to a dead thread's echoes.
+- Ranking (including `storyTerms`) applies only to **auto-context** injection.
+  The `hyperspell_search` tool and `/getcontext` return raw relevance order —
+  don't test `storyTerms` there and conclude it's broken.
+- To verify it's working, enable `debug: true` and watch for the per-search
+  tally (`auto-context: ranked {...} candidates → selected {...}`) and the
+  per-candidate lines (`[story] 0.47→0.82 The Lighthouse Keeper — Chapter 3`),
+  which show story matches even when they lose to the threshold.
+
+Full knobs and defaults:
+
+```jsonc
+"ranking": {
+  "enabled": true,
+  "curationBoost": 0.2,     // lift for deliberately-kept memory
+  "chatterPenalty": 0.2,    // penalty for auto-saved conversation fragments
+  "storyBoost": 0.15,       // extra lift for storyTerms matches (stacks with curationBoost)
+  "storyTerms": [],         // REQUIRED for storyBoost to do anything
+  "candidateMultiplier": 3, // fetch this × maxResults candidates before re-ranking
+  "chatterQuota": 2         // hard cap on chatter results per injection
+}
+```
 
 ### `excludeChannels` is forward-only
 

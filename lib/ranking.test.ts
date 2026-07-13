@@ -5,6 +5,7 @@ import {
 	classifyResult,
 	DEFAULT_RANKING,
 	explainSelection,
+	kindTally,
 	rerank,
 	type RankedResult,
 	scoreResult,
@@ -48,6 +49,157 @@ test("classify — story: matches a story term (title or highlight)", () => {
 		),
 		"story",
 	);
+});
+
+test("classify — story matching requires word boundaries: short terms don't match inside words", () => {
+	// The substring-era false positives (proposal 01 §3.2): "ada" ⊂ "adaptation",
+	// "mira" ⊂ "admiral"/"miracle". Boundary matching rejects all three.
+	assert.notEqual(classifyResult(mk({ title: "notes on adaptation strategy", resourceId: "x" }), ["ada"]), "story");
+	assert.notEqual(classifyResult(mk({ title: "the admiral's log", resourceId: "x" }), ["mira"]), "story");
+	assert.notEqual(classifyResult(mk({ title: "a small miracle", resourceId: "x" }), ["mira"]), "story");
+	// ...while true whole-word occurrences still classify as story.
+	assert.equal(classifyResult(mk({ title: "Ada's chapter", resourceId: "x" }), ["ada"]), "story");
+});
+
+test("classify — story terms match across punctuation boundaries: possessives and hyphenation", () => {
+	// Boundaries are word↔non-word transitions, so punctuation adjacent to the
+	// term is fine: "Mira's" and "mira-class" both contain the word "mira".
+	assert.equal(classifyResult(mk({ title: "Mira's confrontation, draft 2", resourceId: "x" }), ["mira"]), "story");
+	assert.equal(classifyResult(mk({ title: "the mira-class vessels", resourceId: "x" }), ["mira"]), "story");
+});
+
+test("classify — story matching is case-insensitive and reaches highlights with a null title", () => {
+	const r = mk({
+		title: null,
+		resourceId: UUID,
+		highlights: [{ id: "h", text: "THE OMUERTA rises", score: 0.4 }],
+	});
+	assert.equal(classifyResult(r, ["Omuerta"]), "story");
+});
+
+test("classify — multi-word phrase terms still match under boundary rules", () => {
+	assert.equal(
+		classifyResult(mk({ title: "re: the lady of storms, ch. 4", resourceId: "x" }), ["lady of storms"]),
+		"story",
+	);
+});
+
+test("classify — phrase terms don't match across the seam of two highlights", () => {
+	// The \n hay separator (not space) keeps "…the lady" + "of storms…" from
+	// stitching into a spurious phrase hit.
+	const r = mk({
+		title: null,
+		resourceId: "x",
+		highlights: [
+			{ id: "a", text: "spoke to the lady", score: 0.4 },
+			{ id: "b", text: "of storms there were many", score: 0.4 },
+		],
+	});
+	assert.notEqual(classifyResult(r, ["lady of storms"]), "story");
+});
+
+test("rerank — story term beats chatter at EQUAL base relevance", () => {
+	// The core promise of idea #1: topic wins over noise when similarity ties.
+	const chatterEcho = mk({
+		title: "Unnamed Conversation",
+		resourceId: UUID,
+		score: 0.5,
+		highlights: [{ id: "h", text: "we talked about writing again", score: 0.5 }],
+	});
+	const story = mk({
+		title: null,
+		resourceId: "mem-2",
+		score: 0.5,
+		highlights: [{ id: "h", text: "Junii finally confronts the Omuerta", score: 0.5 }],
+	});
+	const w = { ...DEFAULT_RANKING, storyTerms: ["omuerta"] };
+	const out = rerank([chatterEcho, story], w);
+	assert.equal(out[0].resourceId, "mem-2");
+	// story: 0.5 + 0.15 + 0.20 = 0.85 ; chatter: 0.5 − 0.20 = 0.30
+	assert.ok(Math.abs(out[0]._composite - 0.85) < 1e-9);
+	assert.ok(Math.abs(out[1]._composite - 0.3) < 1e-9);
+});
+
+test("rerank + selectRanked — corpus: populated storyTerms lift the manuscript above louder chatter (#82)", () => {
+	// Realistic pool: paraphrasing hot-buffer echoes vs sectionized manuscript
+	// memories titled "<file title> — <section>" (the sync-title synergy) plus a
+	// curated note. Empty storyTerms = today's inert default; populated terms
+	// must put every manuscript section above every echo.
+	const UUID2 = "ab34cd56-1234-4abc-8def-0123456789ab";
+	const UUID3 = "cd56ef78-5678-4def-9abc-0123456789cd";
+	const pool = [
+		mk({
+			title: "Unnamed Conversation",
+			resourceId: UUID,
+			score: 0.98,
+			highlights: [{ id: "h", text: "the writing is going so well lately", score: 0.98 }],
+		}),
+		mk({
+			title: "Unnamed Conversation",
+			resourceId: UUID2,
+			score: 0.97,
+			highlights: [{ id: "h", text: "you said Mira should face the storm", score: 0.97 }],
+		}),
+		mk({
+			title: "Unnamed Conversation",
+			resourceId: UUID3,
+			score: 0.96,
+			highlights: [{ id: "h", text: "keep writing those chapters", score: 0.96 }],
+		}),
+		mk({
+			title: "The Lighthouse Keeper — Chapter 3",
+			resourceId: "ms-ch3",
+			score: 0.55,
+			highlights: [{ id: "h", text: "Mira watched the lamp gutter", score: 0.55 }],
+		}),
+		mk({
+			title: "The Lighthouse Keeper — Chapter 4",
+			resourceId: "ms-ch4",
+			score: 0.52,
+			highlights: [{ id: "h", text: "the shoal took the boat", score: 0.52 }],
+		}),
+		mk({
+			title: "2026-06-01 — Plot notes",
+			resourceId: "note-plot",
+			score: 0.5,
+			highlights: [{ id: "h", text: "ending ideas", score: 0.5 }],
+		}),
+	];
+
+	// Inert default: the manuscript is merely curated (0.55 + 0.2 = 0.75) and
+	// the loudest echo still takes the top slot (0.98 − 0.2 = 0.78).
+	const inert = rerank(pool, DEFAULT_RANKING);
+	assert.equal(inert[0].resourceId, UUID);
+	assert.equal(inert[0]._kind, "chatter");
+	assert.equal(inert.find((r) => r.resourceId === "ms-ch3")?._kind, "curated");
+	assert.equal(inert.find((r) => r.resourceId === "ms-ch4")?._kind, "curated");
+
+	// Populated terms (the manuscript title covers every section via the sync
+	// title): both sections classify story, outrank every non-story echo, and
+	// survive selection.
+	const w = { ...DEFAULT_RANKING, storyTerms: ["lighthouse keeper", "mira"] };
+	const out = rerank(pool, w);
+	assert.equal(out.find((r) => r.resourceId === "ms-ch3")?._kind, "story");
+	assert.equal(out.find((r) => r.resourceId === "ms-ch4")?._kind, "story");
+	// UUID2's echo mentions "Mira" so it legitimately classifies story too
+	// (story-terms precede the chatter check — risk #4, deliberately unchanged).
+	assert.equal(out.find((r) => r.resourceId === UUID2)?._kind, "story");
+	const sel = selectRanked(out, 5, 0.6, 2);
+	const ids = sel.map((r) => r.resourceId);
+	assert.ok(ids.indexOf("ms-ch3") < ids.indexOf(UUID), "chapter 3 outranks the loudest non-story echo");
+	assert.ok(ids.includes("ms-ch4"), "chapter 4 survives selection");
+	assert.ok(sel.filter((r) => r._kind === "chatter").length <= 2, "quota still bounds true chatter");
+});
+
+test("kindTally — counts ranked results by kind", () => {
+	const list = [
+		ranked("story", 0.9, "s1"),
+		ranked("chatter", 0.8, "c1"),
+		ranked("chatter", 0.7, "c2"),
+		ranked("curated", 0.6, "k1"),
+	];
+	assert.deepEqual(kindTally(list), { story: 1, chatter: 2, curated: 1 });
+	assert.deepEqual(kindTally([]), {});
 });
 
 test("rerank — a kept note (0.47) out-ranks a LOUDER conversation echo (0.62)", () => {

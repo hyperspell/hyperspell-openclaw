@@ -261,6 +261,19 @@ test("auto-context — debug lines carry cut reasons and the injected composite 
     initLogger(console, false)
   }
 
+  const rankedLine = seen.find((m) => m.includes("auto-context: ranked"))
+  assert.ok(rankedLine, "unconditional candidates → selected tally logged")
+  assert.ok(
+    rankedLine.includes(`ranked {"curated":2,"chatter":3} candidates → selected {"curated":1,"chatter":2}`),
+    `candidate-pool tally shows kinds that lost, not just survivors: ${rankedLine}`,
+  )
+  const perResultLines = seen.filter((m) => /^ {2}\[(story|curated|chatter|other)\] /.test(m.replace(/^hyperspell: /, "")))
+  assert.equal(perResultLines.length, 5, "one per-candidate line for each of the 5 ranked results")
+  assert.ok(
+    perResultLines[0].includes("[curated]"),
+    `top candidate line carries kind + base→composite: ${perResultLines[0]}`,
+  )
+
   const cutLine = seen.find((m) => m.includes("auto-context: cut"))
   assert.ok(cutLine, "cut-reason line logged")
   assert.ok(

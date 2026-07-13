@@ -21,7 +21,9 @@ export type RankingWeights = {
 	curationBoost: number;
 	chatterPenalty: number;
 	storyBoost: number;
-	/** Lowercased substrings that mark a result as the active story (boosted). */
+	/** Lowercased terms that mark a result as the active story (boosted).
+	 * Matched case-insensitively at word boundaries — "mira" matches "Mira's"
+	 * but not "admiral" (parseRanking normalizes: trim/lowercase/dedupe). */
 	storyTerms: string[];
 	/** Fetch this many × maxResults as candidates, so true-but-quiet memory is
 	 * in the pool to be re-ranked rather than cut off below the fetch limit. */
@@ -45,6 +47,45 @@ export const DEFAULT_RANKING: RankingWeights = {
 
 const UUID_RE =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// Compiled story-term matchers, cached per storyTerms array instance — the
+// config array is built once in parseConfig and stable for the process
+// lifetime, so this avoids per-result regex compilation on the hot path.
+const matcherCache = new WeakMap<string[], RegExp[]>();
+
+/**
+ * One regex per term, anchored at word boundaries so short terms can't
+ * false-positive inside longer words ("ada" no longer matches "adaptation";
+ * "mira" no longer matches "admiral"). Boundaries are word↔non-word
+ * transitions, so possessives and punctuation still match: "mira" hits
+ * "Mira's" and "mira-class". `\b` only anchors against word characters, so
+ * terms whose edges are punctuation get no anchor there and still match.
+ */
+function storyMatchers(storyTerms: string[]): RegExp[] {
+	let ms = matcherCache.get(storyTerms);
+	if (!ms) {
+		ms = storyTerms
+			.map((t) => t.trim().toLowerCase())
+			.filter((t) => t.length > 0)
+			.map((term) => {
+				const lead = /^\w/.test(term) ? "\\b" : "";
+				const tail = /\w$/.test(term) ? "\\b" : "";
+				return new RegExp(`${lead}${escapeRe(term)}${tail}`);
+			});
+		matcherCache.set(storyTerms, ms);
+	}
+	return ms;
+}
+
+/** Count ranked results by kind — the debug-tally shape auto-context logs. */
+export function kindTally(results: RankedResult[]): Record<string, number> {
+	return results.reduce(
+		(acc, r) => ((acc[r._kind] = (acc[r._kind] ?? 0) + 1), acc),
+		{} as Record<string, number>,
+	);
+}
 
 export type ResultKind = "story" | "curated" | "chatter" | "other";
 
@@ -78,8 +119,11 @@ export function classifyResult(
 ): ResultKind {
 	const title = (r.title ?? "").trim();
 	if (storyTerms.length > 0) {
-		const hay = `${title} ${r.highlights.map((h) => h.text).join(" ")}`.toLowerCase();
-		if (storyTerms.some((t) => t && hay.includes(t.toLowerCase()))) return "story";
+		// \n-joined (not space-joined) so a multi-word phrase term can never
+		// spuriously match across the seam of two unrelated highlights (terms are
+		// escaped literals, so a phrase's inner space cannot match the \n).
+		const hay = `${title}\n${r.highlights.map((h) => h.text).join("\n")}`.toLowerCase();
+		if (storyMatchers(storyTerms).some((re) => re.test(hay))) return "story";
 	}
 	const untitled = title === "" || /^unnamed conversation$/i.test(title);
 	if (untitled && UUID_RE.test(r.resourceId)) return "chatter";
