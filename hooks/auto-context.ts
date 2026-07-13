@@ -73,22 +73,41 @@ function formatHighlightBullets(
   return sections.join("\n\n")
 }
 
+// A second highlight rides along only when it is within this much of the top
+// one's score — a distant second is dilution inside a correct pick (proposal
+// 12). Absolute difference (not a ratio) to match every other score rule in
+// this pipeline; 0.15 is "one storyBoost's worth" on the composite scale.
+// Deliberately a constant, not config: a formatting heuristic two levels
+// below anything a user reasons about — promote to ranking.highlightGap only
+// if live tuning proves deployments actually differ.
+const HIGHLIGHT_GAP = 0.15
+
 /**
  * Format already-SELECTED composite-ranked results (threshold + chatter quota
  * applied upstream by selectRanked). Highlights are floored at the lower of
  * (threshold, the result's own base relevance), so we don't hide the very lines
- * that define a boosted-but-quiet memory.
+ * that define a boosted-but-quiet memory. Exported for direct testing.
  */
-function formatSelected(selected: RankedResult[], threshold: number): string | null {
+export function formatSelected(selected: RankedResult[], threshold: number): string | null {
   const sections: string[] = []
 
   for (const r of selected) {
     const hiFloor = Math.min(threshold, r._base)
-    const chosen = [...r.highlights]
+    const passing = [...r.highlights]
       .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
       .filter((h) => (h.score ?? 0) >= hiFloor)
-      .slice(0, 2)
-    if (chosen.length === 0) continue
+    if (passing.length === 0) continue
+
+    // Floor first (is this highlight relevant at all?), gap second (is the
+    // runner-up close enough to the winner to be worth its tokens?). The TOP
+    // highlight is always kept — the lowered hiFloor exists to protect
+    // boosted-but-quiet memories, and the gap rule must never re-hide them; a
+    // selected result can never format to fewer sections than today.
+    const [top, second] = passing
+    const chosen =
+      second && (top.score ?? 0) - (second.score ?? 0) <= HIGHLIGHT_GAP
+        ? [top, second]
+        : [top]
 
     const title = r.title ?? `[${r.source}]`
     const bullets = chosen

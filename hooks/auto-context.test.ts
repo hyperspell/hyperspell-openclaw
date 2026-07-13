@@ -5,9 +5,9 @@ import path from "node:path"
 import { test } from "node:test"
 import type { HyperspellClient, SearchResult } from "../client.ts"
 import type { HyperspellConfig } from "../config.ts"
-import { DEFAULT_RANKING } from "../lib/ranking.ts"
+import { DEFAULT_RANKING, type RankedResult } from "../lib/ranking.ts"
 import { initLogger } from "../logger.ts"
-import { buildAutoContextHandler, dropCurrentSession } from "./auto-context.ts"
+import { buildAutoContextHandler, dropCurrentSession, formatSelected } from "./auto-context.ts"
 
 function result(resourceId: string): SearchResult {
   return {
@@ -295,4 +295,59 @@ test("auto-context — debug lines carry cut reasons and the injected composite 
     injectLine.includes(`{"curated":1,"chatter":2} from 5 candidates (chatter cap 2, composite 0.65–0.90)`),
     `tally line extended with the injected composite range: ${injectLine}`,
   )
+})
+
+// ---- adaptive highlight budget (proposal 12) ----
+
+function selectedResult(id: string, base: number, scores: number[]): RankedResult {
+  return {
+    ...result(id),
+    title: `Note ${id}`,
+    highlights: scores.map((score, i) => ({ id: `h${i}`, score, text: `highlight at ${score}` })),
+    _kind: "curated",
+    _base: base,
+    _composite: base + DEFAULT_RANKING.curationBoost,
+  }
+}
+
+test("formatSelected — gap cutoff: the marginal second highlight is dropped", () => {
+  // Pre-change characterization: _base 0.4 lowers hiFloor to 0.4, so the .4
+  // highlight passed the floor and rendered — the exact fluff the gap removes.
+  const out = formatSelected([selectedResult("a", 0.4, [0.95, 0.4])], 0.6)
+  assert.ok(out?.includes("[95%]"))
+  assert.ok(!out?.includes("[40%]"), "0.55 gap > 0.15 — the weak second is dilution")
+  assert.equal(out?.split("\n").filter((l) => l.startsWith("- ")).length, 1)
+})
+
+test("formatSelected — close pair keeps both highlights", () => {
+  const out = formatSelected([selectedResult("a", 0.85, [0.95, 0.85])], 0.6)
+  assert.ok(out?.includes("[95%]"))
+  assert.ok(out?.includes("[85%]"), "gap 0.10 <= 0.15")
+})
+
+test("formatSelected — boundary is inclusive: gap of exactly 0.15 keeps the second", () => {
+  const out = formatSelected([selectedResult("a", 0.8, [0.95, 0.8])], 0.6)
+  assert.ok(out?.includes("[95%]"))
+  assert.ok(out?.includes("[80%]"))
+})
+
+test("formatSelected — top highlight always survives: never formats a selected result to nothing", () => {
+  const single = formatSelected([selectedResult("a", 0.95, [0.95])], 0.6)
+  assert.ok(single?.includes("[95%]"))
+  const withWeakSecond = formatSelected([selectedResult("b", 0.4, [0.95, 0.4])], 0.6)
+  assert.ok(withWeakSecond !== null && withWeakSecond.includes("### Note b"), "section still renders")
+})
+
+test("formatSelected — hiFloor composes before the gap: a second failing the floor never reaches it", () => {
+  // threshold 0.92 and _base 0.92 → hiFloor 0.92; the .9 highlight fails the
+  // floor (not the gap) and only one bullet renders. No crash on the missing
+  // second.
+  const out = formatSelected([selectedResult("a", 0.92, [0.95, 0.9])], 0.92)
+  assert.ok(out?.includes("[95%]"))
+  assert.ok(!out?.includes("[90%]"))
+})
+
+test("formatSelected — all highlights below floor still degrade to a skipped section", () => {
+  const out = formatSelected([selectedResult("a", 0.9, [0.3, 0.2])], 0.6)
+  assert.equal(out, null)
 })
