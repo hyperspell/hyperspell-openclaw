@@ -443,6 +443,16 @@ test("parseConfig — knowledgeGraph accepts overrides", () => {
   assert.equal(cfg.knowledgeGraph.scanIntervalMinutes, 60)
 })
 
+test("parseConfig — coverageLog defaults OFF (prompts must not reach disk without opt-in)", () => {
+  const cfg = parseConfig(base)
+  assert.equal(cfg.coverageLog, false)
+})
+
+test("parseConfig — coverageLog is an accepted key and opts in explicitly", () => {
+  const cfg = parseConfig({ ...base, coverageLog: true })
+  assert.equal(cfg.coverageLog, true)
+})
+
 test("parseConfig — sourceWeights absent defaults to empty (neutral no-op)", () => {
   const cfg = parseConfig({ ...base, ranking: {} })
   assert.deepEqual(cfg.ranking.sourceWeights, {})

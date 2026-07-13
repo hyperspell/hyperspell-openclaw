@@ -183,6 +183,15 @@ export type HyperspellConfig = {
 	maxResults: number;
 	relevanceThreshold: number;
 	ranking: RankingWeights;
+	/**
+	 * Zero-result coverage log (proposal 15): when auto-context injects no
+	 * memory sections, append one JSONL event (prompt prefix, candidate counts,
+	 * top score) to `<workspaceDir>/.hyperspell-coverage.jsonl`. Local-only —
+	 * never sent to the backend. Default OFF: the events carry prompt text,
+	 * and sensitive plaintext must not reach disk without explicit opt-in
+	 * (same stance as the HYPERSPELL_SCORE_LOG instrumentation).
+	 */
+	coverageLog: boolean;
 	debug: boolean;
 	knowledgeGraph: KnowledgeGraphConfig;
 	multiUser?: MultiUserConfig;
@@ -204,6 +213,7 @@ const ALLOWED_KEYS = [
 	"maxResults",
 	"relevanceThreshold",
 	"ranking",
+	"coverageLog",
 	"debug",
 	"knowledgeGraph",
 	"multiUser",
@@ -701,6 +711,10 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 		maxResults: (cfg.maxResults as number) ?? 10,
 		relevanceThreshold: (cfg.relevanceThreshold as number) ?? 0.6,
 		ranking: parseRanking(cfg.ranking),
+		// Default OFF (deviates from proposal 15 §6 by maintainer decision):
+		// coverage events carry prompt text, so nothing is written to disk
+		// unless the operator explicitly opts in.
+		coverageLog: (cfg.coverageLog as boolean) ?? false,
 		debug: (cfg.debug as boolean) ?? false,
 		knowledgeGraph: {
 			enabled: (kgRaw.enabled as boolean) ?? false,

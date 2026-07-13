@@ -80,6 +80,11 @@
 			"help": "Rank memories by more than raw relevance: boost curated memory and the active story, penalize auto-saved conversation fragments. Set storyTerms to 3-15 distinctive names/terms of the active thread (characters, codenames, invented words; matched case-insensitively at word boundaries) so it outranks chatter; update the list when the active story changes. Old results accrue a small bounded recency penalty (half-life recencyHalfLifeDays, cap recencyMaxPenalty; kept memory ages at recencyCuratedFactor); recencyHalfLifeDays 0 disables it. { enabled, storyTerms, curationBoost, storyBoost, chatterPenalty, candidateMultiplier, chatterQuota, recencyHalfLifeDays, recencyMaxPenalty, recencyCuratedFactor, sourceWeights, dedupThreshold, elbow }",
 			"advanced": true
 		},
+		"coverageLog": {
+			"label": "Coverage Log",
+			"help": "Append a local-only JSONL event when auto-context finds no relevant memories (zero results or all below threshold), so capture gaps can be told apart from ranking misses. Events include prompt text (truncated), so this is off by default. Never sent to Hyperspell.",
+			"advanced": true
+		},
 		"debug": {
 			"label": "Debug Logging",
 			"help": "Enable verbose debug logs for API calls and responses",
@@ -207,6 +212,9 @@
 						"description": "Per-source multiplier on base relevance before ranking boosts/penalties (e.g. {\"notion\": 1.15, \"slack\": 0.85}). Sources not listed default to 1.0. To exclude a source entirely use the top-level sources filter, not a weight."
 					}
 				}
+			},
+			"coverageLog": {
+				"type": "boolean"
 			},
 			"debug": {
 				"type": "boolean"
