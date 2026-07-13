@@ -1,13 +1,19 @@
 import type { EmotionalStateLatest, HyperspellClient } from "../client.ts";
 import type { HyperspellConfig } from "../config.ts";
+import { channelIdFromCtx } from "../lib/exclude-channels.ts";
 import { resolveCurrentSessionId } from "../lib/session.ts";
 import { isMultiSpeaker } from "../lib/speaker-tracker.ts";
 import { log } from "../logger.ts";
 import { sanitizeTraceText } from "./auto-trace.ts";
-import { buildMoodWeatherContext, rollMood } from "./mood-weather.ts";
+import {
+	buildMoodWeatherContext,
+	type MoodSpec,
+	recordMoodRoll,
+	rollMood,
+} from "./mood-weather.ts";
 
 /** How many recent registers to surface as the "arc" at session start. */
-const EMOTIONAL_ARC_LIMIT = 3;
+export const EMOTIONAL_ARC_LIMIT = 3;
 
 type Message = { role?: string; content?: string | unknown };
 type AgentContext = { sessionKey?: string; trigger?: string };
@@ -22,6 +28,12 @@ const MIN_CONVERSATION_LENGTH = 100;
  * heartbeat overwrite the register from a deep conversation (the whipsaw).
  * `ctx.trigger` is one of cron|heartbeat|manual|memory|overflow|user; we store
  * only for user-driven turns (and `overflow`, a continuation of a user run).
+ *
+ * Lifetime (verified against openclaw core, issue #70): `trigger` is PER-RUN,
+ * not session-fixed — core rebuilds the hook ctx from each run's own params
+ * (embedded-agent-runner/run.ts), and inbound human replies always start a new
+ * run with trigger="user" even inside a cron-originated session. So a scheduled
+ * check-in that becomes a real conversation IS stored on the human turns.
  */
 const NON_CONVERSATIONAL_TRIGGERS = new Set(["cron", "heartbeat", "memory"]);
 
@@ -34,6 +46,28 @@ const STORE_DEBOUNCE_MS = 3 * 60 * 1000;
 
 /** relationshipId → last successful store time (ms). Module-scoped, per process. */
 const lastStoreAt = new Map<string, number>();
+
+/**
+ * Cross-session cooldown for mood weather: once weather actually LANDS, no new
+ * roll for this long, no matter how many sessions start. "Rare per session"
+ * isn't "rare" when sessions cluster — five short same-day sessions would
+ * otherwise get five independent rolls and can whiplash silly → spiky → flat
+ * in one afternoon. Weather changes on the scale of days, not sessions.
+ * Misses do NOT start the cooldown — only landed weather does, so effective
+ * frequency for unclustered sessions still tracks moodWeatherChance.
+ */
+export const MOOD_WEATHER_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+/** relationshipId → when weather last actually landed (ms). Module-scoped, per process (mirrors lastStoreAt). */
+const lastMoodRollAt = new Map<string, number>();
+
+/**
+ * sessionKey → the mood that landed for that session. Post-compaction
+ * re-injection must replay the SAME weather — not roll new dice (mood must
+ * stay stable for a whole session) and not silently drop it (the cooldown
+ * would otherwise suppress the re-roll mid-session).
+ */
+const sessionMoods = new Map<string, MoodSpec>();
 
 /**
  * Sessions where emotional context has already been injected this run.
@@ -125,14 +159,20 @@ function relativeWhen(iso: string): string {
  * backend doesn't expose `/emotional-state/recent` yet (returns null) or errors
  * — so this works before AND after that endpoint deploys.
  */
-async function fetchRecentOrLatest(
+export async function fetchRecentOrLatest(
 	client: HyperspellClient,
 	cfg: HyperspellConfig,
+	limit?: number,
 ): Promise<EmotionalStateLatest[]> {
+	// An explicit caller-supplied limit (the hyperspell_emotional_arc tool) must
+	// always win outright; only the *default* when no limit is passed may depend
+	// on config (see #68's depth-weighted default) — a model's explicit ask
+	// should never be silently overridden by an unrelated config knob.
+	const fetchLimit = limit ?? EMOTIONAL_ARC_LIMIT;
 	try {
 		const recent = await client.getRecentEmotionalStates(
 			cfg.relationshipId,
-			EMOTIONAL_ARC_LIMIT,
+			fetchLimit,
 		);
 		if (recent !== null) return recent; // endpoint available (may be empty)
 	} catch (err) {
@@ -143,7 +183,7 @@ async function fetchRecentOrLatest(
 }
 
 /** Build the injected emotional-context block from one or more registers. */
-function buildEmotionalContext(states: EmotionalStateLatest[]): string {
+export function buildEmotionalContext(states: EmotionalStateLatest[]): string {
 	const intro =
 		states.length > 1
 			? "How your relationship with this user has felt across your recent conversations, most recent first. Let the trajectory inform your tone — don't reference it explicitly."
@@ -171,7 +211,9 @@ function buildEmotionalContext(states: EmotionalStateLatest[]): string {
 export function buildEmotionalStateFetchHandler(
 	client: HyperspellClient,
 	cfg: HyperspellConfig,
+	deps: { now?: () => number; rng?: () => number } = {},
 ) {
+	const now = deps.now ?? Date.now;
 	return async (_event: Record<string, unknown>, ctx?: AgentContext) => {
 		const sessionKey = ctx?.sessionKey;
 		if (sessionKey && injectedSessions.has(sessionKey)) {
@@ -188,35 +230,62 @@ export function buildEmotionalStateFetchHandler(
 				(s) => s.summary && !looksLikeRawTranscript(s.summary),
 			);
 
-			// Mood weather: an exogenous, uncaused session mood that OVERRIDES the
-			// arc's tone for this session only. Rolled once per session (gated by
-			// the same inject-once cache). Lives purely in the injection path — it is
-			// never written back via the store handler, so one random morning can't
-			// calcify into the baseline. May clash with the room on purpose.
-			const mood = cfg.moodWeatherChance > 0 ? rollMood(cfg.moodWeatherChance) : null;
-			const moodBlock = mood ? buildMoodWeatherContext(mood) : "";
-			if (mood) {
-				log.info(`mood-weather: rolled "${mood.id}" this session`);
+			if (usable.length === 0 && states.length > 0) {
+				// State(s) exist but are all still extracting — don't cache, so a
+				// later turn re-fetches once extraction completes. Runs BEFORE the
+				// mood roll so a discarded turn can't land weather or burn the
+				// cross-session cooldown.
+				log.debug(
+					"emotional-context: state(s) still extracting — skipping injection this turn",
+				);
+				return;
 			}
 
+			// Mood weather: an exogenous, uncaused session mood that OVERRIDES the
+			// arc's tone for this session only. Lives purely in the injection path —
+			// never written back via the store handler, so one random morning can't
+			// calcify into the baseline. May clash with the room on purpose.
+			// Rolled once per session (inject-once cache) AND at most once per
+			// MOOD_WEATHER_COOLDOWN_MS across sessions (a landed roll suppresses new
+			// rolls; post-compaction re-injection replays the same mood instead).
+			const relId = cfg.relationshipId ?? "";
+			const priorMood = sessionKey ? sessionMoods.get(sessionKey) : undefined;
+			// Missing map entry means weather never landed this process — always
+			// eligible (don't subtract from an epoch the injectable clock may predate).
+			const lastLanded = lastMoodRollAt.get(relId);
+			const cooledDown =
+				lastLanded === undefined || now() - lastLanded >= MOOD_WEATHER_COOLDOWN_MS;
+			const mood =
+				priorMood ??
+				(cfg.moodWeatherChance > 0 && cooledDown
+					? rollMood(cfg.moodWeatherChance, deps.rng)
+					: null);
+			if (mood && !priorMood) {
+				lastMoodRollAt.set(relId, now());
+				if (sessionKey) sessionMoods.set(sessionKey, mood);
+				log.info(`mood-weather: rolled "${mood.id}" this session`);
+				// Observability record (issue #71) — fire-and-forget, recall-excluded.
+				// Stays inside the !priorMood guard: a post-compaction replay of an
+				// already-rolled mood is NOT a new roll and must not double-log. Rolls
+				// only happen past the still-extracting early return above, so every
+				// recorded roll is one that actually lands in this session's context.
+				recordMoodRoll(client, mood, {
+					sessionKey,
+					relationshipId: cfg.relationshipId,
+				});
+			}
+			const moodBlock = mood ? buildMoodWeatherContext(mood) : "";
+
 			if (usable.length === 0) {
-				if (states.length > 0) {
-					// State(s) exist but are all still extracting — don't cache, so a
-					// later turn re-fetches once extraction completes. (We re-roll the
-					// mood then too, which is fine — still at most once per *injected*
-					// session, since extraction settles within seconds.)
-					log.debug(
-						"emotional-context: state(s) still extracting — skipping injection this turn",
-					);
-					return;
-				}
 				// No arc yet — but weather can still land on a blank slate.
 				log.debug("emotional-context: no prior emotional state found");
 				if (sessionKey) injectedSessions.add(sessionKey);
 				return moodBlock ? { prependContext: moodBlock } : undefined;
 			}
 
-			log.debug(
+			// log.diag, not debug: the exact line issue #118's live audit proved
+			// invisible — one line per injection, operator-meaningful.
+			log.diag(
 				`emotional-context: injecting ${usable.length} recent register(s)`,
 			);
 			// Mood block comes AFTER the arc so it reads as today's override on top
@@ -256,7 +325,12 @@ export function buildEmotionalStateCompactionHandler() {
 export function buildEmotionalStateSessionCleanupHandler() {
 	return async (_event: Record<string, unknown>, ctx?: AgentContext) => {
 		const sessionKey = ctx?.sessionKey;
-		if (sessionKey) injectedSessions.delete(sessionKey);
+		if (sessionKey) {
+			injectedSessions.delete(sessionKey);
+			// Session over — its mood memo is dead weight. NOT cleared on
+			// compaction: surviving compaction is what makes the mood replay.
+			sessionMoods.delete(sessionKey);
+		}
 	};
 }
 
@@ -321,9 +395,16 @@ export function buildEmotionalStateStoreHandler(
 		}
 
 		try {
+			// Tag the register with the medium it was extracted from (voice vs Discord vs
+			// DM), mirroring hot-buffer's openclaw_channel_id tag. Capture-only: analysis/
+			// debugging metadata, deliberately NOT surfaced in the injected prose (#74).
+			const channelId = channelIdFromCtx(ctx as Record<string, unknown>);
 			const result = await client.storeEmotionalState(transcript, {
 				relationshipId: cfg.relationshipId,
-				metadata: { source: "openclaw_agent_end" },
+				metadata: {
+					source: "openclaw_agent_end",
+					...(channelId ? { channelId } : {}),
+				},
 			});
 			lastStoreAt.set(relId, Date.now());
 			log.info(`emotional-state: stored ${result.resourceId}`);

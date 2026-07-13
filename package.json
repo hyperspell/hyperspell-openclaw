@@ -1,6 +1,6 @@
 {
   "name": "@hyperspell/openclaw-hyperspell",
-  "version": "0.18.1",
+  "version": "0.20.0",
   "type": "module",
   "description": "OpenClaw Hyperspell memory plugin",
   "license": "MIT",
@@ -38,7 +38,7 @@
     "check-types": "tsc --noEmit",
     "lint": "bunx @biomejs/biome ci .",
     "lint:fix": "bunx @biomejs/biome check --write .",
-    "test": "node --test --experimental-strip-types client.test.ts lib/sender.test.ts lib/filters.test.ts lib/search-error.test.ts lib/session.test.ts lib/exclude-channels.test.ts lib/ranking.test.ts tools/search.test.ts config.test.ts sync/markdown.test.ts hooks/auto-trace.test.ts hooks/auto-context.test.ts hooks/hot-buffer.test.ts hooks/emotional-state.test.ts hooks/startup-orientation.test.ts hooks/mood-weather.test.ts"
+    "test": "node --test --experimental-strip-types client.test.ts logger.test.ts lib/sender.test.ts lib/filters.test.ts lib/search-error.test.ts lib/session.test.ts lib/exclude-channels.test.ts lib/ranking.test.ts lib/eval-matchers.test.ts lib/loops-audit.test.ts tools/search.test.ts tools/emotional-arc.test.ts commands/preview.test.ts commands/purge-channel.test.ts config.test.ts sync/markdown.test.ts graph/ops.test.ts hooks/auto-trace.test.ts hooks/auto-context.test.ts hooks/hot-buffer.test.ts hooks/emotional-state.test.ts hooks/startup-orientation.test.ts hooks/mood-weather.test.ts eval/eval.test.ts"
   },
   "openclaw": {
     "extensions": [

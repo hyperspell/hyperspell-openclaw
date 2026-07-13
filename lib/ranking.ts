@@ -21,7 +21,9 @@ export type RankingWeights = {
 	curationBoost: number;
 	chatterPenalty: number;
 	storyBoost: number;
-	/** Lowercased substrings that mark a result as the active story (boosted). */
+	/** Lowercased terms that mark a result as the active story (boosted).
+	 * Matched case-insensitively at word boundaries — "mira" matches "Mira's"
+	 * but not "admiral" (parseRanking normalizes: trim/lowercase/dedupe). */
 	storyTerms: string[];
 	/** Fetch this many × maxResults as candidates, so true-but-quiet memory is
 	 * in the pool to be re-ranked rather than cut off below the fetch limit. */
@@ -31,6 +33,15 @@ export type RankingWeights = {
 	 * the quota guarantees it can inform but never flood, keeping slots for real
 	 * memory. Penalty alone can't bound the count. */
 	chatterQuota: number;
+	/** Half-life in days for the recency penalty — a result this old has accrued
+	 * half of recencyMaxPenalty. 0 disables the recency term entirely. */
+	recencyHalfLifeDays: number;
+	/** Ceiling on the recency penalty — the most an arbitrarily old result can
+	 * lose. Keeps recency a tiebreaker, never a dominant signal. */
+	recencyMaxPenalty: number;
+	/** Fraction of the penalty applied to curated/story results (0..1). Kept
+	 * memory describes durable truths; it ages slower than chatter. */
+	recencyCuratedFactor: number;
 };
 
 export const DEFAULT_RANKING: RankingWeights = {
@@ -41,10 +52,52 @@ export const DEFAULT_RANKING: RankingWeights = {
 	storyTerms: [],
 	candidateMultiplier: 3,
 	chatterQuota: 2,
+	recencyHalfLifeDays: 90,
+	recencyMaxPenalty: 0.1,
+	recencyCuratedFactor: 0.5,
 };
 
 const UUID_RE =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// Compiled story-term matchers, cached per storyTerms array instance — the
+// config array is built once in parseConfig and stable for the process
+// lifetime, so this avoids per-result regex compilation on the hot path.
+const matcherCache = new WeakMap<string[], RegExp[]>();
+
+/**
+ * One regex per term, anchored at word boundaries so short terms can't
+ * false-positive inside longer words ("ada" no longer matches "adaptation";
+ * "mira" no longer matches "admiral"). Boundaries are word↔non-word
+ * transitions, so possessives and punctuation still match: "mira" hits
+ * "Mira's" and "mira-class". `\b` only anchors against word characters, so
+ * terms whose edges are punctuation get no anchor there and still match.
+ */
+function storyMatchers(storyTerms: string[]): RegExp[] {
+	let ms = matcherCache.get(storyTerms);
+	if (!ms) {
+		ms = storyTerms
+			.map((t) => t.trim().toLowerCase())
+			.filter((t) => t.length > 0)
+			.map((term) => {
+				const lead = /^\w/.test(term) ? "\\b" : "";
+				const tail = /\w$/.test(term) ? "\\b" : "";
+				return new RegExp(`${lead}${escapeRe(term)}${tail}`);
+			});
+		matcherCache.set(storyTerms, ms);
+	}
+	return ms;
+}
+
+/** Count ranked results by kind — the debug-tally shape auto-context logs. */
+export function kindTally(results: RankedResult[]): Record<string, number> {
+	return results.reduce(
+		(acc, r) => ((acc[r._kind] = (acc[r._kind] ?? 0) + 1), acc),
+		{} as Record<string, number>,
+	);
+}
 
 export type ResultKind = "story" | "curated" | "chatter" | "other";
 
@@ -78,8 +131,11 @@ export function classifyResult(
 ): ResultKind {
 	const title = (r.title ?? "").trim();
 	if (storyTerms.length > 0) {
-		const hay = `${title} ${r.highlights.map((h) => h.text).join(" ")}`.toLowerCase();
-		if (storyTerms.some((t) => t && hay.includes(t.toLowerCase()))) return "story";
+		// \n-joined (not space-joined) so a multi-word phrase term can never
+		// spuriously match across the seam of two unrelated highlights (terms are
+		// escaped literals, so a phrase's inner space cannot match the \n).
+		const hay = `${title}\n${r.highlights.map((h) => h.text).join("\n")}`.toLowerCase();
+		if (storyMatchers(storyTerms).some((re) => re.test(hay))) return "story";
 	}
 	const untitled = title === "" || /^unnamed conversation$/i.test(title);
 	if (untitled && UUID_RE.test(r.resourceId)) return "chatter";
@@ -87,10 +143,40 @@ export function classifyResult(
 	return "other";
 }
 
-/** Composite score + classification for one result. */
+/**
+ * Age-based additive penalty: exponential decay with a configurable half-life,
+ * capped at recencyMaxPenalty so recency stays a tiebreaker with teeth, never
+ * a dominant signal — an infinitely old result loses at most the cap, so it
+ * can reorder near-ties but never bury a result that out-relevances a rival
+ * by more than the cap. Additive (not a relevance multiplier) to stay on the
+ * same tuned scale as the boost/penalty algebra above.
+ */
+function recencyPenalty(
+	createdAt: string | null,
+	kind: ResultKind,
+	w: RankingWeights,
+	now: number,
+): number {
+	if (w.recencyHalfLifeDays <= 0 || w.recencyMaxPenalty <= 0) return 0;
+	if (!createdAt) return 0; // unknown age — never punish missing data
+	const ts = Date.parse(createdAt);
+	if (Number.isNaN(ts)) return 0; // unparseable — same fail-open rule
+	// max(0, …) clamps future timestamps (clock skew) to zero age, never a boost.
+	const ageDays = Math.max(0, (now - ts) / 86_400_000);
+	const decay = 0.5 ** (ageDays / w.recencyHalfLifeDays);
+	// Kept memory (curated/story) is deliberately durable — it ages at the
+	// reduced curated factor so old truths keep their edge over old chatter.
+	const kept = kind === "curated" || kind === "story";
+	const factor = kept ? w.recencyCuratedFactor : 1;
+	return w.recencyMaxPenalty * (1 - decay) * factor;
+}
+
+/** Composite score + classification for one result. `now` is injectable so
+ * tests and the eval harness stay deterministic; runtime callers omit it. */
 export function scoreResult(
 	r: SearchResult,
 	w: RankingWeights,
+	now: number = Date.now(),
 ): { kind: ResultKind; base: number; composite: number } {
 	const kind = classifyResult(r, w.storyTerms);
 	const base = baseScore(r);
@@ -99,17 +185,20 @@ export function scoreResult(
 		composite += w.storyBoost + w.curationBoost; // the story is kept memory too
 	else if (kind === "curated") composite += w.curationBoost;
 	else if (kind === "chatter") composite -= w.chatterPenalty;
+	composite -= recencyPenalty(r.createdAt, kind, w, now);
 	return { kind, base, composite };
 }
 
-/** Re-rank results by composite score (descending). Pure; stable enough. */
+/** Re-rank results by composite score (descending). Pure; stable enough.
+ * One `now` per call so every candidate scores against a consistent clock. */
 export function rerank(
 	results: SearchResult[],
 	w: RankingWeights,
+	now: number = Date.now(),
 ): RankedResult[] {
 	return results
 		.map((r) => {
-			const s = scoreResult(r, w);
+			const s = scoreResult(r, w, now);
 			return Object.assign({}, r, {
 				_kind: s.kind,
 				_base: s.base,
@@ -119,11 +208,68 @@ export function rerank(
 		.sort((a, b) => b._composite - a._composite);
 }
 
+/** Why a candidate was cut from injection. Closed set — the tuning analysis
+ * (proposal 02) and the chatter-quota instrumentation (proposal 03) both key
+ * off it. */
+export type SelectionCut = "threshold" | "max-results" | "chatter-quota";
+
+/** Selected entries carry `cut: null`; cut entries carry the binding reason.
+ * Discriminated on `selected` so a cut entry can never lack a reason. */
+export type SelectionExplained =
+	| { result: RankedResult; selected: true; cut: null }
+	| { result: RankedResult; selected: false; cut: SelectionCut };
+
+/**
+ * One pass over ranked results, annotating each with its selection outcome.
+ * Same policy as selectRanked — which is now derived from this, so the two
+ * can never drift (proposal 02 §3a).
+ *
+ * Attribution order is deliberate: the threshold check comes first so a
+ * below-the-bar result is always attributed to "threshold" even when the
+ * max-results cap is already full; and a chatter item past the cap reads
+ * "max-results", not "chatter-quota" — it would have been cut regardless, so
+ * the quota was not the binding constraint (proposal 03 §3.2 semantics).
+ */
+export function explainSelection(
+	ranked: RankedResult[],
+	maxResults: number,
+	threshold: number,
+	chatterQuota: number,
+): SelectionExplained[] {
+	const out: SelectionExplained[] = [];
+	let chatter = 0;
+	let kept = 0;
+	for (const r of ranked) {
+		if (r._composite < threshold) {
+			out.push({ result: r, selected: false, cut: "threshold" });
+			continue;
+		}
+		if (kept >= maxResults) {
+			out.push({ result: r, selected: false, cut: "max-results" });
+			continue;
+		}
+		if (r._kind === "chatter" && chatter >= chatterQuota) {
+			out.push({ result: r, selected: false, cut: "chatter-quota" });
+			continue;
+		}
+		if (r._kind === "chatter") chatter++;
+		kept++;
+		out.push({ result: r, selected: true, cut: null });
+	}
+	return out;
+}
+
 /**
  * Choose which ranked results to inject: keep those clearing `threshold` on
  * their composite, cap CHATTER at `chatterQuota` regardless of score (so a
  * high-similarity echo can inform but never flood — the penalty bounds rank,
  * the quota bounds count), and stop at `maxResults`.
+ *
+ * Signature and return shape are intentionally unchanged: the retrieval eval
+ * harness (proposal 17) and existing call sites depend on
+ * `selectRanked(ranked, maxResults, threshold, chatterQuota): RankedResult[]`.
+ * It is a thin projection of explainSelection so selection policy lives in
+ * exactly one place.
  */
 export function selectRanked(
 	ranked: RankedResult[],
@@ -131,16 +277,7 @@ export function selectRanked(
 	threshold: number,
 	chatterQuota: number,
 ): RankedResult[] {
-	const out: RankedResult[] = [];
-	let chatter = 0;
-	for (const r of ranked) {
-		if (r._composite < threshold) continue;
-		if (r._kind === "chatter") {
-			if (chatter >= chatterQuota) continue;
-			chatter++;
-		}
-		out.push(r);
-		if (out.length >= maxResults) break;
-	}
-	return out;
+	return explainSelection(ranked, maxResults, threshold, chatterQuota)
+		.filter((e) => e.selected)
+		.map((e) => e.result);
 }

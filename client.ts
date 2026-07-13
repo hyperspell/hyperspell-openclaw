@@ -57,9 +57,24 @@ export type EmotionalStateLatest = {
   extractedAt: string
   sessionId: string | null
   relationshipId: string | null
+  /**
+   * Echo of store-time metadata — Postmark's `channelId` (#74), future depth
+   * signals (#68). Absent until the backend echoes stored metadata on
+   * emotional-state GETs (issue #116), and on legacy rows stored without it.
+   */
+  metadata?: Record<string, unknown>
 }
 
 const API_BASE_URL = "https://api.hyperspell.com"
+
+/**
+ * The backend metadata echo must be a plain object to map onto
+ * `EmotionalStateLatest.metadata`; anything else (absent, null, array,
+ * scalar) is dropped so a malformed echo can't poison callers.
+ */
+function isMetadataObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 export class HyperspellClient {
 	private client: Hyperspell;
@@ -637,6 +652,10 @@ export class HyperspellClient {
 			extractedAt: data.extracted_at,
 			sessionId: data.session_id ?? null,
 			relationshipId: data.relationship_id ?? null,
+			// Metadata echo maps through only when present and object-shaped —
+			// absent today (backend #116) and on legacy rows, so this is invisible
+			// until the backend ships the echo.
+			...(isMetadataObject(data.metadata) ? { metadata: data.metadata } : {}),
 		};
 
 		log.debugResponse("emotional-state.get", { found: true, resourceId: result.resourceId });
@@ -682,6 +701,8 @@ export class HyperspellClient {
 			extractedAt: (d.extracted_at as string) ?? "",
 			sessionId: (d.session_id as string | null) ?? null,
 			relationshipId: (d.relationship_id as string | null) ?? null,
+			// Same conditional echo as getEmotionalState — see the note there.
+			...(isMetadataObject(d.metadata) ? { metadata: d.metadata } : {}),
 		}));
 		log.debugResponse("emotional-state.recent", { count: list.length });
 		return list;

@@ -44,3 +44,71 @@ test("sendMessages — omits the metadata key entirely when none is given", asyn
 		restore();
 	}
 });
+
+// GET-shaped stub: emotional-state GETs carry no request body, so the
+// body-parsing stubFetch above would throw — this one just serves a payload.
+function stubFetchJson(payload: unknown) {
+	const orig = globalThis.fetch;
+	globalThis.fetch = (async () =>
+		({ ok: true, status: 200, json: async () => payload }) as unknown as Response) as typeof fetch;
+	return { restore: () => (globalThis.fetch = orig) };
+}
+
+const stateRow = {
+	resource_id: "es-1",
+	summary: "warm, unhurried",
+	extracted_at: "2026-07-12T00:00:00Z",
+	session_id: "s1",
+	relationship_id: null,
+};
+
+test("getRecentEmotionalStates — maps metadata through when the backend echoes it (#116)", async () => {
+	const metadata = { source: "openclaw_agent_end", channelId: "telegram:123", depth_score: 0.7 };
+	const { restore } = stubFetchJson([{ ...stateRow, metadata }]);
+	try {
+		const list = await client.getRecentEmotionalStates(undefined, 3);
+		assert.deepEqual(list?.[0].metadata, metadata);
+	} finally {
+		restore();
+	}
+});
+
+test("getEmotionalState — maps metadata through when the backend echoes it (#116)", async () => {
+	const metadata = { source: "openclaw_agent_end" };
+	const { restore } = stubFetchJson({ ...stateRow, metadata });
+	try {
+		const state = await client.getEmotionalState();
+		assert.deepEqual(state?.metadata, metadata);
+	} finally {
+		restore();
+	}
+});
+
+test("emotional-state GETs — metadata key cleanly absent when the backend doesn't echo it (today's reality)", async () => {
+	const { restore } = stubFetchJson([stateRow]);
+	try {
+		const list = await client.getRecentEmotionalStates();
+		assert.ok(list && !("metadata" in list[0]), "recent: no metadata key invented");
+	} finally {
+		restore();
+	}
+	const { restore: restore2 } = stubFetchJson(stateRow);
+	try {
+		const state = await client.getEmotionalState();
+		assert.ok(state && !("metadata" in state), "latest: no metadata key invented");
+	} finally {
+		restore2();
+	}
+});
+
+test("emotional-state GETs — non-object metadata is ignored, not mapped", async () => {
+	for (const bad of ["oops", 7, null, ["a"]]) {
+		const { restore } = stubFetchJson([{ ...stateRow, metadata: bad }]);
+		try {
+			const list = await client.getRecentEmotionalStates();
+			assert.ok(list && !("metadata" in list[0]), `metadata=${JSON.stringify(bad)} dropped`);
+		} finally {
+			restore();
+		}
+	}
+});
