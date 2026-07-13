@@ -271,6 +271,53 @@ composite = relevance
 Chatter is additionally capped at `chatterQuota` results per injection,
 regardless of score.
 
+Provenance is a signal too: an optional `sourceWeights` map multiplies a
+result's **base relevance** (before the kind boosts/penalties are added) by a
+per-source factor, so "a journaled Notion page is more intentional memory than
+a titled Slack aside on the same topic" is expressible. Any source not listed
+— including sources that don't exist yet — is neutral (`1.0`); the shipped
+default is `{}`, a strict no-op. It weights sources already in the result set;
+to *exclude* a source, use the `sources` filter instead (weights of 0 are
+rejected at load with exactly that pointer). Suggested starting points, priors
+to seed your own tuning rather than measured truth: authored systems slightly
+up (`notion` 1.15, drive/box/dropbox 1.1), conversational exhaust slightly
+down (`slack`/`microsoft_teams` 0.85, `trace` 0.8) — magnitudes small enough
+to break ties, never to override a real relevance gap. Typos in weight keys
+are not schema errors (new backend sources must not fail validation); with
+`debug: true` unknown keys are flagged once at startup in `gateway.log`.
+
+Selected results are also checked against each other for **near-duplicates**:
+when the same memory exists in several forms (a re-synced doc section, a
+`remember` note quoting it, a curated copy of a hot-buffer row), every copy
+clears the threshold, none is chatter, and pre-dedup they filled multiple
+injection slots with one piece of information. Each candidate's lead text is
+compared against already-selected results by token overlap; above
+`dedupThreshold` (0.8) the copy is skipped and its slot passes to the
+next-ranked *different* memory. Skipped copies never consume the chatter
+quota. Set `dedupThreshold: 0` to disable. Paraphrased duplicates (same fact,
+different words) are beyond a string measure and out of scope.
+
+Within each selected memory, the second excerpt earns its place: a result
+renders up to two highlight bullets, and the runner-up rides along only when
+its score is within 0.15 of the top one's — a .95/.40 pair renders one bullet
+(the distant second is usually a weaker paraphrase), a .95/.85 pair renders
+both. The top highlight is always kept, so a selected memory never disappears
+from the injection because of this rule.
+
+An optional **elbow cutoff** (`ranking.elbow`, **off by default**) stops
+injecting at a natural score cliff instead of always filling `maxResults`: a
+narrow query backed by 3 genuinely relevant memories no longer pads the
+context with a plateau of marginal ones that happen to clear the threshold.
+It is strictly conservative — it only ever cuts *earlier*, never later, never
+below `minResults` (default 3), and when no clear cliff exists (gradual
+decline, flat plateau) selection is identical to today. A cliff means the
+drop from the last accepted result is both large against the decline seen so
+far (`gapRatio` × mean gap, default 2.5×) *and* material in absolute terms
+(`minGap`, default 0.05). Before enabling, run
+`node --experimental-strip-types docs/elbow-scan.mjs` against your real data
+to check firing rate and cut depth (with `debug: true` the live verdict shows
+in `gateway.log` as `auto-context: elbow stopped at k (ceiling N)`).
+
 Age matters too, gently: results accrue a small **recency penalty** that grows
 with age (exponential decay, 90-day half-life by default) and is hard-capped at
 `recencyMaxPenalty` (0.1) so it can break near-ties toward current information
@@ -321,7 +368,7 @@ Tips:
   The `hyperspell_search` tool and `/getcontext` return raw relevance order —
   don't test `storyTerms` there and conclude it's broken.
 - To verify it's working, enable `debug: true` and watch `gateway.log` for the
-  per-search tally (`auto-context: ranked {...} candidates → selected {...}`) —
+  per-search tally (`auto-context: ranked {...} candidates → selected {...}`) and the cut tally (threshold / max-results / elbow / near-duplicate / chatter-quota) —
   it appears at default host log levels. The per-candidate lines
   (`[story] 0.47→0.82 The Lighthouse Keeper — Chapter 3`), which show story
   matches even when they lose to the threshold, are debug-level and also need
@@ -340,7 +387,15 @@ Full knobs and defaults:
   "chatterQuota": 2,        // hard cap on chatter results per injection
   "recencyHalfLifeDays": 90,  // age at which half the recency penalty has accrued (0 = off)
   "recencyMaxPenalty": 0.1,   // ceiling on the recency penalty — a tiebreaker, never a burial
-  "recencyCuratedFactor": 0.5 // kept memory (curated/story) ages at this fraction of the rate
+  "recencyCuratedFactor": 0.5, // kept memory (curated/story) ages at this fraction of the rate
+  "sourceWeights": {},        // per-source multiplier on base relevance; unlisted = 1.0
+  "dedupThreshold": 0.8,      // token-overlap ratio that skips a near-duplicate (0 = off)
+  "elbow": {                  // stop early at a natural score cliff (opt-in)
+    "enabled": false,
+    "minResults": 3,          // never cut below this many accepted results
+    "gapRatio": 2.5,          // cliff = drop >= this multiple of the mean gap so far...
+    "minGap": 0.05            // ...AND at least this big on the raw composite scale
+  }
 }
 ```
 

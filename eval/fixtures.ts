@@ -389,6 +389,104 @@ export const EVAL_CASES: EvalCase[] = [
 		},
 	},
 	{
+		name: "elbow cutoff: the narrow query stops at the cliff instead of padding with near-noise",
+		note:
+			"Proposal 13's core case: three genuinely relevant results (0.82/0.80/" +
+			"0.78 composite) then a cliff to a plateau of marginal 0.55-ish results " +
+			"that still clear the threshold. With elbow enabled (minResults 3, " +
+			"gapRatio 2.5, minGap 0.05) selection stops at 3; without it the " +
+			"plateau pads the context to maxResults. Elbow ships OFF by default — " +
+			"this case opts in explicitly, exactly like a tuned live config.",
+		pool: [
+			curated("note-a", "Heath and Junii — the confrontation", 0.62, "Heath confronts Junii at the tower"),
+			curated("note-b", "Omuerta binding notes", 0.6, "what the binding cost Tevre"),
+			curated("note-c", "Night of storms — draft", 0.58, "the storm scene as written"),
+			curated("pad-1", "Weather small talk", 0.35, "it rained again on Tuesday"),
+			curated("pad-2", "Errands list", 0.34, "post office then the market"),
+			curated("pad-3", "Old bookmark", 0.33, "an article about lighthouses"),
+		],
+		weights: {
+			...DEFAULT_RANKING,
+			elbow: { enabled: true, minResults: 3, gapRatio: 2.5, minGap: 0.05 },
+		},
+		maxResults: 6,
+		threshold: 0.5,
+		expect: {
+			mustSelect: ["note-a", "note-b", "note-c"],
+			mustNotSelect: ["pad-1", "pad-2", "pad-3"],
+			order: [["note-a", "note-c"]],
+		},
+	},
+	{
+		name: "near-duplicate dedup: the re-saved memory yields its slot to different content",
+		note:
+			"Proposal 09's core case: the same memory exists as a synced doc section " +
+			"AND a remembered note — both curated, both clear every gate, and " +
+			"pre-dedup the copy displaced the one genuinely different memory. With " +
+			"dedupThreshold 0.8 the second copy (date-prefixed, so not string-equal) " +
+			"is skipped with continue and the quieter distinct note fills the slot.",
+		pool: [
+			curated(
+				"doc-omuerta",
+				"The Lady of Storms — Omuerta notes",
+				0.62,
+				"Heath finally confronts Junii about the Omuerta binding and what it cost Tevre on the night of storms",
+			),
+			curated(
+				"note-omuerta-copy",
+				"2026-02-09 — remembered",
+				0.6,
+				"2026-02-09 — Heath finally confronts Junii about the Omuerta binding and what it cost Tevre on the night of storms",
+			),
+			curated(
+				"note-grocery",
+				"Household notes",
+				0.55,
+				"Grocery run Thursday; Alinea prefers oat milk and dark rye",
+			),
+		],
+		weights: { ...DEFAULT_RANKING },
+		maxResults: 2,
+		threshold: 0.5,
+		expect: {
+			mustSelect: ["doc-omuerta", "note-grocery"],
+			mustNotSelect: ["note-omuerta-copy"],
+			order: [["doc-omuerta", "note-grocery"]],
+		},
+	},
+	{
+		name: "source weights: the journaled page outranks the same-topic titled aside",
+		note:
+			"Proposal 11's core case: a Notion doc and a Slack message with the SAME " +
+			"title and relevance 0.60 both classify curated and tie exactly under " +
+			"default weights. sourceWeights { notion: 1.15, slack: 0.85 } breaks the " +
+			"tie by provenance: notion 0.60×1.15+0.20=0.890 > slack 0.60×0.85+0.20=" +
+			"0.710. Slack-first input proves reordering.",
+		pool: [
+			make({
+				resourceId: "slack-C042-p1699",
+				title: "Q3 retrieval roadmap",
+				source: "slack",
+				score: 0.6,
+				highlights: [{ id: "h1", score: 0.6, text: "roadmap thoughts in passing" }],
+			}),
+			make({
+				resourceId: "notion-roadmap",
+				title: "Q3 retrieval roadmap",
+				source: "notion",
+				score: 0.6,
+				highlights: [{ id: "h1", score: 0.6, text: "the authored roadmap page" }],
+			}),
+		],
+		weights: { ...DEFAULT_RANKING, sourceWeights: { notion: 1.15, slack: 0.85 } },
+		maxResults: 5,
+		threshold: 0.6,
+		expect: {
+			mustSelect: ["notion-roadmap", "slack-C042-p1699"],
+			order: [["notion-roadmap", "slack-C042-p1699"]],
+		},
+	},
+	{
 		name: "recency: the fresh near-tie beats the stale one (proposal 07's core case)",
 		note:
 			"Two curated notes at identical relevance 0.60; one 2 days old, one 2 " +
