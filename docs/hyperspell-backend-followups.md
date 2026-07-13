@@ -49,3 +49,11 @@ endpoints also drop stored `metadata` entirely — the highest-leverage combined
 fix is a single backend change that echoes both `status` and `metadata` on
 reads, unblocking external channel attribution (#74) and Ballast's depth
 signals (#68) at the same time.
+
+## 6. Echo stored `metadata` on emotional-state GET responses (issue #116)
+
+Proven live 2026-07-12: `GET /emotional-state[/recent]` drops stored
+`metadata` entirely. The client side is now ready and waiting — the plugin
+maps `metadata` through on both GETs when present (`client.ts`), so
+Postmark read-back verification and Ballast (#68) unblock the day the
+backend ships the echo. No plugin change needed then.
