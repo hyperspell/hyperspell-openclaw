@@ -402,7 +402,7 @@ async function runSetup(): Promise<void> {
   p.note(
     "The Memory Network automatically extracts entities (people, projects,\n" +
       "organizations, topics) from your memories into structured markdown\n" +
-      "files. This runs as a periodic cron job in the main session.",
+      "files. This runs as a periodic cron job in an isolated session.",
     "Memory Network",
   )
 
@@ -412,6 +412,13 @@ async function runSetup(): Promise<void> {
   })
 
   if (!p.isCancel(enableNetwork) && enableNetwork) {
+    // The wizard is the only place the extraction cron is created, so the
+    // config knob and the cron are born in agreement: one interval feeds both
+    // `--every` and the persisted `scanIntervalMinutes`. Runtime never
+    // reschedules — to change cadence later, edit the cron job (and keep the
+    // config field in sync so it stays an honest record of the cron).
+    const scanIntervalMinutes = 60
+
     // Update config to enable knowledgeGraph
     try {
       const configPath = resolveConfigPath()
@@ -420,7 +427,7 @@ async function runSetup(): Promise<void> {
         const config = JSON.parse(configContent)
         const pluginEntry = config?.plugins?.entries?.["openclaw-hyperspell"]?.config
         if (pluginEntry) {
-          pluginEntry.knowledgeGraph = { enabled: true }
+          pluginEntry.knowledgeGraph = { enabled: true, scanIntervalMinutes }
           fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n")
         }
       }
@@ -444,7 +451,7 @@ async function runSetup(): Promise<void> {
       const output = execFileSync("openclaw", [
         "cron", "add",
         "--name", CRON_JOB_NAME,
-        "--every", "1h",
+        "--every", `${scanIntervalMinutes}m`,
         "--session", "isolated",
         "--message", `Read the file at ${promptPath} and follow the instructions inside it.`,
       ], { stdio: ["pipe", "pipe", "pipe"], timeout: 10_000 })
@@ -460,7 +467,7 @@ async function runSetup(): Promise<void> {
         } catch {}
       }
 
-      s4.stop("Cron job created — Memory Network will scan every hour")
+      s4.stop(`Cron job created — Memory Network will scan every ${scanIntervalMinutes} minutes`)
     } catch (cronErr) {
       s4.stop("Could not create cron job automatically")
 
@@ -469,7 +476,7 @@ async function runSetup(): Promise<void> {
       p.note(
         `openclaw cron add \\\n` +
           `  --name "${CRON_JOB_NAME}" \\\n` +
-          `  --every 1h \\\n` +
+          `  --every ${scanIntervalMinutes}m \\\n` +
           `  --session isolated \\\n` +
           `  --message "Read the file at ${promptPath} and follow the instructions inside it."`,
         "Manual cron setup",
