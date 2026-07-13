@@ -348,6 +348,10 @@ function parseRanking(raw: unknown): RankingWeights {
 			),
 		),
 		sourceWeights: parseSourceWeights(r.sourceWeights),
+		dedupThreshold: Math.min(
+			1,
+			Math.max(0, num(r.dedupThreshold, DEFAULT_RANKING.dedupThreshold)),
+		),
 	};
 }
 

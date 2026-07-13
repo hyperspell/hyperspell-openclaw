@@ -6,6 +6,7 @@ import {
 	DEFAULT_RANKING,
 	explainSelection,
 	kindTally,
+	nearDuplicate,
 	rerank,
 	type RankedResult,
 	scoreResult,
@@ -534,4 +535,105 @@ test("sourceWeights — empty map is a strict no-op (default behavior unchanged)
 	const r = mk({ title: "A note", resourceId: "n", score: 0.47 });
 	const { composite } = scoreResult(r, DEFAULT_RANKING);
 	assert.ok(Math.abs(composite - 0.67) < 1e-9, "0.47 + 0.2, bit-identical to pre-weighting");
+});
+
+// ---- diversity / near-duplicate dedup (proposal 09) ----
+
+const rankedH = (
+	kind: RankedResult["_kind"],
+	composite: number,
+	id: string,
+	text: string,
+): RankedResult => ({
+	...mk({ resourceId: id, title: `note ${id}`, highlights: [{ id: "h", text, score: composite }] }),
+	_kind: kind,
+	_base: composite,
+	_composite: composite,
+});
+
+const THEME =
+	"Heath finally confronts Junii about the Omuerta binding and what it cost Tevre on the night of storms";
+
+test("selectRanked — five near-identical curated hits: default-off floods, dedup collapses to one", () => {
+	const five = [
+		rankedH("curated", 0.9, "d1", THEME),
+		rankedH("curated", 0.88, "d2", `2026-02-09 — ${THEME}`),
+		rankedH("curated", 0.86, "d3", `${THEME}. She kept the letter.`),
+		rankedH("curated", 0.84, "d4", THEME.replace("finally", "at last")),
+		rankedH("curated", 0.82, "d5", THEME),
+	];
+	// Backward compat: the omitted parameter reproduces today's flood exactly.
+	assert.equal(selectRanked(five, 4, 0.6, 2).length, 4, "status quo floods the slots");
+	const sel = selectRanked(five, 4, 0.6, 2, 0.8);
+	assert.equal(sel.length, 1);
+	assert.equal(sel[0].resourceId, "d1", "highest-ranked copy wins");
+});
+
+test("selectRanked — freed slot goes to genuinely different lower-scored content", () => {
+	const list = [
+		rankedH("curated", 0.9, "d1", THEME),
+		rankedH("curated", 0.88, "d2", `2026-02-09 — ${THEME}`),
+		rankedH("curated", 0.86, "d3", `${THEME}. She kept the letter.`),
+		rankedH("curated", 0.7, "k1", "Grocery run Thursday; Alinea prefers oat milk and dark rye"),
+	];
+	const sel = selectRanked(list, 2, 0.6, 2, 0.8);
+	assert.deepEqual(
+		sel.map((r) => r.resourceId),
+		["d1", "k1"],
+		"duplicates are skipped with continue, not break — k1 fills the freed slot",
+	);
+});
+
+test("selectRanked — a diversity-skipped chatter item does not consume chatter quota", () => {
+	const list = [
+		rankedH("chatter", 0.9, "c1", THEME),
+		rankedH("chatter", 0.88, "c2", `${THEME}.`), // near-dup of c1 → diversity-skipped
+		rankedH("chatter", 0.86, "c3", "we argued about whether the sandbox should allow git push"),
+		rankedH("curated", 0.7, "k1", "Grocery run Thursday; Alinea prefers oat milk and dark rye"),
+	];
+	const sel = selectRanked(list, 10, 0.6, 2, 0.8);
+	// If the quota were charged before the dedup skip, c2 would burn slot 2 and c3 would be blocked.
+	assert.deepEqual(sel.map((r) => r.resourceId), ["c1", "c3", "k1"]);
+	assert.equal(sel.filter((r) => r._kind === "chatter").length, 2);
+});
+
+test("selectRanked — over-quota chatter does not shadow later results in the dedup set", () => {
+	const list = [
+		rankedH("chatter", 0.9, "c1", "morning chatter about coffee and half-remembered dreams"),
+		rankedH("chatter", 0.88, "c2", "afternoon chatter about trains and the queue at the station"),
+		rankedH("chatter", 0.86, "c3", THEME), // over quota (quota=2) → skipped, key NOT recorded
+		rankedH("curated", 0.8, "k1", THEME), // must still be accepted
+	];
+	const sel = selectRanked(list, 10, 0.6, 2, 0.8);
+	assert.deepEqual(sel.map((r) => r.resourceId), ["c1", "c2", "k1"]);
+});
+
+test("explainSelection — cut attribution: duplicate reads 'near-duplicate'; past a full cap it reads 'max-results'", () => {
+	const dupWithinCap = [
+		rankedH("curated", 0.9, "d1", THEME),
+		rankedH("curated", 0.88, "d2", `${THEME}.`),
+	];
+	assert.deepEqual(
+		explainSelection(dupWithinCap, 5, 0.6, 2, 0.8).map((e) => e.cut),
+		[null, "near-duplicate"],
+	);
+	// Cap already full: the dup would have been cut regardless — the cap, not
+	// the dedup, was the binding constraint (same semantics as chatter-quota).
+	const dupPastCap = [
+		rankedH("curated", 0.9, "a", "an entirely different first memory about the garden"),
+		rankedH("curated", 0.88, "d2", `${THEME}.`),
+		rankedH("curated", 0.86, "d3", THEME),
+	];
+	assert.deepEqual(
+		explainSelection(dupPastCap, 1, 0.6, 2, 0.8).map((e) => e.cut),
+		[null, "max-results", "max-results"],
+	);
+});
+
+test("nearDuplicate — containment counts, tiny keys require equality, 0 disables", () => {
+	assert.ok(nearDuplicate(THEME, `${THEME} and more happened after, much more, that evening`, 0.8));
+	assert.ok(!nearDuplicate("the writing notes", THEME, 0.8), "short key needs exact match");
+	assert.ok(!nearDuplicate(THEME, THEME, 0), "threshold 0 disables");
+	assert.ok(nearDuplicate("The Writing Notes!", "the writing notes", 0.8), "tiny keys: exact set equality matches");
+	assert.ok(!nearDuplicate("", THEME, 0.8), "empty key never duplicates");
 });

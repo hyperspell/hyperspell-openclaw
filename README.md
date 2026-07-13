@@ -286,6 +286,17 @@ to break ties, never to override a real relevance gap. Typos in weight keys
 are not schema errors (new backend sources must not fail validation); with
 `debug: true` unknown keys are flagged once at startup in `gateway.log`.
 
+Selected results are also checked against each other for **near-duplicates**:
+when the same memory exists in several forms (a re-synced doc section, a
+`remember` note quoting it, a curated copy of a hot-buffer row), every copy
+clears the threshold, none is chatter, and pre-dedup they filled multiple
+injection slots with one piece of information. Each candidate's lead text is
+compared against already-selected results by token overlap; above
+`dedupThreshold` (0.8) the copy is skipped and its slot passes to the
+next-ranked *different* memory. Skipped copies never consume the chatter
+quota. Set `dedupThreshold: 0` to disable. Paraphrased duplicates (same fact,
+different words) are beyond a string measure and out of scope.
+
 Age matters too, gently: results accrue a small **recency penalty** that grows
 with age (exponential decay, 90-day half-life by default) and is hard-capped at
 `recencyMaxPenalty` (0.1) so it can break near-ties toward current information
@@ -336,7 +347,7 @@ Tips:
   The `hyperspell_search` tool and `/getcontext` return raw relevance order —
   don't test `storyTerms` there and conclude it's broken.
 - To verify it's working, enable `debug: true` and watch `gateway.log` for the
-  per-search tally (`auto-context: ranked {...} candidates → selected {...}`) —
+  per-search tally (`auto-context: ranked {...} candidates → selected {...}`) and the cut tally (threshold / max-results / near-duplicate / chatter-quota) —
   it appears at default host log levels. The per-candidate lines
   (`[story] 0.47→0.82 The Lighthouse Keeper — Chapter 3`), which show story
   matches even when they lose to the threshold, are debug-level and also need
@@ -356,7 +367,8 @@ Full knobs and defaults:
   "recencyHalfLifeDays": 90,  // age at which half the recency penalty has accrued (0 = off)
   "recencyMaxPenalty": 0.1,   // ceiling on the recency penalty — a tiebreaker, never a burial
   "recencyCuratedFactor": 0.5, // kept memory (curated/story) ages at this fraction of the rate
-  "sourceWeights": {}         // per-source multiplier on base relevance; unlisted = 1.0
+  "sourceWeights": {},        // per-source multiplier on base relevance; unlisted = 1.0
+  "dedupThreshold": 0.8       // token-overlap ratio that skips a near-duplicate (0 = off)
 }
 ```
 

@@ -464,3 +464,14 @@ test("parseConfig — explicit non-positive sourceWeights throw with the sources
     )
   }
 })
+
+test("parseConfig — dedupThreshold defaults to 0.8, clamps to [0,1]", () => {
+  assert.equal(parseConfig({ ...base, ranking: {} }).ranking.dedupThreshold, 0.8)
+  assert.equal(
+    parseConfig({ ...base, ranking: { dedupThreshold: 0 } }).ranking.dedupThreshold,
+    0,
+    "0 is a valid explicit off-switch",
+  )
+  assert.equal(parseConfig({ ...base, ranking: { dedupThreshold: 1.5 } }).ranking.dedupThreshold, 1)
+  assert.equal(parseConfig({ ...base, ranking: { dedupThreshold: -1 } }).ranking.dedupThreshold, 0)
+})

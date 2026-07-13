@@ -77,7 +77,7 @@
 		},
 		"ranking": {
 			"label": "Composite Ranking",
-			"help": "Rank memories by more than raw relevance: boost curated memory and the active story, penalize auto-saved conversation fragments. Set storyTerms to 3-15 distinctive names/terms of the active thread (characters, codenames, invented words; matched case-insensitively at word boundaries) so it outranks chatter; update the list when the active story changes. Old results accrue a small bounded recency penalty (half-life recencyHalfLifeDays, cap recencyMaxPenalty; kept memory ages at recencyCuratedFactor); recencyHalfLifeDays 0 disables it. { enabled, storyTerms, curationBoost, storyBoost, chatterPenalty, candidateMultiplier, chatterQuota, recencyHalfLifeDays, recencyMaxPenalty, recencyCuratedFactor, sourceWeights }",
+			"help": "Rank memories by more than raw relevance: boost curated memory and the active story, penalize auto-saved conversation fragments. Set storyTerms to 3-15 distinctive names/terms of the active thread (characters, codenames, invented words; matched case-insensitively at word boundaries) so it outranks chatter; update the list when the active story changes. Old results accrue a small bounded recency penalty (half-life recencyHalfLifeDays, cap recencyMaxPenalty; kept memory ages at recencyCuratedFactor); recencyHalfLifeDays 0 disables it. { enabled, storyTerms, curationBoost, storyBoost, chatterPenalty, candidateMultiplier, chatterQuota, recencyHalfLifeDays, recencyMaxPenalty, recencyCuratedFactor, sourceWeights, dedupThreshold }",
 			"advanced": true
 		},
 		"debug": {
@@ -189,6 +189,7 @@
 					"recencyHalfLifeDays": { "type": "number", "minimum": 0, "maximum": 3650 },
 					"recencyMaxPenalty": { "type": "number", "minimum": 0, "maximum": 1 },
 					"recencyCuratedFactor": { "type": "number", "minimum": 0, "maximum": 1 },
+					"dedupThreshold": { "type": "number", "minimum": 0, "maximum": 1 },
 					"sourceWeights": {
 						"type": "object",
 						"additionalProperties": { "type": "number", "exclusiveMinimum": 0, "maximum": 5 },

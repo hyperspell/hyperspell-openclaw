@@ -73,6 +73,7 @@ async function main() {
 					cfg.maxResults,
 					cfg.relevanceThreshold,
 					cfg.ranking.chatterQuota,
+					cfg.ranking.dedupThreshold,
 				)
 			: // Membership rule of formatHighlightBullets (ranking off): top
 				// maxResults, doc score AND at least one highlight over threshold.

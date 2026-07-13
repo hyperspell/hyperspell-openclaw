@@ -259,6 +259,7 @@ export function buildAutoContextHandler(
           cfg.maxResults,
           cfg.relevanceThreshold,
           ranking.chatterQuota,
+          ranking.dedupThreshold,
         )
         logScoreSamples(prompt, currentSessionId, "single", explained, cfg.relevanceThreshold)
         const selected = explained.filter((e) => e.selected).map((e) => e.result)
