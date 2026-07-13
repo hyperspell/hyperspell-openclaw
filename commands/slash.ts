@@ -2,6 +2,8 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk"
 import type { HyperspellClient } from "../client.ts"
 import type { CanReadScope, HyperspellConfig } from "../config.ts"
 import { getWorkspaceDir } from "../config.ts"
+import { MOOD_WEATHER_COLLECTION } from "../hooks/mood-weather.ts"
+import { MOOD_WEATHER_SOURCE } from "../lib/filters.ts"
 import {
   buildScopeFilter,
   getCanReadScopes,
@@ -12,6 +14,7 @@ import {
 } from "../lib/sender.ts"
 import { log } from "../logger.ts"
 import { syncAllMemoryFiles } from "../sync/markdown.ts"
+import { buildPreviewReport } from "./preview.ts"
 
 /**
  * Strip a `#scope-name` prefix from free text. Returns the scope and the
@@ -192,6 +195,61 @@ export function registerCommands(
       } catch (err) {
         log.error("/sync failed", err)
         return { text: "Failed to sync memory files. Check logs for details." }
+      }
+    },
+  })
+
+  // /moodweather — private roll history (operator retrospection only; these rows
+  // are excluded from all agent recall, so this command is the ONLY reader).
+  api.registerCommand({
+    name: "moodweather",
+    description: "Show recent mood-weather rolls (never fed back into tone)",
+    acceptsArgs: false,
+    requireAuth: true,
+    handler: async () => {
+      log.debug("/moodweather command")
+      try {
+        const rows: Array<{ mood: string; rolledAt: string }> = []
+        for await (const mem of client.listMemories({
+          collection: MOOD_WEATHER_COLLECTION,
+          pageSize: 50,
+        })) {
+          if (mem.metadata?.openclaw_source !== MOOD_WEATHER_SOURCE) continue
+          rows.push({
+            mood: String(mem.metadata.mood ?? "?"),
+            rolledAt: String(mem.metadata.rolled_at ?? ""),
+          })
+          if (rows.length >= 20) break
+        }
+        if (rows.length === 0) {
+          return { text: "No mood-weather rolls recorded." }
+        }
+        const lines = rows.map(
+          (r) => `• ${r.rolledAt.slice(0, 16).replace("T", " ")} — ${r.mood}`,
+        )
+        return {
+          text: `Recent mood-weather rolls (newest first):\n${lines.join("\n")}`,
+        }
+      } catch (err) {
+        log.error("/moodweather failed", err)
+        return { text: "Failed to fetch mood-weather history. Check logs for details." }
+      }
+    },
+  })
+
+  // /previewcontext - Show what would be injected into the next session
+  api.registerCommand({
+    name: "previewcontext",
+    description: "Preview what Hyperspell would inject at the next session start",
+    acceptsArgs: false,
+    requireAuth: true,
+    handler: async (ctx: { args?: string; senderId?: string; channel?: string }) => {
+      log.debug("/previewcontext command")
+      try {
+        return { text: await buildPreviewReport(client, cfg, ctx) }
+      } catch (err) {
+        log.error("/previewcontext failed", err)
+        return { text: "Failed to build preview. Check logs for details." }
       }
     },
   })

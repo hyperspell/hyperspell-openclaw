@@ -6,7 +6,9 @@ import {
 	buildEmotionalStateSessionCleanupHandler,
 	buildEmotionalStateStoreHandler,
 	looksLikeRawTranscript,
+	MOOD_WEATHER_COOLDOWN_MS,
 } from "./emotional-state.ts";
+import { MOOD_TABLE } from "./mood-weather.ts";
 
 type State = {
 	resourceId: string;
@@ -15,9 +17,19 @@ type State = {
 	sessionId: string | null;
 	relationshipId: string | null;
 };
+type AddedMemory = {
+	text: string;
+	options?: {
+		title?: string;
+		collection?: string;
+		metadata?: Record<string, string | number | boolean>;
+	};
+};
 type FakeClient = {
 	getEmotionalState: (relId?: string) => Promise<State | null>;
 	getRecentEmotionalStates: (relId?: string, limit?: number) => Promise<State[] | null>;
+	addMemory: (text: string, options?: AddedMemory["options"]) => Promise<{ resourceId: string }>;
+	added: AddedMemory[];
 	callCount: number;
 };
 
@@ -34,6 +46,7 @@ function makeClient(
 ): { client: FakeClient } {
 	const client: FakeClient = {
 		callCount: 0,
+		added: [],
 		// Default mock: /recent unavailable (null) → handler falls back to getEmotionalState.
 		async getRecentEmotionalStates() {
 			return null;
@@ -41,6 +54,11 @@ function makeClient(
 		async getEmotionalState() {
 			client.callCount++;
 			return summary === null ? null : st(summary);
+		},
+		// Records recordMoodRoll's fire-and-forget observability write (#71).
+		async addMemory(text, options) {
+			client.added.push({ text, options });
+			return { resourceId: `mem-${client.added.length}` };
 		},
 	};
 	return { client };
@@ -50,9 +68,10 @@ function makeClient(
 function makeArcClient(states: State[] | null): {
 	client: FakeClient & { recentCalls: number };
 } {
-	const client = {
+	const client: FakeClient & { recentCalls: number } = {
 		callCount: 0,
 		recentCalls: 0,
+		added: [],
 		async getRecentEmotionalStates() {
 			client.recentCalls++;
 			return states;
@@ -60,6 +79,10 @@ function makeArcClient(states: State[] | null): {
 		async getEmotionalState() {
 			client.callCount++;
 			return null;
+		},
+		async addMemory(text, options) {
+			client.added.push({ text, options });
+			return { resourceId: `mem-${client.added.length}` };
 		},
 	};
 	return { client };
@@ -219,9 +242,15 @@ test("emotional-state fetch — skips injecting a raw-transcript placeholder (pe
 // ---- store handler: cron-gate + debounce (the cadence fix) ----------------
 
 function makeStoreClient() {
-	const stores: Array<{ transcript: string; opts: { relationshipId?: string } }> = [];
+	const stores: Array<{
+		transcript: string;
+		opts: { relationshipId?: string; metadata?: Record<string, string | number | boolean> };
+	}> = [];
 	const client = {
-		async storeEmotionalState(transcript: string, opts: { relationshipId?: string }) {
+		async storeEmotionalState(
+			transcript: string,
+			opts: { relationshipId?: string; metadata?: Record<string, string | number | boolean> },
+		) {
 			stores.push({ transcript, opts });
 			return { resourceId: "es-x", status: "pending", summary: "", extractedAt: "", sessionId: null, relationshipId: opts?.relationshipId ?? null };
 		},
@@ -260,6 +289,41 @@ test("emotional-state store — stores for a real user conversation", async () =
 	assert.equal(stores[0].opts.relationshipId, "rel-user-store");
 });
 
+test("emotional-state store — cron-originated session that becomes a real conversation stores on the human turn (issue #70)", async () => {
+	// ctx.trigger is PER-RUN in openclaw core, not session-fixed: the cron run's
+	// agent_end carries trigger="cron", but a human reply in the SAME session is
+	// a new run whose agent_end carries trigger="user". This locks in the plugin
+	// side of that contract: skip the automated turn, store the human one.
+	const { client, stores } = makeStoreClient();
+	const handler = buildEmotionalStateStoreHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
+		storeCfg("rel-cron-to-real"),
+	);
+	const sessionKey = "session-cron-origin";
+
+	// Turn 1: the scheduled check-in itself — automated, must NOT write.
+	await handler(
+		{ success: true, messages: richMessages },
+		{ sessionKey, trigger: "cron" },
+	);
+	assert.equal(stores.length, 0, "cron-triggered turn must not write the register");
+
+	// Turn 2+: the human replies substantively in the same session — new run,
+	// trigger="user", accumulated transcript. Must write exactly once.
+	const grownTranscript = [
+		...richMessages,
+		{ role: "user", content: "actually yes — can we talk? today was a lot and I keep replaying it" },
+		{ role: "assistant", content: "Of course. I'm not going anywhere — start wherever it hurts." },
+		{ role: "user", content: "thank you. it genuinely helps that you checked in first." },
+	];
+	await handler(
+		{ success: true, messages: grownTranscript },
+		{ sessionKey, trigger: "user" },
+	);
+	assert.equal(stores.length, 1, "the human turn of a cron-originated session must store");
+	assert.equal(stores[0].opts.relationshipId, "rel-cron-to-real");
+});
+
 test("emotional-state store — undefined trigger still stores (don't skip when unknown)", async () => {
 	const { client, stores } = makeStoreClient();
 	const handler = buildEmotionalStateStoreHandler(
@@ -279,6 +343,51 @@ test("emotional-state store — debounces repeated stores within the window", as
 	await handler({ success: true, messages: richMessages }, { trigger: "user" });
 	await handler({ success: true, messages: richMessages }, { trigger: "user" });
 	assert.equal(stores.length, 1, "second store within the debounce window is skipped");
+});
+
+// Metadata assertions below are per-key (not exact deepEqual) so later additive
+// metadata fields (e.g. #68's depth fields) don't break these tests.
+
+test("emotional-state store — tags metadata with channelId from ctx (#74)", async () => {
+	const { client, stores } = makeStoreClient();
+	const handler = buildEmotionalStateStoreHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
+		storeCfg("rel-chan-direct"),
+	);
+	await handler(
+		{ success: true, messages: richMessages },
+		{ trigger: "user", channelId: "chan-42" } as never,
+	);
+	assert.equal(stores.length, 1);
+	assert.equal(stores[0].opts.metadata?.source, "openclaw_agent_end");
+	assert.equal(stores[0].opts.metadata?.channelId, "chan-42");
+});
+
+test("emotional-state store — resolves channelId from composite sessionKey when ctx.channelId is absent", async () => {
+	const { client, stores } = makeStoreClient();
+	const handler = buildEmotionalStateStoreHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
+		storeCfg("rel-chan-skey"),
+	);
+	await handler(
+		{ success: true, messages: richMessages },
+		{ trigger: "user", sessionKey: "agent:main:discord:channel:222" },
+	);
+	assert.equal(stores.length, 1);
+	assert.equal(stores[0].opts.metadata?.channelId, "222");
+});
+
+test("emotional-state store — omits channelId when unresolvable, still stores (no crash)", async () => {
+	const { client, stores } = makeStoreClient();
+	const handler = buildEmotionalStateStoreHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
+		storeCfg("rel-chan-none"),
+	);
+	// e.g. a manual CLI run: no channelId, sessionKey has no conversation segment.
+	await handler({ success: true, messages: richMessages }, { trigger: "user" });
+	assert.equal(stores.length, 1);
+	assert.equal(stores[0].opts.metadata?.source, "openclaw_agent_end");
+	assert.equal("channelId" in (stores[0].opts.metadata ?? {}), false, "channelId key must be absent, not empty");
 });
 
 // ---- the arc: inject last N via /emotional-state/recent --------------------
@@ -331,4 +440,254 @@ test("emotional-state fetch — falls back to single latest when /recent is unav
 	const ctx = (out as { prependContext?: string })?.prependContext ?? "";
 	assert.match(ctx, /Just the latest register/);
 	assert.equal(client.callCount, 1, "fell back to getEmotionalState");
+});
+
+// ---- mood weather: cross-session cooldown (issue #77) ----------------------
+
+const moodCfg = (relationshipId: string, chance = 1) =>
+	({ relationshipId, moodWeatherChance: chance }) as unknown as Parameters<
+		typeof buildEmotionalStateFetchHandler
+	>[1];
+
+const hasMood = (out: unknown) =>
+	String((out as { prependContext?: string })?.prependContext ?? "").includes(
+		"<hyperspell-mood-weather>",
+	);
+
+test("mood weather — a landed roll suppresses new rolls for clustered sessions", async () => {
+	const { client } = makeClient("Warm and steady.");
+	let t = 1_000_000;
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-mood-cluster"),
+		{ now: () => t, rng: () => 0 },
+	);
+
+	const first = await handler({}, { sessionKey: "mood-s1" });
+	assert.ok(hasMood(first), "chance=1 → weather lands on the first session");
+
+	t += 10 * 60 * 1000; // 10 minutes later — well inside the cooldown
+	const second = await handler({}, { sessionKey: "mood-s2" });
+	assert.ok(!hasMood(second), "second session in the cluster gets NO new weather");
+	assert.match(
+		String((second as { prependContext?: string })?.prependContext ?? ""),
+		/Warm and steady/,
+		"arc injection is unaffected — only the weather is suppressed",
+	);
+
+	t += 60 * 60 * 1000; // one more hour — still inside the 6h window
+	const third = await handler({}, { sessionKey: "mood-s3" });
+	assert.ok(!hasMood(third), "still cooled down an hour later");
+});
+
+test("mood weather — rolls again once the cooldown window has elapsed", async () => {
+	const { client } = makeClient("Warm and steady.");
+	let t = 1_000_000;
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-mood-elapse"),
+		{ now: () => t, rng: () => 0 },
+	);
+
+	const first = await handler({}, { sessionKey: "elapse-s1" });
+	assert.ok(hasMood(first));
+
+	t += MOOD_WEATHER_COOLDOWN_MS + 1;
+	const later = await handler({}, { sessionKey: "elapse-s2" });
+	assert.ok(hasMood(later), "a session past the window can roll fresh weather");
+});
+
+test("mood weather — a miss does not start the cooldown", async () => {
+	const { client } = makeClient("Warm and steady.");
+	let rngValue = 0.999;
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-mood-miss", 0.5),
+		{ now: () => 1_000_000, rng: () => rngValue },
+	);
+
+	const first = await handler({}, { sessionKey: "miss-s1" });
+	assert.ok(!hasMood(first), "0.999 >= 0.5 — the gate misses");
+
+	rngValue = 0;
+	const second = await handler({}, { sessionKey: "miss-s2" });
+	assert.ok(hasMood(second), "the miss did not burn the window — next session can land");
+});
+
+test("mood weather — post-compaction re-injection replays the SAME mood, no new dice", async () => {
+	const { client } = makeClient("Warm and steady.");
+	// First roll consumes [0, 0] → gate hit, picks MOOD_TABLE[0]. If a second
+	// roll ever happened it would consume [0, 0.999999] → the LAST table entry.
+	const rolls = [0, 0, 0, 0.999999];
+	let i = 0;
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-mood-compact"),
+		{ now: () => 1_000_000, rng: () => rolls[i++] ?? 0 },
+	);
+	const onCompaction = buildEmotionalStateCompactionHandler();
+	const ctx = { sessionKey: "compact-mood" };
+
+	const first = await handler({}, ctx);
+	assert.ok(hasMood(first));
+	assert.match(
+		String((first as { prependContext?: string })?.prependContext ?? ""),
+		new RegExp(MOOD_TABLE[0].id),
+	);
+
+	await onCompaction({}, ctx);
+
+	const replay = await handler({}, ctx);
+	const replayCtx = String((replay as { prependContext?: string })?.prependContext ?? "");
+	assert.ok(
+		replayCtx.includes(MOOD_TABLE[0].note),
+		"re-injection carries the mood rolled at session start",
+	);
+	assert.ok(
+		!replayCtx.includes(MOOD_TABLE[MOOD_TABLE.length - 1].note),
+		"no second roll happened (the [0, 0.999999] mood never appears)",
+	);
+});
+
+test("mood weather — a still-extracting turn does not consume the roll", async () => {
+	// Call 1 returns the pending raw-transcript placeholder (discarded turn);
+	// call 2 returns a real register. The roll must happen only on call 2.
+	let calls = 0;
+	const client = {
+		async getRecentEmotionalStates() {
+			return null;
+		},
+		async getEmotionalState() {
+			calls++;
+			return calls === 1
+				? st("user: hi\nassistant: hey")
+				: st("Settled and warm.");
+		},
+		async addMemory() {
+			return { resourceId: "mem-x" };
+		},
+	};
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-mood-pending"),
+		{ now: () => 1_000_000, rng: () => 0 },
+	);
+	const ctx = { sessionKey: "pending-mood" };
+
+	const first = await handler({}, ctx);
+	assert.equal(first, undefined, "still extracting — no injection, no roll");
+
+	const second = await handler({}, ctx);
+	assert.ok(hasMood(second), "the roll was not burned by the discarded turn");
+	assert.match(
+		String((second as { prependContext?: string })?.prependContext ?? ""),
+		/Settled and warm/,
+	);
+});
+
+// ---- mood weather: roll observability record (issue #71) --------------------
+
+/** recordMoodRoll is fire-and-forget (un-awaited) — flush microtasks/immediates before asserting. */
+const flushAsyncWrites = () => new Promise((r) => setImmediate(r));
+
+const MOOD_IDS = MOOD_TABLE.map((m) => m.id);
+
+test("mood weather observability — a landed roll writes exactly one tagged record", async () => {
+	const { client } = makeClient("Warm and steady.");
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-obs-write"),
+		{ now: () => 1_000_000, rng: () => 0 },
+	);
+
+	const first = await handler({}, { sessionKey: "obs-s1" });
+	assert.ok(hasMood(first), "chance=1 → weather lands");
+	await flushAsyncWrites();
+
+	assert.equal(client.added.length, 1, "exactly one observability record per roll");
+	const rec = client.added[0];
+	assert.equal(rec.options?.collection, "mood-weather");
+	assert.equal(rec.options?.metadata?.openclaw_source, "mood_weather");
+	assert.ok(
+		MOOD_IDS.includes(String(rec.options?.metadata?.mood)),
+		"metadata.mood is a valid mood id",
+	);
+	const rolledAt = String(rec.options?.metadata?.rolled_at);
+	assert.ok(!Number.isNaN(new Date(rolledAt).getTime()), "rolled_at is a valid timestamp");
+	assert.equal(rec.options?.metadata?.session, "obs-s1");
+	assert.equal(rec.options?.metadata?.relationship_id, "rel-obs-write");
+
+	const second = await handler({}, { sessionKey: "obs-s1" });
+	assert.equal(second, undefined, "inject-once cache holds");
+	await flushAsyncWrites();
+	assert.equal(client.added.length, 1, "no second record for the same session");
+});
+
+test("mood weather observability — post-compaction replay does NOT record a second roll", async () => {
+	// The recordMoodRoll call lives inside the !priorMood guard: a replay of an
+	// already-rolled mood is not a new roll and must not double-log.
+	const { client } = makeClient("Warm and steady.");
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-obs-replay"),
+		{ now: () => 1_000_000, rng: () => 0 },
+	);
+	const onCompaction = buildEmotionalStateCompactionHandler();
+	const ctx = { sessionKey: "obs-replay" };
+
+	const first = await handler({}, ctx);
+	assert.ok(hasMood(first));
+	await onCompaction({}, ctx);
+	const replay = await handler({}, ctx);
+	assert.ok(hasMood(replay), "replay re-injects the same mood");
+	await flushAsyncWrites();
+	assert.equal(client.added.length, 1, "one roll, one record — replay does not double-log");
+});
+
+test("mood weather observability — a failing record write never breaks the session", async () => {
+	const { client } = makeClient("Warm and steady.");
+	client.addMemory = async () => {
+		throw new Error("backend down");
+	};
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-obs-fail"),
+		{ now: () => 1_000_000, rng: () => 0 },
+	);
+
+	const out = await handler({}, { sessionKey: "obs-fail" });
+	assert.ok(hasMood(out), "injection succeeds even though the record write rejects");
+	// Flush the rejected write — recordMoodRoll's .catch must swallow it (an
+	// unhandled rejection would fail the test run).
+	await flushAsyncWrites();
+});
+
+test("mood weather observability — a discarded roll is not recorded", async () => {
+	// Only raw-transcript placeholders → the still-extracting early return fires
+	// BEFORE the roll, so nothing lands and nothing may be written.
+	const { client } = makeArcClient([st("user: hi\nassistant: hey")]);
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-obs-discard"),
+		{ now: () => 1_000_000, rng: () => 0 },
+	);
+
+	const out = await handler({}, { sessionKey: "obs-discard" });
+	assert.equal(out, undefined, "still extracting — no injection");
+	await flushAsyncWrites();
+	assert.equal(client.added.length, 0, "no record for weather that never happened");
+});
+
+test("mood weather observability — chance 0 writes nothing", async () => {
+	const { client } = makeClient("Warm and steady.");
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-obs-zero", 0),
+		{ now: () => 1_000_000, rng: () => 0 },
+	);
+
+	const out = await handler({}, { sessionKey: "obs-zero" });
+	assert.ok(!hasMood(out), "no dice → no weather");
+	await flushAsyncWrites();
+	assert.equal(client.added.length, 0);
 });

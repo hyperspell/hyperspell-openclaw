@@ -4,6 +4,8 @@ import type { SearchResult } from "../client.ts";
 import {
 	classifyResult,
 	DEFAULT_RANKING,
+	explainSelection,
+	kindTally,
 	rerank,
 	type RankedResult,
 	scoreResult,
@@ -47,6 +49,157 @@ test("classify — story: matches a story term (title or highlight)", () => {
 		),
 		"story",
 	);
+});
+
+test("classify — story matching requires word boundaries: short terms don't match inside words", () => {
+	// The substring-era false positives (proposal 01 §3.2): "ada" ⊂ "adaptation",
+	// "mira" ⊂ "admiral"/"miracle". Boundary matching rejects all three.
+	assert.notEqual(classifyResult(mk({ title: "notes on adaptation strategy", resourceId: "x" }), ["ada"]), "story");
+	assert.notEqual(classifyResult(mk({ title: "the admiral's log", resourceId: "x" }), ["mira"]), "story");
+	assert.notEqual(classifyResult(mk({ title: "a small miracle", resourceId: "x" }), ["mira"]), "story");
+	// ...while true whole-word occurrences still classify as story.
+	assert.equal(classifyResult(mk({ title: "Ada's chapter", resourceId: "x" }), ["ada"]), "story");
+});
+
+test("classify — story terms match across punctuation boundaries: possessives and hyphenation", () => {
+	// Boundaries are word↔non-word transitions, so punctuation adjacent to the
+	// term is fine: "Mira's" and "mira-class" both contain the word "mira".
+	assert.equal(classifyResult(mk({ title: "Mira's confrontation, draft 2", resourceId: "x" }), ["mira"]), "story");
+	assert.equal(classifyResult(mk({ title: "the mira-class vessels", resourceId: "x" }), ["mira"]), "story");
+});
+
+test("classify — story matching is case-insensitive and reaches highlights with a null title", () => {
+	const r = mk({
+		title: null,
+		resourceId: UUID,
+		highlights: [{ id: "h", text: "THE OMUERTA rises", score: 0.4 }],
+	});
+	assert.equal(classifyResult(r, ["Omuerta"]), "story");
+});
+
+test("classify — multi-word phrase terms still match under boundary rules", () => {
+	assert.equal(
+		classifyResult(mk({ title: "re: the lady of storms, ch. 4", resourceId: "x" }), ["lady of storms"]),
+		"story",
+	);
+});
+
+test("classify — phrase terms don't match across the seam of two highlights", () => {
+	// The \n hay separator (not space) keeps "…the lady" + "of storms…" from
+	// stitching into a spurious phrase hit.
+	const r = mk({
+		title: null,
+		resourceId: "x",
+		highlights: [
+			{ id: "a", text: "spoke to the lady", score: 0.4 },
+			{ id: "b", text: "of storms there were many", score: 0.4 },
+		],
+	});
+	assert.notEqual(classifyResult(r, ["lady of storms"]), "story");
+});
+
+test("rerank — story term beats chatter at EQUAL base relevance", () => {
+	// The core promise of idea #1: topic wins over noise when similarity ties.
+	const chatterEcho = mk({
+		title: "Unnamed Conversation",
+		resourceId: UUID,
+		score: 0.5,
+		highlights: [{ id: "h", text: "we talked about writing again", score: 0.5 }],
+	});
+	const story = mk({
+		title: null,
+		resourceId: "mem-2",
+		score: 0.5,
+		highlights: [{ id: "h", text: "Junii finally confronts the Omuerta", score: 0.5 }],
+	});
+	const w = { ...DEFAULT_RANKING, storyTerms: ["omuerta"] };
+	const out = rerank([chatterEcho, story], w);
+	assert.equal(out[0].resourceId, "mem-2");
+	// story: 0.5 + 0.15 + 0.20 = 0.85 ; chatter: 0.5 − 0.20 = 0.30
+	assert.ok(Math.abs(out[0]._composite - 0.85) < 1e-9);
+	assert.ok(Math.abs(out[1]._composite - 0.3) < 1e-9);
+});
+
+test("rerank + selectRanked — corpus: populated storyTerms lift the manuscript above louder chatter (#82)", () => {
+	// Realistic pool: paraphrasing hot-buffer echoes vs sectionized manuscript
+	// memories titled "<file title> — <section>" (the sync-title synergy) plus a
+	// curated note. Empty storyTerms = today's inert default; populated terms
+	// must put every manuscript section above every echo.
+	const UUID2 = "ab34cd56-1234-4abc-8def-0123456789ab";
+	const UUID3 = "cd56ef78-5678-4def-9abc-0123456789cd";
+	const pool = [
+		mk({
+			title: "Unnamed Conversation",
+			resourceId: UUID,
+			score: 0.98,
+			highlights: [{ id: "h", text: "the writing is going so well lately", score: 0.98 }],
+		}),
+		mk({
+			title: "Unnamed Conversation",
+			resourceId: UUID2,
+			score: 0.97,
+			highlights: [{ id: "h", text: "you said Mira should face the storm", score: 0.97 }],
+		}),
+		mk({
+			title: "Unnamed Conversation",
+			resourceId: UUID3,
+			score: 0.96,
+			highlights: [{ id: "h", text: "keep writing those chapters", score: 0.96 }],
+		}),
+		mk({
+			title: "The Lighthouse Keeper — Chapter 3",
+			resourceId: "ms-ch3",
+			score: 0.55,
+			highlights: [{ id: "h", text: "Mira watched the lamp gutter", score: 0.55 }],
+		}),
+		mk({
+			title: "The Lighthouse Keeper — Chapter 4",
+			resourceId: "ms-ch4",
+			score: 0.52,
+			highlights: [{ id: "h", text: "the shoal took the boat", score: 0.52 }],
+		}),
+		mk({
+			title: "2026-06-01 — Plot notes",
+			resourceId: "note-plot",
+			score: 0.5,
+			highlights: [{ id: "h", text: "ending ideas", score: 0.5 }],
+		}),
+	];
+
+	// Inert default: the manuscript is merely curated (0.55 + 0.2 = 0.75) and
+	// the loudest echo still takes the top slot (0.98 − 0.2 = 0.78).
+	const inert = rerank(pool, DEFAULT_RANKING);
+	assert.equal(inert[0].resourceId, UUID);
+	assert.equal(inert[0]._kind, "chatter");
+	assert.equal(inert.find((r) => r.resourceId === "ms-ch3")?._kind, "curated");
+	assert.equal(inert.find((r) => r.resourceId === "ms-ch4")?._kind, "curated");
+
+	// Populated terms (the manuscript title covers every section via the sync
+	// title): both sections classify story, outrank every non-story echo, and
+	// survive selection.
+	const w = { ...DEFAULT_RANKING, storyTerms: ["lighthouse keeper", "mira"] };
+	const out = rerank(pool, w);
+	assert.equal(out.find((r) => r.resourceId === "ms-ch3")?._kind, "story");
+	assert.equal(out.find((r) => r.resourceId === "ms-ch4")?._kind, "story");
+	// UUID2's echo mentions "Mira" so it legitimately classifies story too
+	// (story-terms precede the chatter check — risk #4, deliberately unchanged).
+	assert.equal(out.find((r) => r.resourceId === UUID2)?._kind, "story");
+	const sel = selectRanked(out, 5, 0.6, 2);
+	const ids = sel.map((r) => r.resourceId);
+	assert.ok(ids.indexOf("ms-ch3") < ids.indexOf(UUID), "chapter 3 outranks the loudest non-story echo");
+	assert.ok(ids.includes("ms-ch4"), "chapter 4 survives selection");
+	assert.ok(sel.filter((r) => r._kind === "chatter").length <= 2, "quota still bounds true chatter");
+});
+
+test("kindTally — counts ranked results by kind", () => {
+	const list = [
+		ranked("story", 0.9, "s1"),
+		ranked("chatter", 0.8, "c1"),
+		ranked("chatter", 0.7, "c2"),
+		ranked("curated", 0.6, "k1"),
+	];
+	assert.deepEqual(kindTally(list), { story: 1, chatter: 2, curated: 1 });
+	assert.deepEqual(kindTally([]), {});
 });
 
 test("rerank — a kept note (0.47) out-ranks a LOUDER conversation echo (0.62)", () => {
@@ -110,4 +263,208 @@ test("selectRanked — drops below-threshold and honors maxResults", () => {
 	const sel = selectRanked(list, 1, 0.6, 2);
 	assert.equal(sel.length, 1, "maxResults respected");
 	assert.equal(sel[0].resourceId, "a");
+});
+
+// Pre-refactor selectRanked, copied verbatim as the behavior-identity oracle:
+// selectRanked is now derived from explainSelection (proposal 02 §3a) and must
+// select the exact same set. Domain note: maxResults >= 1 — the old loop's
+// check-after-push let ONE item through at maxResults 0, but a 0 config also
+// makes the candidate fetch limit 0, so that input is unreachable in prod.
+function legacySelectRanked(
+	list: RankedResult[],
+	maxResults: number,
+	threshold: number,
+	chatterQuota: number,
+): RankedResult[] {
+	const out: RankedResult[] = [];
+	let chatter = 0;
+	for (const r of list) {
+		if (r._composite < threshold) continue;
+		if (r._kind === "chatter") {
+			if (chatter >= chatterQuota) continue;
+			chatter++;
+		}
+		out.push(r);
+		if (out.length >= maxResults) break;
+	}
+	return out;
+}
+
+test("explainSelection — behavior identity: selected set matches the pre-refactor selectRanked on varied pools", () => {
+	const pools: RankedResult[][] = [
+		[],
+		// echo flood around the quota
+		[
+			ranked("chatter", 0.9, "c1"),
+			ranked("chatter", 0.85, "c2"),
+			ranked("chatter", 0.8, "c3"),
+			ranked("curated", 0.7, "k1"),
+			ranked("chatter", 0.65, "c4"),
+		],
+		// below-threshold tail + maxResults pressure
+		[ranked("curated", 0.9, "a"), ranked("curated", 0.8, "c"), ranked("other", 0.5, "b")],
+		// all four kinds straddling the threshold
+		[
+			ranked("story", 0.95, "s1"),
+			ranked("chatter", 0.9, "c1"),
+			ranked("curated", 0.61, "k1"),
+			ranked("chatter", 0.6, "c2"),
+			ranked("other", 0.6, "o1"),
+			ranked("chatter", 0.59, "c3"),
+			ranked("curated", 0.4, "k2"),
+		],
+		// chatter-only pool (quota and cap interact)
+		[
+			ranked("chatter", 0.7, "c1"),
+			ranked("chatter", 0.7, "c2"),
+			ranked("chatter", 0.7, "c3"),
+			ranked("chatter", 0.7, "c4"),
+		],
+	];
+	const params: Array<[number, number, number]> = [
+		[10, 0.6, 2],
+		[1, 0.6, 2],
+		[3, 0.6, 0],
+		[2, 0.5, 1],
+		[4, 0.7, 3],
+	];
+	for (const pool of pools) {
+		for (const [max, thr, quota] of params) {
+			const label = `pool=[${pool.map((r) => r.resourceId)}] max=${max} thr=${thr} quota=${quota}`;
+			const expected = legacySelectRanked(pool, max, thr, quota);
+			assert.deepEqual(selectRanked(pool, max, thr, quota), expected, `selectRanked ${label}`);
+			assert.deepEqual(
+				explainSelection(pool, max, thr, quota)
+					.filter((e) => e.selected)
+					.map((e) => e.result),
+				expected,
+				`explainSelection ${label}`,
+			);
+		}
+	}
+});
+
+test("explainSelection — annotates every candidate; selected entries carry cut null", () => {
+	const list = [ranked("curated", 0.9, "a"), ranked("other", 0.5, "b")];
+	const ex = explainSelection(list, 10, 0.6, 2);
+	assert.equal(ex.length, list.length, "one entry per candidate, ranked order");
+	assert.deepEqual(ex.map((e) => e.result.resourceId), ["a", "b"]);
+	assert.deepEqual(ex.map((e) => e.cut), [null, "threshold"]);
+});
+
+test("explainSelection — sub-threshold is 'threshold' even when the maxResults cap is already full", () => {
+	const list = [ranked("curated", 0.9, "a"), ranked("curated", 0.8, "b"), ranked("curated", 0.5, "low")];
+	const ex = explainSelection(list, 1, 0.6, 2);
+	assert.deepEqual(ex.map((e) => e.cut), [null, "max-results", "threshold"]);
+});
+
+test("explainSelection — third chatter item with quota 2 is cut by 'chatter-quota' (the quota was the binding constraint)", () => {
+	// The proposal-03 ask: distinguish "quota bound" from threshold/maxResults cuts.
+	const list = [
+		ranked("chatter", 0.9, "c1"),
+		ranked("chatter", 0.85, "c2"),
+		ranked("chatter", 0.8, "c3"),
+		ranked("curated", 0.7, "k1"),
+	];
+	const ex = explainSelection(list, 10, 0.6, 2);
+	assert.deepEqual(ex.map((e) => e.cut), [null, null, "chatter-quota", null]);
+	assert.deepEqual(
+		ex.filter((e) => e.selected).map((e) => e.result.resourceId),
+		["c1", "c2", "k1"],
+	);
+});
+
+test("explainSelection — above-threshold item past maxResults is 'max-results'", () => {
+	const list = [ranked("curated", 0.9, "a"), ranked("curated", 0.8, "b"), ranked("curated", 0.7, "c")];
+	const ex = explainSelection(list, 2, 0.6, 2);
+	assert.deepEqual(ex.map((e) => e.cut), [null, null, "max-results"]);
+});
+
+test("explainSelection — chatter past a full maxResults cap reads 'max-results', not 'chatter-quota'", () => {
+	// It would have been cut regardless of the quota, so the quota wasn't
+	// binding for it — proposal 03 §3.2's correctness property.
+	const list = [ranked("curated", 0.9, "k1"), ranked("chatter", 0.8, "c1")];
+	const ex = explainSelection(list, 1, 0.6, 2);
+	assert.deepEqual(ex.map((e) => e.cut), [null, "max-results"]);
+});
+
+test("explainSelection — quota 0 cuts every above-threshold chatter as 'chatter-quota'", () => {
+	const list = [ranked("chatter", 0.9, "c1"), ranked("chatter", 0.8, "c2"), ranked("curated", 0.7, "k1")];
+	const ex = explainSelection(list, 10, 0.6, 0);
+	assert.deepEqual(ex.map((e) => e.cut), ["chatter-quota", "chatter-quota", null]);
+});
+
+// ---- recency decay (proposal 07) ----
+
+const NOW = Date.parse("2026-07-01T00:00:00Z");
+const daysAgo = (d: number) => new Date(NOW - d * 86_400_000).toISOString();
+
+test("recency — same relevance, different ages: the fresh curated note ranks first (#66's case)", () => {
+	const old = mk({ title: "Editor config", resourceId: "old", score: 0.6, createdAt: daysAgo(730) });
+	const fresh = mk({ title: "Editor config", resourceId: "fresh", score: 0.6, createdAt: daysAgo(2) });
+	// Old-first input: the assertion proves reordering, not input order.
+	const out = rerank([old, fresh], DEFAULT_RANKING, NOW);
+	assert.deepEqual(out.map((r) => r.resourceId), ["fresh", "old"]);
+	// Curated gap ≈ maxPenalty × curatedFactor × (decay(2d) − decay(730d)) ≈ 0.049
+	const gap = out[0]._composite - out[1]._composite;
+	assert.ok(gap > 0.045 && gap < 0.055, `expected ~0.049 gap, got ${gap}`);
+});
+
+test("recency — old-but-still-true curated beats shallow-but-recent chatter (the risk case)", () => {
+	const truth = mk({ title: "2024-06-01 — Writing Notes", resourceId: "note", score: 0.55, createdAt: daysAgo(730) });
+	const echo = mk({
+		title: "Unnamed Conversation",
+		resourceId: UUID,
+		score: 0.62,
+		createdAt: daysAgo(1),
+		highlights: [{ id: "h", text: "you have the book inside you", score: 0.62 }],
+	});
+	const out = rerank([echo, truth], DEFAULT_RANKING, NOW);
+	assert.equal(out[0].resourceId, "note", "aged kept truth still outranks the fresh echo");
+	// note: 0.55 + 0.2 − ~0.05 ≈ 0.70 ; echo: 0.62 − 0.2 − ~0.001 ≈ 0.42
+	assert.ok(Math.abs(out[0]._composite - 0.7) < 0.005);
+	assert.ok(Math.abs(out[1]._composite - 0.419) < 0.005);
+});
+
+test("recency — createdAt null or unparseable: no penalty (fail open)", () => {
+	const base = { title: "A note", resourceId: "n", score: 0.6 };
+	const atNow = scoreResult(mk({ ...base, createdAt: new Date(NOW).toISOString() }), DEFAULT_RANKING, NOW);
+	const noDate = scoreResult(mk({ ...base, createdAt: null }), DEFAULT_RANKING, NOW);
+	const badDate = scoreResult(mk({ ...base, createdAt: "not-a-date" }), DEFAULT_RANKING, NOW);
+	assert.equal(noDate.composite, atNow.composite);
+	assert.equal(badDate.composite, atNow.composite);
+});
+
+test("recency — halfLife 0 or maxPenalty 0 disables the term exactly", () => {
+	const ancient = mk({ title: "A note", resourceId: "n", score: 0.6, createdAt: daysAgo(3650) });
+	const off1 = scoreResult(ancient, { ...DEFAULT_RANKING, recencyHalfLifeDays: 0 }, NOW);
+	const off2 = scoreResult(ancient, { ...DEFAULT_RANKING, recencyMaxPenalty: 0 }, NOW);
+	// Today's exact formula: 0.6 + curationBoost 0.2
+	assert.equal(off1.composite, 0.8);
+	assert.equal(off2.composite, 0.8);
+});
+
+test("recency — the cap holds: an arbitrarily old result loses at most recencyMaxPenalty", () => {
+	const relic = mk({ title: null, resourceId: UUID, score: 0.6, createdAt: daysAgo(365 * 50) });
+	const { composite } = scoreResult(relic, DEFAULT_RANKING, NOW);
+	const penalty = 0.6 - DEFAULT_RANKING.chatterPenalty - composite;
+	// 1e-9 tolerance: the penalty is reconstructed by float subtraction here.
+	assert.ok(penalty <= DEFAULT_RANKING.recencyMaxPenalty + 1e-9, "never exceeds the cap");
+	assert.ok(penalty > 0.099, "asymptotically close to the cap");
+});
+
+test("recency — kept memory ages at the curated factor (half the chatter penalty)", () => {
+	const at = daysAgo(365);
+	const curatedNote = mk({ title: "Kept note", resourceId: "k", score: 0.6, createdAt: at });
+	const echo = mk({ title: "Unnamed Conversation", resourceId: UUID, score: 0.6, createdAt: at });
+	const curPenalty = 0.6 + DEFAULT_RANKING.curationBoost - scoreResult(curatedNote, DEFAULT_RANKING, NOW).composite;
+	const chatPenalty = 0.6 - DEFAULT_RANKING.chatterPenalty - scoreResult(echo, DEFAULT_RANKING, NOW).composite;
+	assert.ok(Math.abs(curPenalty - chatPenalty * DEFAULT_RANKING.recencyCuratedFactor) < 1e-9);
+});
+
+test("recency — future timestamps clamp to zero age: no accidental boost", () => {
+	const base = { title: "A note", resourceId: "n", score: 0.6 };
+	const future = scoreResult(mk({ ...base, createdAt: daysAgo(-1) }), DEFAULT_RANKING, NOW);
+	const present = scoreResult(mk({ ...base, createdAt: new Date(NOW).toISOString() }), DEFAULT_RANKING, NOW);
+	assert.equal(future.composite, present.composite);
 });

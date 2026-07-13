@@ -3,6 +3,7 @@ import path from "node:path";
 import type { HyperspellClient } from "../client.ts";
 import { getWorkspaceDir } from "../config.ts";
 import type { HyperspellConfig } from "../config.ts";
+import { channelIdFromCtx } from "../lib/exclude-channels.ts";
 import { resolveUser } from "../lib/sender.ts";
 import {
 	cleanupSpeakerSession,
@@ -275,10 +276,11 @@ export function buildHotBufferHandler(
 			// 2026-07-02 (docs/filter-dialect-test.mjs: metadata-carrying row is
 			// baseline-retrievable AND filterable). The retrieval exclude
 			// {openclaw_source:{$ne:"agent_end"}} keeps "hot_buffer" rows.
-			const channelId =
-				typeof ctx?.channelId === "string" && ctx.channelId.length > 0
-					? ctx.channelId
-					: undefined;
+			// channelIdFromCtx (ctx.channelId, else sessionKey parse) is the same
+			// resolver the quarantine check uses — tag-time identity must equal
+			// quarantine-time identity or purge-channel misses rows the exclude
+			// would have blocked.
+			const channelId = channelIdFromCtx(ctx);
 			const metadata: Record<string, string> = {
 				openclaw_source: "hot_buffer",
 				openclaw_session_id: sessionId,

@@ -2,12 +2,13 @@
 	"id": "openclaw-hyperspell",
 	"name": "Hyperspell",
 	"description": "Context and memory for your AI agents — search across Notion, Slack, Google Drive, and more",
-	"version": "0.13.0",
+	"version": "0.20.0",
 	"kind": "memory",
 	"contracts": {
 		"tools": [
 			"hyperspell_search",
 			"hyperspell_remember",
+			"hyperspell_emotional_arc",
 			"hyperspell_network_scan",
 			"hyperspell_network_write",
 			"hyperspell_network_complete"
@@ -48,7 +49,7 @@
 		},
 		"excludeChannels": {
 			"label": "Excluded Channels",
-			"help": "Conversation/channel ids fully quarantined from memory: no context injection, no memory writes, no memory tools in those sessions. Threads inside an excluded channel inherit the quarantine.",
+			"help": "Conversation/channel ids fully quarantined from memory: no context injection, no memory writes, no memory tools in those sessions. Threads inside an excluded channel inherit the quarantine. Forward-only; already-synced content is not removed (see purge-channel CLI command).",
 			"advanced": true
 		},
 		"startupOrientation": {
@@ -72,6 +73,11 @@
 			"label": "Max Results",
 			"placeholder": "10",
 			"help": "Maximum memories injected into context per turn",
+			"advanced": true
+		},
+		"ranking": {
+			"label": "Composite Ranking",
+			"help": "Rank memories by more than raw relevance: boost curated memory and the active story, penalize auto-saved conversation fragments. Set storyTerms to 3-15 distinctive names/terms of the active thread (characters, codenames, invented words; matched case-insensitively at word boundaries) so it outranks chatter; update the list when the active story changes. Old results accrue a small bounded recency penalty (half-life recencyHalfLifeDays, cap recencyMaxPenalty; kept memory ages at recencyCuratedFactor); recencyHalfLifeDays 0 disables it. { enabled, storyTerms, curationBoost, storyBoost, chatterPenalty, candidateMultiplier, chatterQuota, recencyHalfLifeDays, recencyMaxPenalty, recencyCuratedFactor }",
 			"advanced": true
 		},
 		"debug": {
@@ -179,7 +185,10 @@
 					"storyBoost": { "type": "number", "minimum": 0, "maximum": 1 },
 					"storyTerms": { "type": "array", "items": { "type": "string" } },
 					"candidateMultiplier": { "type": "number", "minimum": 1, "maximum": 10 },
-					"chatterQuota": { "type": "number", "minimum": 0, "maximum": 20 }
+					"chatterQuota": { "type": "number", "minimum": 0, "maximum": 20 },
+					"recencyHalfLifeDays": { "type": "number", "minimum": 0, "maximum": 3650 },
+					"recencyMaxPenalty": { "type": "number", "minimum": 0, "maximum": 1 },
+					"recencyCuratedFactor": { "type": "number", "minimum": 0, "maximum": 1 }
 				}
 			},
 			"debug": {

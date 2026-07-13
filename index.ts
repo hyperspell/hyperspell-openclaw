@@ -23,6 +23,7 @@ import {
 } from "./hooks/startup-orientation.ts"
 import { isExcludedChannel } from "./lib/exclude-channels.ts"
 import { initLogger, log } from "./logger.ts"
+import { createEmotionalArcToolFactory } from "./tools/emotional-arc.ts"
 import { createRememberToolFactory } from "./tools/remember.ts"
 import { createSearchToolFactory } from "./tools/search.ts"
 import { registerNetworkTools } from "./graph/index.ts"
@@ -86,6 +87,17 @@ export default {
 					}
 				},
 			})
+			api.registerCommand({
+				name: "previewcontext",
+				description: "Preview what Hyperspell would inject at the next session start",
+				acceptsArgs: false,
+				requireAuth: false,
+				handler: async () => {
+					return {
+						text: "Hyperspell not configured. Run 'openclaw openclaw-hyperspell setup' first.",
+					}
+				},
+			})
 			return
 		}
 
@@ -139,6 +151,20 @@ export default {
 		const startHandlers: StartHandler[] = [];
 
 		if (cfg.emotionalContext) {
+			// moodWeatherChance defaults to 0, so mood weather is inert unless the
+			// operator opts in — say so once at startup rather than staying silent.
+			if (cfg.moodWeatherChance === 0) {
+				log.info(
+					"emotionalContext is on but moodWeatherChance is 0 — mood weather will never roll. Set moodWeatherChance (e.g. 0.03–0.05) to enable it.",
+				);
+			}
+			// On-demand arc re-fetch (issue #76): the session-start injection can be
+			// compacted out of history mid-session; this tool lets the agent pull the
+			// exact same block back without waiting for the next prompt build.
+			api.registerTool(
+				toolUnlessQuarantined(createEmotionalArcToolFactory(client, cfg)),
+				{ name: "hyperspell_emotional_arc" },
+			);
 			startHandlers.push(
 				buildEmotionalStateFetchHandler(client, cfg) as StartHandler,
 			);
@@ -225,6 +251,24 @@ export default {
 		// Register memory network tools
 		if (cfg.knowledgeGraph.enabled) {
 			registerNetworkTools(api, client, cfg);
+		} else {
+			// Discoverability (issue #81): the Memory Network ships fully built but
+			// default-off. If memories are accumulating (hot buffer / auto-trace /
+			// emotional state) and the operator never made a knowledgeGraph decision,
+			// say so once at startup — otherwise the feature is undetectable without
+			// reading source. Keyed off the RAW config: an explicit `knowledgeGraph`
+			// key (even { enabled: false }) is a decision and suppresses this.
+			const memoryAccumulating =
+				cfg.hotBuffer.enabled || cfg.autoTrace.enabled || cfg.emotionalContext;
+			if (rawConfig?.knowledgeGraph === undefined && memoryAccumulating) {
+				log.info(
+					"memories are accumulating but the Memory Network (knowledgeGraph) is not configured — " +
+						"no entity extraction into memory/people|projects|organizations|topics will run. " +
+						"Enable it via 'openclaw openclaw-hyperspell setup' (Memory Network step) or set " +
+						"knowledgeGraph.enabled: true, or silence this note with knowledgeGraph: { enabled: false }. " +
+						"See README § Memory Network.",
+				);
+			}
 		}
 
 		// Register slash commands

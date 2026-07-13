@@ -29,5 +29,12 @@ npm-debug.log*
 
 # TypeScript cache
 *.tsbuildinfo
+
+# Live retrieval-eval run log (fixtures are committed; results stay local)
+docs/eval/retrieval-results.jsonl
+
+# Loops-audit window artifacts (contain conversation titles/content; see
+# docs/loops-audit-rubric.md — delete after the audit window)
+docs/loops-audit/
 __pycache__/
 .aider*

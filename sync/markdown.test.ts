@@ -11,8 +11,10 @@ import {
   getSyncableFiles,
   loadManifest,
   parseMarkdownSections,
+  resolveSyncSource,
   saveManifest,
   syncAllFilesSectionized,
+  syncMarkdownFile,
   syncMarkdownFileSectionized,
   withSyncLock,
 } from "./markdown.ts"
@@ -169,12 +171,61 @@ test("getSyncableFiles — applies the same ignore to walked watchPaths", () => 
   fs.writeFileSync(path.join(extra, "keep.md"), "# Keep\n")
   fs.writeFileSync(path.join(extra, "dreaming", "drop.md"), "# Drop\n")
   fs.writeFileSync(path.join(extra, ".hidden", "drop.md"), "# Drop\n")
-  const got = getSyncableFiles(ws, [extra]).map((f) => fileKey(ws, f)).sort()
+  const got = getSyncableFiles(ws, [{ path: extra }]).map((f) => fileKey(ws, f)).sort()
   assert.deepEqual(got, [
     "extra/keep.md",
     "memory/2026-06-19.md",
     "memory/topics/work.md",
   ])
+})
+
+test("getSyncableFiles — watchPath overlapping memory/ does not duplicate files", () => {
+  const ws = tmpDir()
+  seedMemoryTree(ws)
+  const got = getSyncableFiles(ws, [{ path: "memory/topics" }]).map((f) => fileKey(ws, f))
+  assert.deepEqual(got.sort(), ["memory/2026-06-19.md", "memory/topics/work.md"])
+})
+
+// ---------------------------------------------------------------------------
+// resolveSyncSource — provenance labels
+// ---------------------------------------------------------------------------
+
+test("resolveSyncSource — memory/ file resolves to \"memory\"", () => {
+  const ws = "/ws"
+  assert.equal(resolveSyncSource("/ws/memory/note.md", ws, []), "memory")
+})
+
+test("resolveSyncSource — labeled watchPath wins over its slug", () => {
+  const got = resolveSyncSource("/ws/notes/brainstem/2026-07-06.md", "/ws", [
+    { path: "notes/brainstem", source: "brainstem_daily" },
+  ])
+  assert.equal(got, "brainstem_daily")
+})
+
+test("resolveSyncSource — unlabeled watchPath derives a slug", () => {
+  const got = resolveSyncSource("/ws/notes/brainstem/2026-07-06.md", "/ws", [
+    { path: "notes/brainstem" },
+  ])
+  assert.equal(got, "notes_brainstem")
+})
+
+test("resolveSyncSource — longest-prefix watchPath beats a shorter one", () => {
+  const got = resolveSyncSource("/ws/notes/brainstem/2026-07-06.md", "/ws", [
+    { path: "notes", source: "notes" },
+    { path: "notes/brainstem", source: "brainstem_daily" },
+  ])
+  assert.equal(got, "brainstem_daily")
+})
+
+test("resolveSyncSource — watchPath nested in memory/ beats the memory label", () => {
+  const got = resolveSyncSource("/ws/memory/generated/x.md", "/ws", [
+    { path: "memory/generated", source: "generated" },
+  ])
+  assert.equal(got, "generated")
+})
+
+test("resolveSyncSource — unmatched file resolves to undefined", () => {
+  assert.equal(resolveSyncSource("/ws/other/x.md", "/ws", [{ path: "notes" }]), undefined)
 })
 
 test("loadManifest — missing file returns empty manifest", () => {
@@ -269,7 +320,11 @@ test("withSyncLock — a rejecting op does not wedge the chain", async () => {
 // syncMarkdownFileSectionized — incremental, rename, orphan, failure
 // ---------------------------------------------------------------------------
 
-type AddOptions = { resourceId?: string; title?: string }
+type AddOptions = {
+  resourceId?: string
+  title?: string
+  metadata?: Record<string, unknown>
+}
 
 function makeClient(opts?: { failAddOn?: (text: string) => boolean; deleteOk?: boolean }) {
   const addCalls: Array<{ text: string; options: AddOptions }> = []
@@ -542,6 +597,155 @@ test("syncAllFilesSectionized — old but NOT-yet-manifested file still syncs on
     assert.equal(r.agedOut, 0)
     assert.equal(r.synced, 2)
     assert.equal(addCalls.length, 2)
+  } finally {
+    ws.cleanup()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Provenance metadata (openclaw_sync_source)
+// ---------------------------------------------------------------------------
+
+test("syncMarkdownFileSectionized — syncSource stamps openclaw_sync_source on every section", async () => {
+  const ws = workspace()
+  const { client, addCalls } = makeClient()
+  try {
+    fs.writeFileSync(ws.note, `## A\n${BODY_A}\n## B\n${BODY_B}`)
+    const r = await syncMarkdownFileSectionized(client, ws.note, ws.dir, {
+      syncSource: "brainstem_daily",
+    })
+
+    assert.equal(r.synced, 2)
+    assert.equal(addCalls.length, 2)
+    for (const call of addCalls) {
+      assert.equal(call.options.metadata?.openclaw_sync_source, "brainstem_daily")
+      // Pipeline discriminator untouched — retrieval filters depend on it.
+      assert.equal(call.options.metadata?.openclaw_source, "memory_sync_section")
+    }
+  } finally {
+    ws.cleanup()
+  }
+})
+
+test("syncMarkdownFileSectionized — no syncSource means no openclaw_sync_source key", async () => {
+  const ws = workspace()
+  const { client, addCalls } = makeClient()
+  try {
+    fs.writeFileSync(ws.note, `## A\n${BODY_A}`)
+    await syncMarkdownFileSectionized(client, ws.note, ws.dir)
+    assert.equal(addCalls.length, 1)
+    assert.equal("openclaw_sync_source" in (addCalls[0].options.metadata ?? {}), false)
+  } finally {
+    ws.cleanup()
+  }
+})
+
+test("syncAllFilesSectionized — mixed memory/ + watchPath fixture tags each origin", async () => {
+  const ws = workspace()
+  const { client, addCalls } = makeClient()
+  try {
+    fs.mkdirSync(path.join(ws.dir, "notes", "brainstem"), { recursive: true })
+    const daily = path.join(ws.dir, "notes", "brainstem", "2026-07-06.md")
+    fs.writeFileSync(daily, `## Consolidation\n${BODY_A}`)
+    fs.writeFileSync(ws.note, `## Curated\n${BODY_B}`)
+
+    const r = await syncAllFilesSectionized(client, ws.dir, {
+      watchPaths: [{ path: "notes/brainstem", source: "brainstem_daily" }],
+    })
+
+    assert.equal(r.synced, 2)
+    const byFile = new Map(
+      addCalls.map((c) => [c.options.metadata?.file_path, c.options.metadata]),
+    )
+    assert.equal(byFile.get(daily)?.openclaw_sync_source, "brainstem_daily")
+    assert.equal(byFile.get(ws.note)?.openclaw_sync_source, "memory")
+  } finally {
+    ws.cleanup()
+  }
+})
+
+test("syncAllFilesSectionized — dot-dir under a watchPath is excluded from the walk", async () => {
+  const ws = workspace()
+  const { client, addCalls } = makeClient()
+  try {
+    fs.mkdirSync(path.join(ws.dir, "notes", "brainstem", ".drafts"), { recursive: true })
+    fs.writeFileSync(
+      path.join(ws.dir, "notes", "brainstem", ".drafts", "wip.md"),
+      `## Draft\n${BODY_A}`,
+    )
+    fs.writeFileSync(
+      path.join(ws.dir, "notes", "brainstem", "2026-07-06.md"),
+      `## Consolidation\n${BODY_B}`,
+    )
+
+    const r = await syncAllFilesSectionized(client, ws.dir, {
+      watchPaths: [{ path: "notes/brainstem", source: "brainstem_daily" }],
+    })
+
+    assert.equal(r.synced, 1)
+    assert.equal(addCalls.length, 1)
+    assert.match(String(addCalls[0].options.metadata?.file_path), /2026-07-06\.md$/)
+  } finally {
+    ws.cleanup()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// graph_entity frontmatter propagation (Memory Network self-scan loop guard)
+// ---------------------------------------------------------------------------
+
+type CapturedMetadata = { metadata?: Record<string, unknown> }
+
+const ENTITY_FILE = [
+  "---",
+  "title: Alice Chen",
+  "type: person",
+  "graph_entity: true",
+  "---",
+  "# Alice Chen",
+  "",
+  BODY_A,
+].join("\n")
+
+test("syncMarkdownFileSectionized — graph_entity frontmatter lands in every section's metadata", async () => {
+  const ws = workspace()
+  const { client, addCalls } = makeClient()
+  try {
+    fs.writeFileSync(ws.note, ENTITY_FILE)
+    const r = await syncMarkdownFileSectionized(client, ws.note, ws.dir)
+
+    assert.equal(r.synced, 1)
+    const metadata = (addCalls[0].options as CapturedMetadata).metadata
+    assert.equal(metadata?.graph_entity, "true")
+  } finally {
+    ws.cleanup()
+  }
+})
+
+test("syncMarkdownFileSectionized — ordinary files get no graph_entity metadata", async () => {
+  const ws = workspace()
+  const { client, addCalls } = makeClient()
+  try {
+    fs.writeFileSync(ws.note, `## A\n${BODY_A}`)
+    await syncMarkdownFileSectionized(client, ws.note, ws.dir)
+
+    const metadata = (addCalls[0].options as CapturedMetadata).metadata
+    assert.equal(metadata?.graph_entity, undefined)
+  } finally {
+    ws.cleanup()
+  }
+})
+
+test("syncMarkdownFile (legacy whole-file) — graph_entity frontmatter lands in metadata", async () => {
+  const ws = workspace()
+  const { client, addCalls } = makeClient()
+  try {
+    fs.writeFileSync(ws.note, ENTITY_FILE)
+    const r = await syncMarkdownFile(client, ws.note)
+
+    assert.equal(r.success, true)
+    const metadata = (addCalls[0].options as CapturedMetadata).metadata
+    assert.equal(metadata?.graph_entity, "true")
   } finally {
     ws.cleanup()
   }

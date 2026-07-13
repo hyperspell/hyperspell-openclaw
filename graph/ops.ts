@@ -2,6 +2,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import type { HyperspellClient } from "../client.ts"
 import type { HyperspellConfig } from "../config.ts"
+import { MOOD_WEATHER_SOURCE } from "../lib/filters.ts"
 import { getAllUserIds } from "../lib/sender.ts"
 import { log } from "../logger.ts"
 import { NetworkStateManager } from "./state.ts"
@@ -30,6 +31,26 @@ export interface WriteEntityParams {
   email?: string
   phone?: string
   domain?: string
+}
+
+/**
+ * True for memories that came from a Memory Network entity file synced back
+ * to Hyperspell. These must never re-enter a scan as source memories — the
+ * extractor would be fed its own output every cycle (self-scan loop,
+ * proposal/06 §3.3). Two signals, both needed:
+ * - `graph_entity` metadata, propagated from entity-file frontmatter by the
+ *   sync paths (`sync/markdown.ts`) — the contract the extraction prompt states;
+ * - the entity-directory `file_path`, which covers records synced before the
+ *   frontmatter propagation existed (unchanged sections are content-hash
+ *   skipped on re-sync, so their old metadata never gets refreshed).
+ */
+export function isEntityFileMemory(metadata: Record<string, unknown> | undefined): boolean {
+  if (!metadata) return false
+  if (metadata.graph_entity === "true" || metadata.graph_entity === true) return true
+  const filePath = metadata.file_path
+  if (typeof filePath !== "string") return false
+  const normalized = filePath.split(path.sep).join("/")
+  return ENTITY_TYPES.some((type) => normalized.includes(`/memory/${type}/`))
 }
 
 export function slugify(name: string): string {
@@ -95,16 +116,25 @@ export async function scanMemories(
   client: HyperspellClient,
   stateManager: NetworkStateManager,
   batchSize: number,
-  cfg?: HyperspellConfig,
+  // Required (not optional) so no caller can silently bypass the multiUser
+  // fan-out again — the CLI `network scan` did exactly that (proposal/06 §3.3).
+  cfg: HyperspellConfig,
 ): Promise<ScannedMemory[]> {
   const unprocessed: ScannedMemory[] = []
-  const userIds = cfg ? getAllUserIds(cfg) : [undefined]
+  // Single-user installs without a configured userId resolve to no ids;
+  // scan under the API key's default identity in that case.
+  const configuredIds = getAllUserIds(cfg)
+  const userIds: Array<string | undefined> =
+    configuredIds.length > 0 ? configuredIds : [undefined]
 
   outer: for (const userId of userIds) {
     for await (const mem of client.listMemories({ userId })) {
       if (stateManager.isProcessed(mem.resourceId)) continue
-      if (mem.metadata?.graph_entity === "true" || mem.metadata?.graph_entity === true) continue
+      if (isEntityFileMemory(mem.metadata)) continue
       if ((mem.metadata?.status as string) !== "completed") continue
+      // Mood-weather roll records are observability-only (issue #71): the graph
+      // feeds context, so ingesting them would leak the rolls back into recall.
+      if (mem.metadata?.openclaw_source === MOOD_WEATHER_SOURCE) continue
 
       let summary = ""
       try {

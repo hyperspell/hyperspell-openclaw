@@ -107,12 +107,23 @@ export function normalizeScope(scope: ScopeName): string {
 	return scope.replace(/[^a-zA-Z0-9_]/g, "_");
 }
 
+export type WatchPathEntry = {
+	/** Relative to workspace root, or absolute. */
+	path: string;
+	/**
+	 * Provenance label stamped as `openclaw_sync_source` metadata on every
+	 * memory synced from under this path. Defaults to a slug of `path`
+	 * (e.g. "notes/brainstem" -> "notes_brainstem").
+	 */
+	source?: string;
+};
+
 export type SyncMemoriesConfig = {
 	enabled: boolean;
 	/** Split files by ## headings into separate memories (default: true) */
 	sectionize: boolean;
 	/** Additional paths to watch beyond memory/ (relative to workspace or absolute) */
-	watchPaths: string[];
+	watchPaths: WatchPathEntry[];
 	/** Debounce file changes in ms to avoid syncing mid-write (default: 2000) */
 	debounceMs: number;
 	/**
@@ -145,6 +156,8 @@ export type HyperspellConfig = {
 	 * uncaused, unannounced mood that overrides the arc's tone for that session
 	 * only (never written back to the register). 0 disables. Keep it rare
 	 * (~0.05–0.10) so it reads as weather, not a gimmick. Requires emotionalContext.
+	 * Once weather lands, a cross-session cooldown (~6h) suppresses new rolls so
+	 * a cluster of same-day sessions shares one weather.
 	 */
 	moodWeatherChance: number;
 	/**
@@ -153,6 +166,8 @@ export type HyperspellConfig = {
 	 * state), and no memory tools in those sessions. Matched against the
 	 * session's resolved conversation id (e.g. a Discord channel id); threads
 	 * inside an excluded channel inherit the quarantine. Default: [].
+	 * Forward-only: content synced before a channel is quarantined stays in
+	 * Hyperspell; use the purge-channel CLI command to remove tagged content.
 	 */
 	excludeChannels: string[];
 	relationshipId?: string;
@@ -227,6 +242,48 @@ function resolveEnvVars(value: string): string {
 	});
 }
 
+/**
+ * Normalize `syncMemories.watchPaths` entries: the shipped/documented string
+ * form stays valid and is additive-upgraded to `{ path }`; the object form
+ * carries an optional provenance `source` label. Labels are sanitized with the
+ * same character rule as normalizeScope — metadata values must be alphanumeric
+ * + underscore or Hyperspell metadata filters silently miss.
+ */
+function parseWatchPaths(raw: unknown): WatchPathEntry[] {
+	if (!Array.isArray(raw)) return [];
+	return (raw as unknown[]).map((wp) => {
+		if (typeof wp === "string") {
+			if (!wp.trim()) {
+				throw new Error(
+					"hyperspell.syncMemories.watchPaths[] entry needs a non-empty path",
+				);
+			}
+			return { path: wp };
+		}
+		if (typeof wp !== "object" || wp === null || Array.isArray(wp)) {
+			throw new Error(
+				"hyperspell.syncMemories.watchPaths[] entries must be a string or { path, source? }",
+			);
+		}
+		const entry = wp as Record<string, unknown>;
+		assertAllowedKeys(
+			entry,
+			["path", "source"],
+			"hyperspell.syncMemories.watchPaths[]",
+		);
+		if (typeof entry.path !== "string" || !entry.path.trim()) {
+			throw new Error(
+				"hyperspell.syncMemories.watchPaths[] entry needs a non-empty path",
+			);
+		}
+		if (!entry.source) return { path: entry.path };
+		return {
+			path: entry.path,
+			source: String(entry.source).replace(/[^a-zA-Z0-9_]/g, "_"),
+		};
+	});
+}
+
 function parseRanking(raw: unknown): RankingWeights {
 	const r = (raw ?? {}) as Record<string, unknown>;
 	const num = (v: unknown, d: number) => (typeof v === "number" ? v : d);
@@ -235,14 +292,39 @@ function parseRanking(raw: unknown): RankingWeights {
 		curationBoost: num(r.curationBoost, DEFAULT_RANKING.curationBoost),
 		chatterPenalty: num(r.chatterPenalty, DEFAULT_RANKING.chatterPenalty),
 		storyBoost: num(r.storyBoost, DEFAULT_RANKING.storyBoost),
+		// Trim + lowercase + dedupe, drop whitespace-only entries. Before this a
+		// stray " " entry passed the length filter and (under the old substring
+		// matcher) classified EVERY result as story, silently disabling the
+		// chatter penalty and quota (issue #82's footgun).
 		storyTerms: Array.isArray(r.storyTerms)
-			? (r.storyTerms as unknown[]).map((t) => String(t)).filter((t) => t.length > 0)
+			? [
+					...new Set(
+						(r.storyTerms as unknown[])
+							.map((t) => String(t).trim().toLowerCase())
+							.filter((t) => t.length > 0),
+					),
+				]
 			: DEFAULT_RANKING.storyTerms,
 		candidateMultiplier: Math.max(
 			1,
 			num(r.candidateMultiplier, DEFAULT_RANKING.candidateMultiplier),
 		),
 		chatterQuota: Math.max(0, num(r.chatterQuota, DEFAULT_RANKING.chatterQuota)),
+		recencyHalfLifeDays: Math.max(
+			0,
+			num(r.recencyHalfLifeDays, DEFAULT_RANKING.recencyHalfLifeDays),
+		),
+		recencyMaxPenalty: Math.max(
+			0,
+			num(r.recencyMaxPenalty, DEFAULT_RANKING.recencyMaxPenalty),
+		),
+		recencyCuratedFactor: Math.min(
+			1,
+			Math.max(
+				0,
+				num(r.recencyCuratedFactor, DEFAULT_RANKING.recencyCuratedFactor),
+			),
+		),
 	};
 }
 
@@ -562,9 +644,7 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 		syncMemoriesConfig: {
 			enabled: syncMemoriesEnabled,
 			sectionize: (smObj.sectionize as boolean) ?? true,
-			watchPaths: Array.isArray(smObj.watchPaths)
-				? (smObj.watchPaths as string[])
-				: [],
+			watchPaths: parseWatchPaths(smObj.watchPaths),
 			debounceMs: (smObj.debounceMs as number) ?? 2000,
 			maxAgeDays: (smObj.maxAgeDays as number) ?? 30,
 			ignorePaths: Array.isArray(smObj.ignorePaths)

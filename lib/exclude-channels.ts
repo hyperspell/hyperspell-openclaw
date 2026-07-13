@@ -11,6 +11,10 @@
  * (`ctx.channelId` on agent hook contexts — e.g. a Discord channel id). Tool
  * factory contexts don't carry `channelId`, so we recover the same id from the
  * composite `sessionKey` (`agent:<agentId>:<provider>:<kind>:<id>[...]`).
+ *
+ * Quarantine is FORWARD-ONLY: it stops future injection/writes/tools but does
+ * not remove already-synced content. Retroactive cleanup of channel-tagged
+ * rows is the `purge-channel` CLI command (commands/purge-channel.ts).
  */
 
 // Conversation-kind segments used in OpenClaw session keys. Mirrors core's
@@ -44,6 +48,18 @@ export function channelIdFromCtx(ctx?: Record<string, unknown>): string | undefi
 }
 
 /**
+ * True when a stored conversation id belongs to `channel` — exact match or a
+ * thread suffix (`<channel>:thread:<n>`), case-insensitive. Shared by the
+ * quarantine check and the purge-channel CLI so "what gets blocked" and "what
+ * gets purged" can never drift apart.
+ */
+export function conversationMatchesChannel(id: string, channel: string): boolean {
+  const a = id.toLowerCase()
+  const b = channel.toLowerCase()
+  return a === b || a.startsWith(`${b}:`)
+}
+
+/**
  * True when the context's conversation is quarantined. Purely subtractive on
  * failure: an unresolvable id means "not excluded" — a session we can't place
  * keeps normal memory behavior rather than silently losing it.
@@ -53,11 +69,7 @@ export function isExcludedChannel(
   cfg: { excludeChannels: string[] },
 ): boolean {
   if (cfg.excludeChannels.length === 0) return false
-  const id = channelIdFromCtx(ctx)?.toLowerCase()
+  const id = channelIdFromCtx(ctx)
   if (!id) return false
-  return cfg.excludeChannels.some((entry) => {
-    const excluded = entry.toLowerCase()
-    // Prefix match so threads inside an excluded channel inherit the quarantine.
-    return id === excluded || id.startsWith(`${excluded}:`)
-  })
+  return cfg.excludeChannels.some((entry) => conversationMatchesChannel(id, entry))
 }

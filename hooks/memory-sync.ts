@@ -1,9 +1,11 @@
 import * as path from "node:path"
 import type { HyperspellClient } from "../client.ts"
-import type { HyperspellConfig } from "../config.ts"
+import type { HyperspellConfig, WatchPathEntry } from "../config.ts"
 import { getWorkspaceDir } from "../config.ts"
 import { log } from "../logger.ts"
 import {
+  resolveSyncSource,
+  resolveWatchPath,
   syncMarkdownFile,
   syncMarkdownFileSectionized,
   syncAllMemoryFiles,
@@ -31,18 +33,27 @@ export function buildFileSyncHandler(client: HyperspellClient, cfg: HyperspellCo
 
   // Resolve additional watch paths to absolute paths for matching
   const resolvedWatchPaths = (watchPaths ?? []).map((wp) =>
-    wp.startsWith("/") ? wp : path.join(workspaceDir, wp),
+    resolveWatchPath(workspaceDir, wp.path),
   )
 
   /**
    * Mirror the bulk walk's exclusions on the live path: a file under a
    * dot-directory (e.g. .dreams) or an ignored directory (e.g. dreaming) must
    * not live-sync either, or an edit would re-ingest exactly what the walk
-   * skips.
+   * skips. Applies against every watch root (memory/ AND each watchPath), so
+   * e.g. notes/brainstem/.drafts/x.md is excluded like the walk excludes it.
+   * The longest containing root wins: segments inside an explicitly configured
+   * watchPath are judged, the watchPath's own path is not.
    */
   function isIgnoredPath(filePath: string): boolean {
-    const rel = path.relative(memoryDir, filePath)
-    if (rel.startsWith("..") || path.isAbsolute(rel)) return false
+    let root: string | undefined
+    for (const candidate of [memoryDir, ...resolvedWatchPaths]) {
+      if (filePath === candidate || filePath.startsWith(candidate + path.sep)) {
+        if (!root || candidate.length > root.length) root = candidate
+      }
+    }
+    if (!root) return false
+    const rel = path.relative(root, filePath)
     const segments = rel.split(path.sep).slice(0, -1) // directory segments only
     return segments.some((seg) => seg.startsWith(".") || ignoreDirs.has(seg))
   }
@@ -74,13 +85,17 @@ export function buildFileSyncHandler(client: HyperspellClient, cfg: HyperspellCo
     const fileName = path.basename(filePath)
     log.info(`Memory file changed: ${fileName}`)
 
+    // Same provenance the startup bulk sync stamps, so a file gets identical
+    // openclaw_sync_source metadata whichever path ingests it first.
+    const syncSource = resolveSyncSource(filePath, workspaceDir, watchPaths ?? [])
+
     try {
       if (sectionize) {
         const result = await syncMarkdownFileSectionized(
           client,
           filePath,
           workspaceDir,
-          { userId: syncUserId },
+          { userId: syncUserId, syncSource },
         )
         if (result.synced > 0 || result.removed > 0) {
           log.info(
@@ -97,7 +112,10 @@ export function buildFileSyncHandler(client: HyperspellClient, cfg: HyperspellCo
         }
       } else {
         // Legacy whole-file sync
-        const result = await syncMarkdownFile(client, filePath, { userId: syncUserId })
+        const result = await syncMarkdownFile(client, filePath, {
+          userId: syncUserId,
+          syncSource,
+        })
         if (result.success) {
           log.info(`Synced ${fileName} -> ${result.resourceId}`)
         } else {
@@ -144,7 +162,7 @@ export async function syncMemoriesOnStartup(
   options?: {
     userId?: string
     sectionize?: boolean
-    watchPaths?: string[]
+    watchPaths?: WatchPathEntry[]
     maxAgeDays?: number
     ignorePaths?: string[]
   },

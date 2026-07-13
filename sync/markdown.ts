@@ -2,6 +2,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import * as crypto from "node:crypto"
 import type { HyperspellClient } from "../client.ts"
+import type { WatchPathEntry } from "../config.ts"
 import { log } from "../logger.ts"
 
 const FRONTMATTER_REGEX = /^---\n([\s\S]*?)\n---\n?/
@@ -11,6 +12,13 @@ interface MarkdownFile {
   title: string
   content: string
   hyperspellId: string | null
+  /**
+   * True when the frontmatter carries `graph_entity: true` (Memory Network
+   * entity files). Must be propagated into every synced memory's metadata —
+   * it is what lets `scanMemories` skip entity files instead of re-scanning
+   * the extractor's own output as new source memories (self-scan loop).
+   */
+  graphEntity: boolean
 }
 
 interface MarkdownSection {
@@ -92,6 +100,7 @@ function readMarkdownFile(filePath: string): MarkdownFile | null {
       title,
       content: body.trim(),
       hyperspellId: frontmatter.hyperspell_id || null,
+      graphEntity: frontmatter.graph_entity === "true",
     }
   } catch (err) {
     log.error(`Failed to read markdown file: ${filePath}`, err)
@@ -352,13 +361,51 @@ export function getMemoryFiles(
   return results
 }
 
+/** Resolve a watchPath (workspace-relative or absolute) to an absolute path. */
+export function resolveWatchPath(workspaceDir: string, p: string): string {
+  return path.isAbsolute(p) ? p : path.join(workspaceDir, p)
+}
+
+/** Slug for unlabeled watchPaths: "notes/brainstem" -> "notes_brainstem". */
+function watchPathSlug(workspaceDir: string, resolved: string): string {
+  const rel = path.relative(workspaceDir, resolved)
+  const base = rel.startsWith("..") ? path.basename(resolved) : rel
+  return base.split(path.sep).join("_").replace(/[^a-zA-Z0-9_]/g, "_")
+}
+
+/**
+ * Provenance for a syncable file: the longest-prefix-matching watchPath's
+ * label (explicit `source` or derived slug), else "memory" for memory/ files.
+ * Longest prefix wins so a watchPath nested inside another (or inside memory/)
+ * keeps its more specific label.
+ */
+export function resolveSyncSource(
+  filePath: string,
+  workspaceDir: string,
+  watchPaths: WatchPathEntry[],
+): string | undefined {
+  let best: { len: number; label: string } | undefined
+  for (const wp of watchPaths) {
+    const resolved = resolveWatchPath(workspaceDir, wp.path)
+    if (filePath === resolved || filePath.startsWith(resolved + path.sep)) {
+      if (!best || resolved.length > best.len) {
+        best = { len: resolved.length, label: wp.source ?? watchPathSlug(workspaceDir, resolved) }
+      }
+    }
+  }
+  if (best) return best.label
+  const memoryDir = path.join(workspaceDir, "memory")
+  if (filePath.startsWith(memoryDir + path.sep)) return "memory"
+  return undefined
+}
+
 /**
  * Collect all syncable files based on configuration.
  * Includes memory/*.md by default, plus any additional watchPaths.
  */
 export function getSyncableFiles(
   workspaceDir: string,
-  watchPaths?: string[],
+  watchPaths?: WatchPathEntry[],
   ignorePaths?: string[],
 ): string[] {
   const ignore = new Set(ignorePaths ?? DEFAULT_IGNORE_DIRS)
@@ -366,7 +413,7 @@ export function getSyncableFiles(
 
   if (watchPaths) {
     for (const wp of watchPaths) {
-      const resolved = wp.startsWith("/") ? wp : path.join(workspaceDir, wp)
+      const resolved = resolveWatchPath(workspaceDir, wp.path)
 
       if (!fs.existsSync(resolved)) continue
 
@@ -405,7 +452,7 @@ export function getSyncableFiles(
 export async function syncMarkdownFile(
   client: HyperspellClient,
   filePath: string,
-  options?: { userId?: string },
+  options?: { userId?: string; syncSource?: string },
 ): Promise<{ success: boolean; resourceId?: string; error?: string }> {
   const file = readMarkdownFile(filePath)
   if (!file) {
@@ -424,6 +471,13 @@ export async function syncMarkdownFile(
       metadata: {
         openclaw_source: "memory_sync",
         file_path: filePath,
+        // Content origin (memory/ vs a labeled watchPath). Additive key —
+        // openclaw_source stays the pipeline discriminator that retrieval
+        // filters and startup-orientation dedupe depend on.
+        ...(options?.syncSource ? { openclaw_sync_source: options.syncSource } : {}),
+        // Honor the extraction prompt's contract: entity files synced back
+        // to Hyperspell must be skippable by the Memory Network scan.
+        ...(file.graphEntity ? { graph_entity: "true" } : {}),
       },
       userId: options?.userId,
     })
@@ -456,7 +510,7 @@ export async function syncMarkdownFileSectionized(
   client: HyperspellClient,
   filePath: string,
   workspaceDir: string,
-  options?: { userId?: string },
+  options?: { userId?: string; syncSource?: string },
 ): Promise<{
   synced: number
   skipped: number
@@ -545,6 +599,14 @@ export async function syncMarkdownFileSectionized(
               file_name: fileName,
               section_title: section.title,
               content_hash: section.contentHash,
+              // Content origin (memory/ vs a labeled watchPath). Additive key —
+              // openclaw_source stays the pipeline discriminator that retrieval
+              // filters and startup-orientation dedupe depend on.
+              ...(options?.syncSource ? { openclaw_sync_source: options.syncSource } : {}),
+              // Honor the extraction prompt's contract: entity files synced
+              // back to Hyperspell must be skippable by the Memory Network
+              // scan, or the extractor is re-fed its own output every cycle.
+              ...(file.graphEntity ? { graph_entity: "true" } : {}),
             },
             userId: options?.userId,
           })
@@ -629,7 +691,12 @@ export async function syncAllMemoryFiles(
   const errors: string[] = []
 
   for (const filePath of files) {
-    const result = await syncMarkdownFile(client, filePath, { userId: options?.userId })
+    // Legacy bulk mode only walks memory/, so everything it uploads is
+    // memory-origin by construction.
+    const result = await syncMarkdownFile(client, filePath, {
+      userId: options?.userId,
+      syncSource: "memory",
+    })
     if (result.success) {
       synced++
       log.info(`Synced: ${path.basename(filePath)} -> ${result.resourceId}`)
@@ -655,7 +722,7 @@ export async function syncAllFilesSectionized(
   workspaceDir: string,
   options?: {
     userId?: string
-    watchPaths?: string[]
+    watchPaths?: WatchPathEntry[]
     maxAgeDays?: number
     ignorePaths?: string[]
   },
@@ -714,6 +781,7 @@ export async function syncAllFilesSectionized(
   for (const filePath of candidates) {
     const result = await syncMarkdownFileSectionized(client, filePath, workspaceDir, {
       userId: options?.userId,
+      syncSource: resolveSyncSource(filePath, workspaceDir, options?.watchPaths ?? []),
     })
     totalSynced += result.synced
     totalSkipped += result.skipped

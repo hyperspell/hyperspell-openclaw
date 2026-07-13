@@ -1,5 +1,6 @@
 import type { HyperspellClient, SearchResult } from "../client.ts";
 import type { HyperspellConfig } from "../config.ts";
+import { excludeFilterFor } from "../lib/filters.ts";
 import { resolveUser } from "../lib/sender.ts";
 import { resolveCurrentSessionId } from "../lib/session.ts";
 import { isMultiSpeaker } from "../lib/speaker-tracker.ts";
@@ -84,7 +85,7 @@ function isoDaysAgo(days: number): Date {
  * an unresolved caller has no personal space to orient to. In single-user mode,
  * return undefined so the client falls back to its configured userId.
  */
-function personalUserId(
+export function personalUserId(
 	cfg: HyperspellConfig,
 	ctx: AgentContext | undefined,
 ): { skip: boolean; userId?: string } {
@@ -205,11 +206,120 @@ async function fetchRecentConversations(
 	return out;
 }
 
+export type OrientationGather = {
+	recentOk: boolean;
+	loopsOk: boolean;
+	recentCount: number;
+	loopsCount: number;
+	/** Fully formatted <hyperspell-recent-interactions> block, or null. */
+	recentBlock: string | null;
+	/** Fully formatted <hyperspell-unfinished-loops> block, or null. */
+	loopsBlock: string | null;
+	/** Which recent-interactions source was used: "hotBuffer" | "autoTrace" | "none". */
+	recentSource: "hotBuffer" | "autoTrace" | "none";
+};
+
+/**
+ * The fetch+format core of startup orientation, shared by the real
+ * before_agent_start handler and the read-only /previewcontext command.
+ * Pure with respect to session lifecycle: no inject-once cache, no retry
+ * counting — callers own that policy. Keeping one formatter here keeps the
+ * preview byte-identical to real injection.
+ */
+export async function gatherOrientation(
+	client: HyperspellClient,
+	cfg: HyperspellConfig,
+	userId: string | undefined,
+): Promise<OrientationGather> {
+	const so = cfg.startupOrientation;
+	// Source recent-interactions from wherever the session record actually
+	// lives. Prefer the hot buffer (modern path: clean session-grouped vault
+	// resources, present whenever the hot buffer is on — including auto-trace-
+	// off agents). Fall back to agent_end traces only when there's no hot
+	// buffer but auto-trace is on. Otherwise skip: there's nothing to fetch,
+	// and the trace-source list is expensive (observed ~12s + failing/turn),
+	// blocking before_agent_start and slowing the reply.
+	const recentSource = cfg.hotBuffer.enabled
+		? ("hotBuffer" as const)
+		: cfg.autoTrace.enabled
+			? ("autoTrace" as const)
+			: ("none" as const);
+	const recentFetch =
+		recentSource === "hotBuffer"
+			? fetchRecentConversations(client, so.recentLimit, userId)
+			: recentSource === "autoTrace"
+				? fetchRecentTraces(
+						client,
+						isoDaysAgo(so.recentDays),
+						so.recentLimit,
+						userId,
+					)
+				: Promise.resolve([] as SearchResult[]);
+
+	const [recentSettled, loopsSettled] = await Promise.allSettled([
+		recentFetch,
+		// Loops feed agent context, so tagged observability rows (agent_end
+		// traces, mood_weather rolls) must be dropped like on every other recall
+		// path — this also closes a pre-existing gap where agent_end traces
+		// could surface in the loops block.
+		client.search(so.loopsQuery, {
+			limit: so.loopsLimit,
+			userId,
+			filter: excludeFilterFor(cfg),
+		}),
+	]);
+
+	const recentOk = recentSettled.status === "fulfilled";
+	const loopsOk = loopsSettled.status === "fulfilled";
+	const recent = recentOk ? recentSettled.value : [];
+	const loops = loopsOk ? loopsSettled.value : [];
+
+	if (!recentOk) {
+		log.error(
+			"startup-orientation: recent listMemories failed",
+			(recentSettled as PromiseRejectedResult).reason,
+		);
+	}
+	if (!loopsOk) {
+		log.error(
+			"startup-orientation: loops search failed",
+			(loopsSettled as PromiseRejectedResult).reason,
+		);
+	}
+
+	const recentBody = formatRecentInteractions(recent);
+	const loopsBody = formatUnfinishedLoops(loops);
+	return {
+		recentOk,
+		loopsOk,
+		recentCount: recent.length,
+		loopsCount: loops.length,
+		recentSource,
+		recentBlock: recentBody
+			? [
+					"<hyperspell-recent-interactions>",
+					`Your last ${so.recentDays} days of conversations with this user, most-recent-first. Use for situational continuity — don't quote verbatim.`,
+					"",
+					recentBody,
+					"</hyperspell-recent-interactions>",
+				].join("\n")
+			: null,
+		loopsBlock: loopsBody
+			? [
+					"<hyperspell-unfinished-loops>",
+					"Possible open threads — promises made, questions pending, work in progress. Low-confidence retrieval; treat as prompts to consider, not facts to act on.",
+					"",
+					loopsBody,
+					"</hyperspell-unfinished-loops>",
+				].join("\n")
+			: null,
+	};
+}
+
 export function buildStartupOrientationHandler(
 	client: HyperspellClient,
 	cfg: HyperspellConfig,
 ) {
-	const so = cfg.startupOrientation;
 	return async (_event: Record<string, unknown>, ctx?: AgentContext) => {
 		const sessionKey = ctx?.sessionKey;
 		if (sessionKey && injectedSessions.has(sessionKey)) return;
@@ -248,51 +358,9 @@ export function buildStartupOrientationHandler(
 			return;
 		}
 
-		// Source recent-interactions from wherever the session record actually
-		// lives. Prefer the hot buffer (modern path: clean session-grouped vault
-		// resources, present whenever the hot buffer is on — including auto-trace-
-		// off agents). Fall back to agent_end traces only when there's no hot
-		// buffer but auto-trace is on. Otherwise skip: there's nothing to fetch,
-		// and the trace-source list is expensive (observed ~12s + failing/turn),
-		// blocking before_agent_start and slowing the reply.
-		const recentFetch = cfg.hotBuffer.enabled
-			? fetchRecentConversations(client, so.recentLimit, userId)
-			: cfg.autoTrace.enabled
-				? fetchRecentTraces(
-						client,
-						isoDaysAgo(so.recentDays),
-						so.recentLimit,
-						userId,
-					)
-				: Promise.resolve([] as SearchResult[]);
+		const gathered = await gatherOrientation(client, cfg, userId);
 
-		const [recentSettled, loopsSettled] = await Promise.allSettled([
-			recentFetch,
-			client.search(so.loopsQuery, {
-				limit: so.loopsLimit,
-				userId,
-			}),
-		]);
-
-		const recentOk = recentSettled.status === "fulfilled";
-		const loopsOk = loopsSettled.status === "fulfilled";
-		const recent = recentOk ? recentSettled.value : [];
-		const loops = loopsOk ? loopsSettled.value : [];
-
-		if (!recentOk) {
-			log.error(
-				"startup-orientation: recent listMemories failed",
-				(recentSettled as PromiseRejectedResult).reason,
-			);
-		}
-		if (!loopsOk) {
-			log.error(
-				"startup-orientation: loops search failed",
-				(loopsSettled as PromiseRejectedResult).reason,
-			);
-		}
-
-		if (!recentOk && !loopsOk) {
+		if (!gathered.recentOk && !gathered.loopsOk) {
 			if (sessionKey) failedAttempts.set(sessionKey, tries + 1);
 			log.debug(
 				`startup-orientation: both calls failed (attempt ${tries + 1}/${MAX_ATTEMPTS}); will retry next turn`,
@@ -305,40 +373,19 @@ export function buildStartupOrientationHandler(
 			failedAttempts.delete(sessionKey);
 		}
 
-		const recentBody = formatRecentInteractions(recent);
-		const loopsBody = formatUnfinishedLoops(loops);
-
-		if (!recentBody && !loopsBody) {
+		if (!gathered.recentBlock && !gathered.loopsBlock) {
 			log.debug("startup-orientation: nothing to inject");
 			return;
 		}
 
-		const blocks: string[] = [];
-		if (recentBody) {
-			blocks.push(
-				[
-					"<hyperspell-recent-interactions>",
-					`Your last ${so.recentDays} days of conversations with this user, most-recent-first. Use for situational continuity — don't quote verbatim.`,
-					"",
-					recentBody,
-					"</hyperspell-recent-interactions>",
-				].join("\n"),
-			);
-		}
-		if (loopsBody) {
-			blocks.push(
-				[
-					"<hyperspell-unfinished-loops>",
-					"Possible open threads — promises made, questions pending, work in progress. Low-confidence retrieval; treat as prompts to consider, not facts to act on.",
-					"",
-					loopsBody,
-					"</hyperspell-unfinished-loops>",
-				].join("\n"),
-			);
-		}
-
-		log.debug(
-			`startup-orientation: injecting recent=${recent.length} loops=${loops.length}`,
+		const blocks = [gathered.recentBlock, gathered.loopsBlock].filter(
+			(b): b is string => b !== null,
+		);
+		// log.diag, not debug: this one-line injection summary is the operator's
+		// only live signal that orientation fired (issue #118 — host drops plugin
+		// debug output from gateway.log).
+		log.diag(
+			`startup-orientation: injecting recent=${gathered.recentCount} loops=${gathered.loopsCount}`,
 		);
 		return { prependContext: blocks.join("\n\n") };
 	};

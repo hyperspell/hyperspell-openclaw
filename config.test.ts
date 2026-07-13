@@ -258,7 +258,10 @@ test("parseConfig — syncMemories object form parses and enables by default", (
   })
   assert.equal(cfg.syncMemories, true) // object without explicit enabled => on
   assert.equal(cfg.syncMemoriesConfig.sectionize, false)
-  assert.deepEqual(cfg.syncMemoriesConfig.watchPaths, ["MEMORY.md", "notes/"])
+  assert.deepEqual(cfg.syncMemoriesConfig.watchPaths, [
+    { path: "MEMORY.md" },
+    { path: "notes/" },
+  ])
   assert.equal(cfg.syncMemoriesConfig.debounceMs, 500)
   assert.equal(cfg.syncMemoriesConfig.maxAgeDays, 7)
   assert.deepEqual(cfg.syncMemoriesConfig.ignorePaths, ["dreaming", "scratch"])
@@ -269,6 +272,62 @@ test("parseConfig — syncMemories object with a typo'd key throws", () => {
     () => parseConfig({ ...base, syncMemories: { sectionise: true } }),
     /hyperspell\.syncMemories has unknown keys: sectionise/,
   )
+})
+
+test("parseConfig — watchPaths string entries normalize to { path }", () => {
+  const cfg = parseConfig({
+    ...base,
+    syncMemories: { watchPaths: ["notes/brainstem"] },
+  })
+  assert.deepEqual(cfg.syncMemoriesConfig.watchPaths, [{ path: "notes/brainstem" }])
+})
+
+test("parseConfig — watchPaths object entry keeps source, sanitized to metadata-safe chars", () => {
+  const cfg = parseConfig({
+    ...base,
+    syncMemories: {
+      watchPaths: [{ path: "notes/brainstem", source: "brainstem-daily" }],
+    },
+  })
+  assert.deepEqual(cfg.syncMemoriesConfig.watchPaths, [
+    { path: "notes/brainstem", source: "brainstem_daily" },
+  ])
+})
+
+test("parseConfig — watchPaths entry with an unknown key throws", () => {
+  assert.throws(
+    () =>
+      parseConfig({
+        ...base,
+        syncMemories: {
+          watchPaths: [{ path: "notes", sources: "typo" }],
+        },
+      }),
+    /hyperspell\.syncMemories\.watchPaths\[\] has unknown keys: sources/,
+  )
+})
+
+test("parseConfig — watchPaths entry missing path throws", () => {
+  assert.throws(
+    () =>
+      parseConfig({
+        ...base,
+        syncMemories: { watchPaths: [{ source: "brainstem_daily" }] },
+      }),
+    /needs a non-empty path/,
+  )
+})
+
+test("parseConfig — watchPaths empty-string entry throws", () => {
+  assert.throws(
+    () => parseConfig({ ...base, syncMemories: { watchPaths: ["  "] } }),
+    /needs a non-empty path/,
+  )
+})
+
+test("parseConfig — watchPaths defaults to empty", () => {
+  const cfg = parseConfig({ ...base, syncMemories: {} })
+  assert.deepEqual(cfg.syncMemoriesConfig.watchPaths, [])
 })
 
 test("parseConfig — hotBuffer defaults to disabled with safe defaults", () => {
@@ -323,4 +382,63 @@ test("parseConfig — excludeChannels trims entries and drops empties", () => {
 test("parseConfig — non-array excludeChannels falls back to empty", () => {
   const cfg = parseConfig({ ...base, excludeChannels: "123" })
   assert.deepEqual(cfg.excludeChannels, [])
+})
+
+test("parseConfig — moodWeatherChance defaults to 0 (mood weather off)", () => {
+  assert.equal(parseConfig(base).moodWeatherChance, 0)
+})
+
+test("parseConfig — ranking.storyTerms are trimmed, lowercased, deduped; whitespace-only dropped", () => {
+  const cfg = parseConfig({
+    ...base,
+    ranking: { storyTerms: ["  Omuerta ", "omuerta", "", " ", 42, "Lady of Storms"] },
+  })
+  assert.deepEqual(cfg.ranking.storyTerms, ["omuerta", "42", "lady of storms"])
+})
+
+test("parseConfig — non-array ranking.storyTerms falls back to the empty default", () => {
+  const cfg = parseConfig({ ...base, ranking: { storyTerms: "omuerta" } })
+  assert.deepEqual(cfg.ranking.storyTerms, [])
+})
+
+test("parseConfig — recency fields default when absent", () => {
+  const cfg = parseConfig({ ...base, ranking: {} })
+  assert.equal(cfg.ranking.recencyHalfLifeDays, 90)
+  assert.equal(cfg.ranking.recencyMaxPenalty, 0.1)
+  assert.equal(cfg.ranking.recencyCuratedFactor, 0.5)
+})
+
+test("parseConfig — recency fields respected when present, clamped when out of range", () => {
+  const cfg = parseConfig({
+    ...base,
+    ranking: { recencyHalfLifeDays: 180, recencyMaxPenalty: 0.05, recencyCuratedFactor: 2 },
+  })
+  assert.equal(cfg.ranking.recencyHalfLifeDays, 180)
+  assert.equal(cfg.ranking.recencyMaxPenalty, 0.05)
+  assert.equal(cfg.ranking.recencyCuratedFactor, 1, "factor clamps to 1")
+  const neg = parseConfig({
+    ...base,
+    ranking: { recencyHalfLifeDays: -5, recencyMaxPenalty: -1, recencyCuratedFactor: -0.5 },
+  })
+  assert.equal(neg.ranking.recencyHalfLifeDays, 0)
+  assert.equal(neg.ranking.recencyMaxPenalty, 0)
+  assert.equal(neg.ranking.recencyCuratedFactor, 0)
+})
+
+test("parseConfig — knowledgeGraph defaults to disabled with sensible values", () => {
+  const cfg = parseConfig(base)
+  assert.equal(cfg.knowledgeGraph.enabled, false)
+  assert.equal(cfg.knowledgeGraph.scanIntervalMinutes, 60)
+  assert.equal(cfg.knowledgeGraph.batchSize, 20)
+})
+
+test("parseConfig — knowledgeGraph accepts overrides", () => {
+  const cfg = parseConfig({
+    ...base,
+    knowledgeGraph: { enabled: true, batchSize: 50 },
+  })
+  assert.equal(cfg.knowledgeGraph.enabled, true)
+  assert.equal(cfg.knowledgeGraph.batchSize, 50)
+  // Unspecified fields keep their defaults.
+  assert.equal(cfg.knowledgeGraph.scanIntervalMinutes, 60)
 })
