@@ -239,8 +239,18 @@ function parseRanking(raw: unknown): RankingWeights {
 		curationBoost: num(r.curationBoost, DEFAULT_RANKING.curationBoost),
 		chatterPenalty: num(r.chatterPenalty, DEFAULT_RANKING.chatterPenalty),
 		storyBoost: num(r.storyBoost, DEFAULT_RANKING.storyBoost),
+		// Trim + lowercase + dedupe, drop whitespace-only entries. Before this a
+		// stray " " entry passed the length filter and (under the old substring
+		// matcher) classified EVERY result as story, silently disabling the
+		// chatter penalty and quota (issue #82's footgun).
 		storyTerms: Array.isArray(r.storyTerms)
-			? (r.storyTerms as unknown[]).map((t) => String(t)).filter((t) => t.length > 0)
+			? [
+					...new Set(
+						(r.storyTerms as unknown[])
+							.map((t) => String(t).trim().toLowerCase())
+							.filter((t) => t.length > 0),
+					),
+				]
 			: DEFAULT_RANKING.storyTerms,
 		candidateMultiplier: Math.max(
 			1,

@@ -10,6 +10,7 @@ import {
 import { excludeFilterFor, mergeWithExclude } from "../lib/filters.ts"
 import {
   explainSelection,
+  kindTally,
   type RankedResult,
   rerank,
   type SelectionExplained,
@@ -262,6 +263,19 @@ export function buildAutoContextHandler(
         logScoreSamples(prompt, currentSessionId, "single", explained, cfg.relevanceThreshold)
         const selected = explained.filter((e) => e.selected).map((e) => e.result)
 
+        // Candidates → selected kind tally, logged UNCONDITIONALLY (unlike the
+        // "injecting" line below): a story/curated match that loses to the
+        // threshold is exactly the case an operator tuning storyTerms needs to
+        // see, and it never reaches the formatted branch (proposal 01 §3.4).
+        log.debug(
+          `auto-context: ranked ${JSON.stringify(kindTally(ranked))} candidates → selected ${JSON.stringify(kindTally(selected))} (chatter cap ${ranking.chatterQuota})`,
+        )
+        for (const r of ranked.slice(0, 10)) {
+          log.debug(
+            `  [${r._kind}] ${r._base.toFixed(2)}→${r._composite.toFixed(2)} ${(r.title ?? r.resourceId).slice(0, 60)}`,
+          )
+        }
+
         // Cut-reason visibility (proposal 02, absorbs proposal 03): logged
         // BEFORE the `formatted` check so quota drops stay visible even when
         // nothing is injected (e.g. chatterQuota 0 with only chatter clearing
@@ -284,12 +298,8 @@ export function buildAutoContextHandler(
 
         formatted = formatSelected(selected, cfg.relevanceThreshold)
         if (formatted) {
-          const tally = selected.reduce(
-            (acc, r) => ((acc[r._kind] = (acc[r._kind] ?? 0) + 1), acc),
-            {} as Record<string, number>,
-          )
           log.debug(
-            `auto-context: injecting (ranked) ${JSON.stringify(tally)} from ${results.length} candidates (chatter cap ${ranking.chatterQuota}, composite ${selected.at(-1)?._composite.toFixed(2)}–${selected[0]?._composite.toFixed(2)})`,
+            `auto-context: injecting (ranked) ${JSON.stringify(kindTally(selected))} from ${results.length} candidates (chatter cap ${ranking.chatterQuota}, composite ${selected.at(-1)?._composite.toFixed(2)}–${selected[0]?._composite.toFixed(2)})`,
           )
         }
       } else {

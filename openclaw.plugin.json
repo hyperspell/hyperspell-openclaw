@@ -75,6 +75,11 @@
 			"help": "Maximum memories injected into context per turn",
 			"advanced": true
 		},
+		"ranking": {
+			"label": "Composite Ranking",
+			"help": "Rank memories by more than raw relevance: boost curated memory and the active story, penalize auto-saved conversation fragments. Set storyTerms to 3-15 distinctive names/terms of the active thread (characters, codenames, invented words; matched case-insensitively at word boundaries) so it outranks chatter; update the list when the active story changes. { enabled, storyTerms, curationBoost, storyBoost, chatterPenalty, candidateMultiplier, chatterQuota }",
+			"advanced": true
+		},
 		"debug": {
 			"label": "Debug Logging",
 			"help": "Enable verbose debug logs for API calls and responses",

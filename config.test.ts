@@ -328,3 +328,16 @@ test("parseConfig — non-array excludeChannels falls back to empty", () => {
 test("parseConfig — moodWeatherChance defaults to 0 (mood weather off)", () => {
   assert.equal(parseConfig(base).moodWeatherChance, 0)
 })
+
+test("parseConfig — ranking.storyTerms are trimmed, lowercased, deduped; whitespace-only dropped", () => {
+  const cfg = parseConfig({
+    ...base,
+    ranking: { storyTerms: ["  Omuerta ", "omuerta", "", " ", 42, "Lady of Storms"] },
+  })
+  assert.deepEqual(cfg.ranking.storyTerms, ["omuerta", "42", "lady of storms"])
+})
+
+test("parseConfig — non-array ranking.storyTerms falls back to the empty default", () => {
+  const cfg = parseConfig({ ...base, ranking: { storyTerms: "omuerta" } })
+  assert.deepEqual(cfg.ranking.storyTerms, [])
+})
