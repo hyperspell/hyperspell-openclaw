@@ -267,7 +267,7 @@ export function buildAutoContextHandler(
         // "injecting" line below): a story/curated match that loses to the
         // threshold is exactly the case an operator tuning storyTerms needs to
         // see, and it never reaches the formatted branch (proposal 01 §3.4).
-        log.debug(
+        log.diag(
           `auto-context: ranked ${JSON.stringify(kindTally(ranked))} candidates → selected ${JSON.stringify(kindTally(selected))} (chatter cap ${ranking.chatterQuota})`,
         )
         for (const r of ranked.slice(0, 10)) {
@@ -291,14 +291,14 @@ export function buildAutoContextHandler(
           const quotaNote = topQuotaDrop
             ? `, top quota-dropped composite ${topQuotaDrop.result._composite.toFixed(2)}`
             : ""
-          log.debug(
+          log.diag(
             `auto-context: cut ${cuts.length} of ${ranked.length} candidates ${JSON.stringify(cutTally)}${quotaNote}`,
           )
         }
 
         formatted = formatSelected(selected, cfg.relevanceThreshold)
         if (formatted) {
-          log.debug(
+          log.diag(
             `auto-context: injecting (ranked) ${JSON.stringify(kindTally(selected))} from ${results.length} candidates (chatter cap ${ranking.chatterQuota}, composite ${selected.at(-1)?._composite.toFixed(2)}–${selected[0]?._composite.toFixed(2)})`,
           )
         }

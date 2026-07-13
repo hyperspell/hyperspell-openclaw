@@ -149,7 +149,7 @@ files back to Hyperspell.
 | `knowledgeGraph.enabled` | boolean | `false` | Memory Network: extract entities (people, projects, organizations, topics) from memories into `memory/` markdown files. See [Memory Network](#memory-network). |
 | `knowledgeGraph.scanIntervalMinutes` | number | `60` | Extraction cadence the setup wizard bakes into the cron job it creates. The cron job is the runtime source of truth — to change cadence after setup, edit the cron job (and keep this field in sync). |
 | `knowledgeGraph.batchSize` | number | `20` | Memories per extraction scan batch |
-| `debug` | boolean | `false` | Enable verbose logging |
+| `debug` | boolean | `false` | Enable diagnostic logging. One-line diagnostics (auto-context ranked/cut/injection summaries, orientation and emotional-context injection counts) are emitted at **info** level, so they appear in `gateway.log` at default host log levels — no host `logging.level` change needed. Verbose output (per-request/response dumps, per-candidate score lines) stays at debug level. |
 | `dreaming.enabled` | boolean | `false` | Allow `memory-core` to sidecar-load so Dreaming can consolidate local session transcripts into `workspace/MEMORY.md`. See [Running alongside Dreaming](#running-alongside-dreaming). |
 
 Stored emotional-state registers (`emotionalContext`) are fetchable by external processes (e.g. a nightly consolidator reconciling its own day-read) — the verified fetch contract lives in [docs/emotional-state-external-reconciliation.md](docs/emotional-state-external-reconciliation.md).
@@ -312,10 +312,12 @@ Tips:
 - Ranking (including `storyTerms`) applies only to **auto-context** injection.
   The `hyperspell_search` tool and `/getcontext` return raw relevance order —
   don't test `storyTerms` there and conclude it's broken.
-- To verify it's working, enable `debug: true` and watch for the per-search
-  tally (`auto-context: ranked {...} candidates → selected {...}`) and the
-  per-candidate lines (`[story] 0.47→0.82 The Lighthouse Keeper — Chapter 3`),
-  which show story matches even when they lose to the threshold.
+- To verify it's working, enable `debug: true` and watch `gateway.log` for the
+  per-search tally (`auto-context: ranked {...} candidates → selected {...}`) —
+  it appears at default host log levels. The per-candidate lines
+  (`[story] 0.47→0.82 The Lighthouse Keeper — Chapter 3`), which show story
+  matches even when they lose to the threshold, are debug-level and also need
+  host debug logging.
 
 Full knobs and defaults:
 
@@ -470,7 +472,8 @@ the scanner skip memories synced from the entity directories.
 
 ### Auto-context not injecting
 - Verify `autoContext: true` in your config
-- Enable `debug: true` to see what queries are being made
+- Enable `debug: true` — the ranked/cut/injection summary lines land in
+  `gateway.log` at default host log levels
 - Check that you have memories matching your conversation topics
 
 ### Enabling `memory-core` disabled Hyperspell

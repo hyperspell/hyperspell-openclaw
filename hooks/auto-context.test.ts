@@ -246,12 +246,16 @@ test("auto-context — score log failure is isolated: unwritable path still inje
 })
 
 test("auto-context — debug lines carry cut reasons and the injected composite range", async () => {
-  const seen: string[] = []
+  // Summary lines (ranked/cut/injecting) must arrive on the INFO channel: the
+  // host drops plugin debug output from gateway.log (issue #118), so log.diag
+  // routes them via info when debug: true. Per-candidate lines stay debug.
+  const seenInfo: string[] = []
+  const seenDebug: string[] = []
   const capture = {
-    info: () => {},
+    info: (msg: string) => seenInfo.push(msg),
     warn: () => {},
     error: () => {},
-    debug: (msg: string) => seen.push(msg),
+    debug: (msg: string) => seenDebug.push(msg),
   }
   initLogger(capture, true)
   try {
@@ -261,21 +265,21 @@ test("auto-context — debug lines carry cut reasons and the injected composite 
     initLogger(console, false)
   }
 
-  const rankedLine = seen.find((m) => m.includes("auto-context: ranked"))
+  const rankedLine = seenInfo.find((m) => m.includes("auto-context: ranked"))
   assert.ok(rankedLine, "unconditional candidates → selected tally logged")
   assert.ok(
     rankedLine.includes(`ranked {"curated":2,"chatter":3} candidates → selected {"curated":1,"chatter":2}`),
     `candidate-pool tally shows kinds that lost, not just survivors: ${rankedLine}`,
   )
-  const perResultLines = seen.filter((m) => /^ {2}\[(story|curated|chatter|other)\] /.test(m.replace(/^hyperspell: /, "")))
-  assert.equal(perResultLines.length, 5, "one per-candidate line for each of the 5 ranked results")
+  const perResultLines = seenDebug.filter((m) => /^ {2}\[(story|curated|chatter|other)\] /.test(m.replace(/^hyperspell: /, "")))
+  assert.equal(perResultLines.length, 5, "one per-candidate line for each of the 5 ranked results (verbose — stays debug)")
   assert.ok(
     perResultLines[0].includes("[curated]"),
     `top candidate line carries kind + base→composite: ${perResultLines[0]}`,
   )
 
-  const cutLine = seen.find((m) => m.includes("auto-context: cut"))
-  assert.ok(cutLine, "cut-reason line logged")
+  const cutLine = seenInfo.find((m) => m.includes("auto-context: cut"))
+  assert.ok(cutLine, "cut-reason line logged via the info-emitting path (issue #118)")
   assert.ok(
     cutLine.includes(`cut 2 of 5 candidates {"chatter-quota":1,"threshold":1}`),
     `cut tally names each binding reason: ${cutLine}`,
@@ -285,8 +289,8 @@ test("auto-context — debug lines carry cut reasons and the injected composite 
     "quota-bound drops report the top dropped composite (proposal 03)",
   )
 
-  const injectLine = seen.find((m) => m.includes("injecting (ranked)"))
-  assert.ok(injectLine, "tally line logged")
+  const injectLine = seenInfo.find((m) => m.includes("injecting (ranked)"))
+  assert.ok(injectLine, "tally line logged via the info-emitting path (issue #118)")
   assert.ok(
     injectLine.includes(`{"curated":1,"chatter":2} from 5 candidates (chatter cap 2, composite 0.65–0.90)`),
     `tally line extended with the injected composite range: ${injectLine}`,
