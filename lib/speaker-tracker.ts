@@ -10,7 +10,7 @@
  *
  * Lifecycle:
  *   - record() on every turn that has a resolvable senderId (hot-buffer agent_end,
- *     auto-context before_agent_start)
+ *     auto-context injection hook)
  *   - isMultiSpeaker() checked by any hook or tool that needs to guard behaviour
  *   - cleanup() on session_end, called from the hot-buffer cleanup handler
  */

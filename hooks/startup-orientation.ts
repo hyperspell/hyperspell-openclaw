@@ -221,7 +221,7 @@ export type OrientationGather = {
 
 /**
  * The fetch+format core of startup orientation, shared by the real
- * before_agent_start handler and the read-only /previewcontext command.
+ * session-start injection handler and the read-only /previewcontext command.
  * Pure with respect to session lifecycle: no inject-once cache, no retry
  * counting — callers own that policy. Keeping one formatter here keeps the
  * preview byte-identical to real injection.
@@ -238,7 +238,7 @@ export async function gatherOrientation(
 	// off agents). Fall back to agent_end traces only when there's no hot
 	// buffer but auto-trace is on. Otherwise skip: there's nothing to fetch,
 	// and the trace-source list is expensive (observed ~12s + failing/turn),
-	// blocking before_agent_start and slowing the reply.
+	// blocking the injection hook and slowing the reply.
 	const recentSource = cfg.hotBuffer.enabled
 		? ("hotBuffer" as const)
 		: cfg.autoTrace.enabled

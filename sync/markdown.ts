@@ -289,7 +289,7 @@ export function saveManifest(workspaceDir: string, manifest: SyncManifest): void
 
 /**
  * Serializes manifest read-modify-write across the whole process. Startup bulk
- * sync and the live file_changed handler (plus independent per-file debounce
+ * sync and the live file-watch handler (plus independent per-file debounce
  * timers) would otherwise interleave load → await addMemory → save and lose
  * resourceId entries, causing the next sync to re-upload sections as brand-new
  * memories. Every load→sync→save runs inside this critical section.
@@ -745,7 +745,7 @@ export async function syncAllFilesSectionized(
   // not changing — re-parsing/hashing/diffing it every startup is pure churn.
   // Files NOT yet in the manifest are always processed regardless of age, so
   // a genuinely cold start (or a never-synced old file) still ingests once.
-  // The live file_changed handler is unaffected: an edit bumps mtime, so
+  // The live file-watch handler is unaffected: an edit bumps mtime, so
   // edited-but-old files re-enter the window naturally.
   const maxAgeDays = options?.maxAgeDays ?? 0
   let candidates = files

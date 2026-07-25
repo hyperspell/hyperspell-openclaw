@@ -77,7 +77,7 @@ const sessionMoods = new Map<string, MoodSpec>();
  * hundred tokens of repeated wrapper per turn.
  *
  * Lifecycle:
- *  - first before_agent_start in a session: fetch, inject, mark.
+ *  - first injection-hook fire in a session: fetch, inject, mark.
  *  - subsequent turns in same session: skip (return undefined).
  *  - after_compaction: clear the mark so the next turn re-injects (the
  *    initial injection may have been compacted out of history).
@@ -206,7 +206,7 @@ export function buildEmotionalContext(states: EmotionalStateLatest[]): string {
  * context. On later turns of the same session, return undefined — the
  * injection from the first turn is already in the conversation history.
  *
- * Runs on `before_agent_start` (which fires every turn).
+ * Runs on the session injection hook (fires every turn).
  */
 export function buildEmotionalStateFetchHandler(
 	client: HyperspellClient,
