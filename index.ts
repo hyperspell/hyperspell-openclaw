@@ -11,7 +11,11 @@ import {
 	buildEmotionalStateSessionCleanupHandler,
 	buildEmotionalStateStoreHandler,
 } from "./hooks/emotional-state.ts"
-import { buildFileSyncHandler, syncMemoriesOnStartup } from "./hooks/memory-sync.ts"
+import {
+	buildFileSyncHandler,
+	buildMemorySyncWatcher,
+	syncMemoriesOnStartup,
+} from "./hooks/memory-sync.ts"
 import {
 	buildHotBufferHandler,
 	buildHotBufferSessionCleanupHandler,
@@ -121,7 +125,7 @@ export default {
 
 		// Channel quarantine (cfg.excludeChannels): excluded conversations get no
 		// memory surface in either direction. Guard the shared choke points here —
-		// before_agent_start (all injection), agent_end (all writes), and the tool
+		// the injection hook (all injection), agent_end (all writes), and the tool
 		// factories — so individual hooks stay quarantine-unaware.
 		const quarantined = (ctx?: Record<string, unknown>): boolean => {
 			if (!isExcludedChannel(ctx, cfg)) return false;
@@ -146,8 +150,8 @@ export default {
 		});
 
 		// Session-start context injectors (emotional fetch, auto-context,
-		// startup-orientation) all run on `before_agent_start`. The host awaits
-		// before_agent_start hooks SEQUENTIALLY, so registering them separately
+		// startup-orientation) all run on the injection hook. The host awaits
+		// same-name hooks SEQUENTIALLY, so registering them separately
 		// stacked their backend searches — making the first message of a session
 		// roughly 2x slower than necessary. Instead we collect them and run them
 		// in PARALLEL under a single hook, merging prependContext in registration
@@ -209,8 +213,21 @@ export default {
 			api.on("session_end", buildStartupOrientationSessionCleanupHandler());
 		}
 
+		// Injection hook selection: OpenClaw 2026.7.2 removed the plugin-facing
+		// `before_agent_start`; its replacement `agent_turn_prepare` shipped in the
+		// same core commit as `enqueueNextTurnInjection` (openclaw#72287, 2026-04),
+		// so probing that api member tells us exactly which hook this host knows.
+		// Register exactly ONE of the two: cores between 2026-04 and 2026-07
+		// accept both and would double-inject. Both hooks share the same
+		// { prependContext } result contract and provide event.prompt.
+		const injectionHook =
+			typeof (api as { enqueueNextTurnInjection?: unknown })
+				.enqueueNextTurnInjection === "function"
+				? "agent_turn_prepare"
+				: "before_agent_start";
+
 		if (startHandlers.length > 0) {
-			api.on("before_agent_start", async (event, ctx) => {
+			api.on(injectionHook, async (event, ctx) => {
 				// Quarantined channels get no injected memory of any kind.
 				if (quarantined(ctx as Record<string, unknown> | undefined)) return undefined;
 				const results = await Promise.all(
@@ -251,10 +268,16 @@ export default {
 			api.on("session_end", buildHotBufferSessionCleanupHandler());
 		}
 
-		// Register memory sync hook
+		// Memory sync live watcher. Plugin-owned on every host version:
+		// 2026.7.2 removed the host `file_changed` hook, and on older hosts
+		// registering both paths would double-sync each edit. Started/stopped
+		// by the lifecycle service below.
+		let memorySyncWatcher: { start: () => void; stop: () => void } | undefined;
 		if (cfg.syncMemories) {
 			const fileSyncHandler = buildFileSyncHandler(client, cfg);
-			api.on("file_changed", fileSyncHandler);
+			memorySyncWatcher = buildMemorySyncWatcher(cfg, (event) => {
+				void fileSyncHandler(event);
+			});
 			api.logger.info(
 				`hyperspell: memory sync enabled (sectionize=${cfg.syncMemoriesConfig.sectionize}, watchPaths=${cfg.syncMemoriesConfig.watchPaths.length})`,
 			);
@@ -311,8 +334,10 @@ export default {
 						api.logger.error("hyperspell: background memory sync failed", err);
 					});
 				}
+				memorySyncWatcher?.start();
 			},
 			stop: () => {
+				memorySyncWatcher?.stop();
 				api.logger.info("hyperspell: stopped");
 			},
 		});

@@ -10,7 +10,7 @@ import { isExcludedChannel } from "../lib/exclude-channels.ts"
 import { log } from "../logger.ts"
 
 /**
- * Assemble a read-only report of what before_agent_start WOULD inject at the
+ * Assemble a read-only report of what the injection hook WOULD inject at the
  * start of the next session. Calls only the pure fetch/format functions the
  * real hooks are composed from — never the hook handlers themselves — so it
  * cannot touch the inject-once session caches, and it never calls rollMood
@@ -23,7 +23,7 @@ export async function buildPreviewReport(
   ctx: { senderId?: string; channel?: string },
 ): Promise<string> {
   // Quarantined channels get no injected memory of any kind (index.ts guards
-  // before_agent_start with the same check) — report that instead of a bundle.
+  // the injection hook with the same check) — report that instead of a bundle.
   if (isExcludedChannel({ channelId: ctx.channel }, cfg)) {
     return "This channel is quarantined (excludeChannels): no context would be injected here and no memory would be written."
   }

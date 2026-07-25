@@ -1,3 +1,4 @@
+import * as fs from "node:fs"
 import * as path from "node:path"
 import type { HyperspellClient } from "../client.ts"
 import type { HyperspellConfig, WatchPathEntry } from "../config.ts"
@@ -150,6 +151,68 @@ export function buildFileSyncHandler(client: HyperspellClient, cfg: HyperspellCo
       await doSync(filePath)
     }
   }
+}
+
+/**
+ * Plugin-owned file watcher feeding the file-sync handler.
+ *
+ * OpenClaw 2026.7.2 removed the host `file_changed` hook with no replacement,
+ * so live sync must come from the plugin itself. Used on EVERY host version
+ * (old hosts still expose `file_changed`, but registering both would
+ * double-sync) — one canonical path. Events are forwarded in the old hook's
+ * `{ file_path }` shape; the handler already owns syncability filtering and
+ * debounce, so the watcher stays dumb.
+ */
+export function buildMemorySyncWatcher(
+  cfg: HyperspellConfig,
+  onFileChanged: (event: { file_path: string }) => void,
+): { start: () => void; stop: () => void } {
+  const workspaceDir = getWorkspaceDir()
+  const roots = [
+    path.join(workspaceDir, "memory"),
+    ...(cfg.syncMemoriesConfig.watchPaths ?? []).map((wp) =>
+      resolveWatchPath(workspaceDir, wp.path),
+    ),
+  ]
+  const watchers: fs.FSWatcher[] = []
+
+  const start = () => {
+    let watched = 0
+    for (const root of roots) {
+      let isDirectory: boolean
+      try {
+        isDirectory = fs.statSync(root).isDirectory()
+      } catch {
+        log.debug(`memory-sync watcher: root missing, skipping: ${root}`)
+        continue
+      }
+      // Watching a file directly breaks on editor rename-replace cycles;
+      // watch the parent and filter to the file's own events instead.
+      const dir = isDirectory ? root : path.dirname(root)
+      try {
+        const watcher = fs.watch(dir, { recursive: isDirectory }, (_type, filename) => {
+          if (!filename) return
+          const filePath = path.join(dir, filename.toString())
+          if (!isDirectory && filePath !== root) return
+          onFileChanged({ file_path: filePath })
+        })
+        watchers.push(watcher)
+        watched += 1
+      } catch (err) {
+        log.error(`memory-sync watcher failed for ${dir}`, err)
+      }
+    }
+    if (watched > 0) {
+      log.info(`memory-sync: watching ${watched} root(s) with plugin-owned watchers`)
+    }
+  }
+
+  const stop = () => {
+    for (const watcher of watchers) watcher.close()
+    watchers.length = 0
+  }
+
+  return { start, stop }
 }
 
 /**
