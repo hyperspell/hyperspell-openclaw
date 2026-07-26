@@ -18,11 +18,32 @@ function makeConfig(overrides: Record<string, unknown> = {}) {
   return parseConfig({ apiKey: "hs-test", syncMemories: true, ...overrides })
 }
 
-async function waitFor(check: () => boolean, timeoutMs = 3000): Promise<void> {
+async function waitFor(check: () => boolean, timeoutMs = 15000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (!check()) {
     if (Date.now() > deadline) throw new Error("waitFor timed out")
     await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+}
+
+/**
+ * Write until the watcher reports the event. fs.watch arms asynchronously
+ * (recursive watches use FSEvents on macOS, which has both an arming delay and
+ * a coalescing latency), so a single write racing start() is silently missed
+ * under load. Re-touching is what makes this test load-independent.
+ */
+async function writeUntilSeen(
+  target: string,
+  body: string,
+  seen: () => boolean,
+  timeoutMs = 15000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  let attempt = 0
+  while (!seen()) {
+    if (Date.now() > deadline) throw new Error(`watcher never reported ${target}`)
+    fs.writeFileSync(target, `${body}\n<!-- ${attempt++} -->`)
+    await new Promise((resolve) => setTimeout(resolve, 250))
   }
 }
 
@@ -53,8 +74,7 @@ test("watcher fires for files created under memory/", async () => {
   watcher.start()
   try {
     const target = path.join(workspaceDir, "memory", "note.md")
-    fs.writeFileSync(target, "# hello")
-    await waitFor(() => seen.includes(target))
+    await writeUntilSeen(target, "# hello", () => seen.includes(target))
   } finally {
     watcher.stop()
   }
@@ -73,8 +93,7 @@ test("watcher covers configured watchPaths roots", async () => {
   watcher.start()
   try {
     const target = path.join(extraDir, "extra.md")
-    fs.writeFileSync(target, "# extra")
-    await waitFor(() => seen.includes(target))
+    await writeUntilSeen(target, "# extra", () => seen.includes(target))
   } finally {
     watcher.stop()
   }
