@@ -4,6 +4,7 @@ import type { HyperspellClient } from "../client.ts";
 import { getWorkspaceDir } from "../config.ts";
 import type { HyperspellConfig } from "../config.ts";
 import { channelIdFromCtx } from "../lib/exclude-channels.ts";
+import { HOT_BUFFER_SOURCE } from "../lib/filters.ts";
 import { resolveUser } from "../lib/sender.ts";
 import {
 	cleanupSpeakerSession,
@@ -282,7 +283,7 @@ export function buildHotBufferHandler(
 			// would have blocked.
 			const channelId = channelIdFromCtx(ctx);
 			const metadata: Record<string, string> = {
-				openclaw_source: "hot_buffer",
+				openclaw_source: HOT_BUFFER_SOURCE,
 				openclaw_session_id: sessionId,
 				...(channelId ? { openclaw_channel_id: channelId } : {}),
 			};

@@ -1,6 +1,6 @@
 import type { HyperspellClient, SearchResult } from "../client.ts";
 import type { HyperspellConfig } from "../config.ts";
-import { excludeFilterFor } from "../lib/filters.ts";
+import { excludeFilterFor, HOT_BUFFER_SOURCE } from "../lib/filters.ts";
 import { resolveUser } from "../lib/sender.ts";
 import { resolveCurrentSessionId } from "../lib/session.ts";
 import { isMultiSpeaker } from "../lib/speaker-tracker.ts";
@@ -159,13 +159,16 @@ async function fetchRecentTraces(
  * modern source of "recent interactions" (the agent_end-trace path only works
  * when auto-trace is on, which it usually isn't). The hot buffer writes one
  * session-grouped Resource per conversation: `resource_id` = the session id (a
- * UUID), untagged (no `openclaw_source`), with a generated title. We rely on
- * `listMemories` returning resources newest-first (verified live) and take the
- * newest `limit` conversation resources — their metadata carries no date to
+ * UUID), tagged `openclaw_source: "hot_buffer"`, with a generated title. We rely
+ * on `listMemories` returning resources newest-first (verified live) and take
+ * the newest `limit` conversation resources — their metadata carries no date to
  * filter on, so order is our recency signal.
  *
- * Excludes: tagged rows (memory_sync_section / command / agent_end), non-UUID
- * resources (synced docs), automated cron sessions, and untitled rows.
+ * Selects ON the hot-buffer tag. This used to skip any row carrying an
+ * `openclaw_source` at all, which was correct only while hot rows were untagged;
+ * backend #1921 (2026-07-02) started tagging them, so that exclusion began
+ * dropping every row it was meant to keep and the block silently vanished.
+ * Sibling rows (memory_sync_section / command / agent_end) fail the same check.
  */
 async function fetchRecentConversations(
 	client: HyperspellClient,
@@ -183,7 +186,7 @@ async function fetchRecentConversations(
 		scanned++;
 		if (scanned > RECENT_BUFFER_LIMIT) break;
 		if (!UUID_RE.test(memory.resourceId)) continue;
-		if (memory.metadata?.openclaw_source) continue;
+		if (memory.metadata?.openclaw_source !== HOT_BUFFER_SOURCE) continue;
 		const title = memory.title ?? "";
 		if (title.length === 0 || /^\[cron:/i.test(title)) continue;
 		// The backend sometimes generates the same title for distinct sessions

@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
+import { HOT_BUFFER_SOURCE } from "../lib/filters.ts";
 import { buildPreviewReport } from "./preview.ts";
 
 type State = {
@@ -48,7 +49,7 @@ const st = (summary: string): State => ({
 test("preview — shows emotional arc block and configured mood chance without rolling", async () => {
 	const client = makeClient({
 		arc: [st("Warm and steady lately.")],
-		vaultRows: [{ resourceId: "8a1b2c3d-0000-4000-8000-1234567890ab", title: "Budget chat", metadata: {} }],
+		vaultRows: [{ resourceId: "8a1b2c3d-0000-4000-8000-1234567890ab", title: "Budget chat", metadata: { openclaw_source: HOT_BUFFER_SOURCE } }],
 		loops: [{ resourceId: "m1", title: "Follow up", source: "vault", score: 0.7, url: null, createdAt: null, highlights: [{ text: "promised to send the doc", score: 0.7 }] }],
 	});
 	const out = await buildPreviewReport(client as never, baseCfg, {});

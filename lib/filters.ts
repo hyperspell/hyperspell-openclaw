@@ -18,6 +18,13 @@ type ExcludeCfg = {
 export const AGENT_END_SOURCE = "agent_end"
 /** Metadata tag on mood-weather roll records (see `recordMoodRoll` in hooks/mood-weather.ts). */
 export const MOOD_WEATHER_SOURCE = "mood_weather"
+/**
+ * Metadata tag on hot-buffer conversation rows (written by hooks/hot-buffer.ts).
+ * Readers must select ON this value, never "any tag means not mine" — hot rows
+ * were untagged before backend #1921 (2026-07-02) and consumers written against
+ * that shape silently match nothing now.
+ */
+export const HOT_BUFFER_SOURCE = "hot_buffer"
 
 /**
  * Memories produced by the auto-trace session-end hook are tagged in metadata

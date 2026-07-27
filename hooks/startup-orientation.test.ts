@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import type { HyperspellClient, SearchResult } from "../client.ts";
 import type { HyperspellConfig, HyperspellSource } from "../config.ts";
+import { HOT_BUFFER_SOURCE } from "../lib/filters.ts";
 import { DEFAULT_RANKING } from "../lib/ranking.ts";
 import {
 	buildStartupOrientationCompactionHandler,
@@ -258,15 +259,28 @@ test("startup-orientation — neither hot-buffer nor auto-trace: skips recent fe
 	assert.equal(client.searchCalls.length, 1, "loops search still runs");
 });
 
-test("startup-orientation — hot-buffer source: recent comes from vault session resources (UUID+untagged), cron/tagged excluded", async () => {
+test("startup-orientation — hot-buffer source: recent comes from vault session resources (UUID + hot_buffer tag), cron/sibling-tagged excluded", async () => {
 	// The modern path (e.g. auto-trace OFF + hot buffer ON, like a real agent):
 	// recent-interactions is sourced from the hot buffer's session-grouped vault
 	// resources, not agent_end traces.
-	const conv = (id: string, title: string): ListedMemory => ({ resourceId: id, source: "vault", title, metadata: {} });
+	//
+	// Rows MUST carry openclaw_source: "hot_buffer" — that is what the hot-buffer
+	// hook writes. This test previously built them untagged, which is the shape
+	// from before backend #1921 (2026-07-02); that stale fixture is why the
+	// reader's inverted filter stayed green here while the live block silently
+	// returned zero results for weeks.
+	const conv = (id: string, title: string): ListedMemory => ({
+		resourceId: id,
+		source: "vault",
+		title,
+		metadata: { openclaw_source: HOT_BUFFER_SOURCE },
+	});
 	const client = makeClient({
 		traces: [
 			conv("0471aa5b-2c34-43d0-a810-3bd846076e43", "Talked about dinner"),
 			{ resourceId: "note-readme.md", source: "vault", title: "synced doc", metadata: { openclaw_source: "memory_sync_section" } },
+			{ resourceId: "33333333-2222-3333-4444-555555555555", source: "vault", title: "slash command run", metadata: { openclaw_source: "command" } },
+			{ resourceId: "44444444-2222-3333-4444-555555555555", source: "vault", title: "pre-#1921 untagged row", metadata: {} },
 			conv("11111111-2222-3333-4444-555555555555", "[cron:abc] heartbeat run"),
 			conv("22222222-2222-3333-4444-555555555555", "Morning check-in"),
 		],
@@ -286,7 +300,9 @@ test("startup-orientation — hot-buffer source: recent comes from vault session
 	assert.match(ctx, /Talked about dinner/);
 	assert.match(ctx, /Morning check-in/);
 	assert.doesNotMatch(ctx, /cron/, "automated cron sessions excluded");
-	assert.doesNotMatch(ctx, /synced doc/, "tagged sync rows excluded");
+	assert.doesNotMatch(ctx, /synced doc/, "sibling-tagged sync rows excluded");
+	assert.doesNotMatch(ctx, /slash command run/, "sibling-tagged command rows excluded");
+	assert.doesNotMatch(ctx, /pre-#1921/, "untagged rows are not hot-buffer conversations");
 });
 
 test("startup-orientation — compaction clears cache, next turn re-fetches", async () => {
