@@ -2,7 +2,7 @@
 	"id": "openclaw-hyperspell",
 	"name": "Hyperspell",
 	"description": "Context and memory for your AI agents — search across Notion, Slack, Google Drive, and more",
-	"version": "0.21.0",
+	"version": "0.22.0",
 	"kind": "memory",
 	"contracts": {
 		"tools": [
