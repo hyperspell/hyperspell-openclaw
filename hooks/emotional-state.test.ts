@@ -6,6 +6,7 @@ import {
 	buildEmotionalStateSessionCleanupHandler,
 	buildEmotionalStateStoreHandler,
 	looksLikeRawTranscript,
+	messagesToTranscript,
 	MOOD_WEATHER_COOLDOWN_MS,
 } from "./emotional-state.ts";
 import { MOOD_TABLE } from "./mood-weather.ts";
@@ -219,6 +220,37 @@ test("looksLikeRawTranscript — detects the pending raw-transcript placeholder,
 		),
 		false,
 	);
+});
+
+test("looksLikeRawTranscript — catches tool-role placeholders stored before tool turns were excluded", () => {
+	// Observed live: a Discord send receipt occupying an emotional register.
+	// Rows like this predate the CONVERSATIONAL_ROLES filter and stay fetchable
+	// until they age out, so the detector must still recognize them.
+	assert.equal(
+		looksLikeRawTranscript('toolResult: {\n  "channel": "discord",\n  "via": "direct"'),
+		true,
+	);
+	assert.equal(looksLikeRawTranscript("tool: search(query)"), true);
+	assert.equal(looksLikeRawTranscript("system: you are an assistant"), true);
+	// Prose that merely mentions a tool must not trip it — the prefix is line-leading.
+	assert.equal(
+		looksLikeRawTranscript("They were frustrated that the tool: kept failing mid-task."),
+		false,
+	);
+});
+
+test("messagesToTranscript — sends only conversational turns for extraction", () => {
+	// Root cause of the receipt-in-the-arc bug: tool traffic was transcribed and
+	// handed to the extractor, which then distilled API JSON into a register.
+	const transcript = messagesToTranscript([
+		{ role: "user", content: "rough day" },
+		{ role: "toolResult", content: '{"channel":"discord","messageId":"153033938"}' },
+		{ role: "assistant", content: "I'm here" },
+		{ role: "system", content: "you are an assistant" },
+		{ role: "tool", content: "search(query)" },
+	]);
+	assert.equal(transcript, "user: rough day\nassistant: I'm here");
+	assert.equal(looksLikeRawTranscript(transcript), true, "still a transcript, just a clean one");
 });
 
 test("emotional-state fetch — skips injecting a raw-transcript placeholder (pending), does NOT cache (retries next turn)", async () => {

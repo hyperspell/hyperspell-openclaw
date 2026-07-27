@@ -110,11 +110,19 @@ function contentToText(content: unknown): string {
 	return "";
 }
 
-function messagesToTranscript(messages: unknown[]): string {
+/**
+ * Only conversational turns carry relationship signal. `system` is scaffolding
+ * and `tool`/`toolResult` are machinery — a Discord send receipt says nothing
+ * about how a conversation felt, and letting one through means the extractor
+ * distills API JSON into an emotional register. Same rule as hot-buffer.ts.
+ */
+const CONVERSATIONAL_ROLES = new Set(["user", "assistant"]);
+
+export function messagesToTranscript(messages: unknown[]): string {
 	const lines: string[] = [];
 	for (const m of messages as Message[]) {
 		if (!m.role || !m.content) continue;
-		if (m.role === "system") continue;
+		if (!CONVERSATIONAL_ROLES.has(m.role)) continue;
 		const raw = contentToText(m.content);
 		if (!raw) continue;
 		const cleaned = sanitizeTraceText(raw);
@@ -130,9 +138,15 @@ function messagesToTranscript(messages: unknown[]): string {
  * rather than a distilled emotional register. Real summaries are second-person
  * prose ("Your relationship with this user…"); the placeholder echoes the input
  * conversation, which has role-prefixed lines.
+ *
+ * Covers the full role vocabulary, not just what messagesToTranscript writes
+ * today: rows stored before tool roles were excluded above are still fetched
+ * until they age out, and they lead with `toolResult:`.
  */
 export function looksLikeRawTranscript(summary: string): boolean {
-	return /(^|\n)\s*(user|assistant)\s*:/i.test(summary);
+	return /(^|\n)\s*(?:user|assistant|system|tool(?:result|use|call)?)\s*:/i.test(
+		summary,
+	);
 }
 
 /** Compact relative time for the arc labels (e.g. "just now", "3h ago", "2d ago"). */

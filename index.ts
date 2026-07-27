@@ -220,6 +220,14 @@ export default {
 		// Register exactly ONE of the two: cores between 2026-04 and 2026-07
 		// accept both and would double-inject. Both hooks share the same
 		// { prependContext } result contract and provide event.prompt.
+		//
+		// Do NOT rename this a third time. We were originally on
+		// `before_prompt_build`, moved to `before_agent_start`, and that is the
+		// only reason 2026.7.2 took injection down: `before_prompt_build` is
+		// still live in core's PROMPT_INJECTION_HOOK_NAMES and would have
+		// survived untouched. Staying on `agent_turn_prepare` (proven in
+		// production) — but the lesson is that "newer-sounding hook name" is not
+		// evidence of anything. Check core's hook table before moving again.
 		const injectionHook =
 			typeof (api as { enqueueNextTurnInjection?: unknown })
 				.enqueueNextTurnInjection === "function"
