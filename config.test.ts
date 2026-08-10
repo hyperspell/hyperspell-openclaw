@@ -352,6 +352,23 @@ test("parseConfig — hotBuffer honors explicit settings", () => {
   assert.equal(cfg.hotBuffer.writeAssistant, false)
 })
 
+test("parseConfig — hotBuffer speaker labels parse, trim, and default to undefined", () => {
+  const cfg = parseConfig({
+    ...base,
+    hotBuffer: { enabled: true, userLabel: " David ", assistantLabel: "Alinea" },
+  })
+  assert.equal(cfg.hotBuffer.userLabel, "David")
+  assert.equal(cfg.hotBuffer.assistantLabel, "Alinea")
+
+  const bare = parseConfig({ ...base, hotBuffer: { enabled: true } })
+  assert.equal(bare.hotBuffer.userLabel, undefined)
+  assert.equal(bare.hotBuffer.assistantLabel, undefined)
+
+  // Whitespace-only labels are treated as absent, not as an empty prefix.
+  const blank = parseConfig({ ...base, hotBuffer: { enabled: true, userLabel: "  " } })
+  assert.equal(blank.hotBuffer.userLabel, undefined)
+})
+
 test("parseConfig — hotBuffer with an unknown key throws", () => {
   assert.throws(
     () => parseConfig({ ...base, hotBuffer: { enbaled: true } }),

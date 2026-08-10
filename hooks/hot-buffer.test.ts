@@ -19,6 +19,7 @@ type SentBatch = Array<{
 	resourceId: string;
 	messageId: string;
 	content: string;
+	metadata?: Record<string, string>;
 }>;
 
 function makeClient() {
@@ -65,7 +66,11 @@ test("hot-buffer — writes user and assistant turns with stable ids", async () 
 	assert.equal(calls.length, 1);
 	assert.equal(calls[0].length, 2);
 	assert.equal(calls[0][0].resourceId, "s1");
-	assert.equal(calls[0][0].content, "hello violet-anchor-123");
+	// No envelope sender and no configured labels → generic role labels. The
+	// label is never omitted: the POST /messages payload has no role field, so
+	// in-content labels are the only speaker signal the consolidator gets.
+	assert.equal(calls[0][0].content, "[User]: hello violet-anchor-123");
+	assert.equal(calls[0][1].content, "[Assistant]: hi there");
 	// distinct ids per role
 	assert.notEqual(calls[0][0].messageId, calls[0][1].messageId);
 });
@@ -179,7 +184,7 @@ test("hot-buffer — stable ctx.sessionId dedups across turns (no whole-transcri
 	assert.equal(calls[1].length, 2);
 	assert.deepEqual(
 		calls[1].map((m) => m.content),
-		["reply-1", "turn-2"],
+		["[Assistant]: reply-1", "[User]: turn-2"],
 	);
 	// All rows share the stable resourceId.
 	for (const batch of calls)
@@ -215,7 +220,7 @@ test("hot-buffer — idempotent: re-firing the same turn sends nothing new", asy
 	assert.equal(calls[1].length, 2); // only the new pair
 	assert.deepEqual(
 		calls[1].map((m) => m.content),
-		["second", "reply two"],
+		["[User]: second", "[Assistant]: reply two"],
 	);
 });
 
@@ -239,7 +244,7 @@ test("hot-buffer — writeAssistant=false skips assistant lines", async () => {
 		{},
 	);
 	assert.equal(calls[0].length, 1);
-	assert.equal(calls[0][0].content, "u");
+	assert.equal(calls[0][0].content, "[User]: u");
 });
 
 test("hot-buffer — skips when agent ended with error", async () => {
@@ -291,7 +296,7 @@ test("hot-buffer — strips injected context wrappers before writing", async () 
 		},
 		{},
 	);
-	assert.equal(calls[0][0].content, "real question");
+	assert.equal(calls[0][0].content, "[User]: real question");
 });
 
 test("hot-buffer — session cleanup lets ids be re-sent in a fresh run", async () => {
@@ -352,7 +357,7 @@ test("hot-buffer — survives a bare process restart without resending the whole
 	assert.equal(calls2[0].length, 2);
 	assert.deepEqual(
 		calls2[0].map((m) => m.content),
-		["reply-1", "turn-2"],
+		["[Assistant]: reply-1", "[User]: turn-2"],
 	);
 });
 
@@ -380,4 +385,159 @@ test("hot-buffer — session cleanup also removes persisted disk state", async (
 	} finally {
 		fs.rmSync(stateRoot, { recursive: true, force: true });
 	}
+});
+
+test("hot-buffer — envelope sender name labels user turns, beating configured userLabel", async () => {
+	const { client, calls } = makeClient();
+	const labeled = parseConfig({
+		apiKey: "k",
+		userId: "u1",
+		hotBuffer: { enabled: true, userLabel: "David", assistantLabel: "Alinea" },
+	});
+	const handler = buildHotBufferHandler(client, labeled, { stateRoot: testStateRoot });
+	await handler(
+		{
+			success: true,
+			messages: [
+				{ role: "user", content: "morning" },
+				{ role: "assistant", content: "morning yourself" },
+			],
+		},
+		{ sessionId: "s-env-label", sender: "David S" },
+	);
+	assert.deepEqual(
+		calls[0].map((m) => m.content),
+		["[David S]: morning", "[Alinea]: morning yourself"],
+	);
+});
+
+test("hot-buffer — configured labels fill in when the envelope has no sender", async () => {
+	const { client, calls } = makeClient();
+	const labeled = parseConfig({
+		apiKey: "k",
+		userId: "u1",
+		hotBuffer: { enabled: true, userLabel: "David", assistantLabel: "Alinea" },
+	});
+	const handler = buildHotBufferHandler(client, labeled, { stateRoot: testStateRoot });
+	await handler(
+		{
+			success: true,
+			messages: [
+				{ role: "user", content: "no envelope here" },
+				{ role: "assistant", content: "still know who's who" },
+			],
+		},
+		{ sessionId: "s-cfg-label" },
+	);
+	assert.deepEqual(
+		calls[0].map((m) => m.content),
+		["[David]: no envelope here", "[Alinea]: still know who's who"],
+	);
+});
+
+test("hot-buffer — escapes ] out of sender names to keep [Name]: parseable", async () => {
+	const { client, calls } = makeClient();
+	const handler = buildHotBufferHandler(client, cfg, { stateRoot: testStateRoot });
+	await handler(
+		{ success: true, messages: [{ role: "user", content: "hi" }] },
+		{ sessionId: "s-escape", sender: "Weird] Name" },
+	);
+	assert.equal(calls[0][0].content, "[Weird Name]: hi");
+});
+
+test("hot-buffer — tags each row with speaker role and name metadata", async () => {
+	const { client, calls } = makeClient();
+	const handler = buildHotBufferHandler(client, cfg, { stateRoot: testStateRoot });
+	await handler(
+		{
+			success: true,
+			messages: [
+				{ role: "user", content: "who said this" },
+				{ role: "assistant", content: "i did" },
+			],
+		},
+		{ sessionId: "s-speaker-md", sender: "David S" },
+	);
+	assert.deepEqual(calls[0][0].metadata, {
+		openclaw_speaker_role: "user",
+		openclaw_speaker_name: "David S",
+	});
+	assert.deepEqual(calls[0][1].metadata, {
+		openclaw_speaker_role: "assistant",
+		openclaw_speaker_name: "Assistant",
+	});
+});
+
+/** Replica of hot-buffer.ts's FNV-1a messageId — the pre-speaker-label id
+ * shape (hashed from unlabeled text). Kept in sync by the migration test
+ * below: if the hash ever drifts, the test fails loudly. */
+function legacyMessageId(role: string, text: string): string {
+	let h = 0x811c9dc5;
+	const s = `${role} ${text}`;
+	for (let i = 0; i < s.length; i++) {
+		h ^= s.charCodeAt(i);
+		h = Math.imul(h, 0x01000193);
+	}
+	return `${role[0] ?? "x"}-${(h >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+test("hot-buffer — rows sent before speaker labels existed are not re-posted (migration shim)", async () => {
+	// A session open across the upgrade has persisted ids hashed from the
+	// UNLABELED text. agent_end replays the full history every turn; without
+	// the legacy-id check the whole transcript would re-post under new
+	// (labeled) ids, duplicating every row in the resource.
+	const sessionId = "s-legacy-migration";
+	const legacy = [
+		legacyMessageId("user", "old line"),
+		legacyMessageId("assistant", "old reply"),
+	];
+	const dir = path.join(testStateRoot, "hot-buffer-sent");
+	fs.mkdirSync(dir, { recursive: true });
+	fs.writeFileSync(path.join(dir, `${sessionId}.json`), JSON.stringify(legacy));
+
+	const { client, calls } = makeClient();
+	const handler = buildHotBufferHandler(client, cfg, { stateRoot: testStateRoot });
+	await handler(
+		{
+			success: true,
+			messages: [
+				{ role: "user", content: "old line" },
+				{ role: "assistant", content: "old reply" },
+				{ role: "user", content: "new line" },
+			],
+		},
+		{ sessionId },
+	);
+
+	// Only the genuinely new message goes out — labeled.
+	assert.equal(calls.length, 1);
+	assert.deepEqual(
+		calls[0].map((m) => m.content),
+		["[User]: new line"],
+	);
+});
+
+test("hot-buffer — cron prompts keep their own prefix instead of the user label", async () => {
+	const { client, calls } = makeClient();
+	const labeled = parseConfig({
+		apiKey: "k",
+		userId: "u1",
+		hotBuffer: { enabled: true, userLabel: "David", assistantLabel: "Alinea" },
+	});
+	const handler = buildHotBufferHandler(client, labeled, { stateRoot: testStateRoot });
+	await handler(
+		{
+			success: true,
+			messages: [
+				{ role: "user", content: "[cron:abc123 daily-review] Do the daily review." },
+				{ role: "assistant", content: "On it." },
+			],
+		},
+		{ sessionId: "s-cron-label" },
+	);
+	assert.deepEqual(
+		calls[0].map((m) => m.content),
+		["[cron:abc123 daily-review] Do the daily review.", "[Alinea]: On it."],
+	);
+	assert.equal(calls[0][0].metadata?.openclaw_speaker_name, "cron");
 });

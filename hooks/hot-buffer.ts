@@ -195,28 +195,46 @@ export function buildHotBufferHandler(
 		if (groupChat && !cfg.multiUser && !warnedGroupSessions.has(sessionId)) {
 			warnedGroupSessions.add(sessionId);
 			log.warn(
-				"hot-buffer: multi-speaker session detected but multiUser is not configured — all turns written under cfg.userId with no speaker attribution (see issues #58/#59)",
+				"hot-buffer: multi-speaker session detected but multiUser is not configured — all turns written under cfg.userId; attribution is in-content [Name]: labels only (see issues #58/#59)",
 			);
 		}
 
-		// In multi-speaker single-user mode, prefix each human turn with the sender
-		// name so attribution survives in stored text. Metadata on hot-buffer
-		// writes suppresses indexing (Hyperspell #1921), so the text content is
-		// the only place attribution can land. Only prefix when we have an
-		// envelope-derived name — if it equals cfg.userId the sender field was
-		// absent and prefixing "alinea:" onto someone else's message would mislead.
-		// Escape ] to keep the [Name]: format parseable (issue #59 follow-up).
-		const envName =
-			resolved?.name && resolved.name !== (cfg.userId ?? "")
-				? resolved.name.replace(/\]/g, "").trim()
+		// Speaker labels on EVERY conversational turn, in all sessions — not just
+		// detected group chats. POST /messages carries no role or speaker field
+		// (the payload is {resource_id, message_id, content}), so an in-content
+		// label is the only speaker signal the server-side consolidator ever
+		// sees. Unlabeled 1:1 turns were summarized with speakers guessed from a
+		// wall of merged first-person text under one vault user — the human's
+		// words came back attributed to the agent and vice versa. The
+		// attribution-v2 guards (issues #58/#59) gated labeling on multi-speaker
+		// detection, which treated 1:1 sessions as the safe case; they were the
+		// worst case. For user turns an envelope-derived sender name wins (the
+		// only correct answer once a second human appears), then
+		// hotBuffer.userLabel, then a generic role label. Only trust
+		// resolved.name when it's envelope-derived — if it equals cfg.userId the
+		// sender field was absent, and in multiUser mode an unresolved fallback
+		// carries sharedUserId, not a person. Escape ] to keep [Name]: parseable.
+		const escapeLabel = (s: string | undefined): string | undefined => {
+			const v = (s ?? "").replace(/\]/g, "").trim();
+			return v.length > 0 ? v : undefined;
+		};
+		const envName = cfg.multiUser
+			? resolved?.resolved
+				? resolved.name
+				: undefined
+			: resolved?.name && resolved.name !== (cfg.userId ?? "")
+				? resolved.name
 				: undefined;
-		const speakerPrefix =
-			groupChat && !cfg.multiUser && envName ? `[${envName}]: ` : undefined;
+		const userLabel =
+			escapeLabel(envName) ?? escapeLabel(cfg.hotBuffer.userLabel) ?? "User";
+		const assistantLabel =
+			escapeLabel(cfg.hotBuffer.assistantLabel) ?? "Assistant";
 
 		const pending: Array<{
 			resourceId: string;
 			messageId: string;
 			content: string;
+			metadata: Record<string, string>;
 		}> = [];
 		const pendingIds: string[] = [];
 
@@ -231,10 +249,21 @@ export function buildHotBufferHandler(
 				continue;
 			}
 
-			let text = extractText(m.content);
-			if (role === "user" && speakerPrefix) text = speakerPrefix + text;
-			if (text.length === 0) continue;
+			const raw = extractText(m.content);
+			if (raw.length === 0) continue;
 
+			// Cron prompts arrive as user-role turns but aren't the human
+			// speaking — OpenClaw injects its own "[cron:<id> <name>]" prefix.
+			// Stamping the user label on top would attribute automation to the
+			// human; leave those rows as-is (the attribution backfill applies
+			// the same skip rule).
+			const isCronPrompt = role === "user" && raw.startsWith("[cron:");
+			const label = isCronPrompt
+				? "cron"
+				: role === "user"
+					? userLabel
+					: assistantLabel;
+			let text = isCronPrompt ? raw : `[${label}]: ${raw}`;
 			if (text.length > MAX_CONTENT_CHARS) {
 				log.warn(
 					`hot-buffer: truncating ${role} message ${text.length} -> ${MAX_CONTENT_CHARS} chars`,
@@ -243,9 +272,29 @@ export function buildHotBufferHandler(
 			}
 
 			const id = messageId(role, text);
-			if (sent.has(id)) continue;
+			// Migration shim: rows written before speaker labels existed (or before
+			// an envelope name was known) were hashed from the unlabeled text.
+			// agent_end replays the full session history every turn, so without
+			// this check the first post-upgrade turn of any open session re-posts
+			// its entire transcript under new ids — duplicating every row in the
+			// resource instead of upserting.
+			const legacyId = messageId(role, raw);
+			if (sent.has(id) || sent.has(legacyId)) continue;
 
-			pending.push({ resourceId, messageId: id, content: text });
+			pending.push({
+				resourceId,
+				messageId: id,
+				content: text,
+				// Per-row speaker tags ride alongside the in-content label so
+				// retrieval can filter live hot rows by speaker without parsing
+				// content. Row-level only: consolidation unions metadata across a
+				// resource's rows, so at resource level these keys may collapse to
+				// one arbitrary speaker — never filter consolidated results on them.
+				metadata: {
+					openclaw_speaker_role: role,
+					openclaw_speaker_name: label,
+				},
+			});
 			pendingIds.push(id);
 		}
 
