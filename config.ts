@@ -53,6 +53,14 @@ export type HotBufferConfig = {
 	writeUser: boolean;
 	/** Write the assistant side of each turn. */
 	writeAssistant: boolean;
+	/**
+	 * Fallback speaker label for user turns when the envelope carries no sender
+	 * name. An envelope-derived name always wins — it's the only correct answer
+	 * once a second human appears in the session. Default "User".
+	 */
+	userLabel?: string;
+	/** Speaker label for assistant turns. Default "Assistant". */
+	assistantLabel?: string;
 };
 
 export type StartupOrientationConfig = {
@@ -616,7 +624,7 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 	if (cfg.hotBuffer && typeof cfg.hotBuffer === "object" && !Array.isArray(cfg.hotBuffer)) {
 		assertAllowedKeys(
 			hbRaw,
-			["enabled", "source", "writeUser", "writeAssistant"],
+			["enabled", "source", "writeUser", "writeAssistant", "userLabel", "assistantLabel"],
 			"hyperspell.hotBuffer",
 		);
 	}
@@ -673,6 +681,15 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 			source: hbSource,
 			writeUser: (hbRaw.writeUser as boolean) ?? true,
 			writeAssistant: (hbRaw.writeAssistant as boolean) ?? true,
+			userLabel:
+				typeof hbRaw.userLabel === "string" && hbRaw.userLabel.trim().length > 0
+					? hbRaw.userLabel.trim()
+					: undefined,
+			assistantLabel:
+				typeof hbRaw.assistantLabel === "string" &&
+				hbRaw.assistantLabel.trim().length > 0
+					? hbRaw.assistantLabel.trim()
+					: undefined,
 		},
 		emotionalContext: (cfg.emotionalContext as boolean) ?? false,
 		// Default 0 (off) so shipping never changes existing installs' behavior.

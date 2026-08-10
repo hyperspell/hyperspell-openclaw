@@ -32,6 +32,31 @@ test("sendMessages — forwards per-message metadata into the POST /messages bod
 	}
 });
 
+test("sendMessages — merges per-message metadata over shared batch metadata", async () => {
+	const { calls, restore } = stubFetch();
+	try {
+		await client.sendMessages(
+			[
+				{
+					resourceId: "r3",
+					messageId: "m3",
+					content: "c3",
+					metadata: { openclaw_speaker_role: "user", openclaw_speaker_name: "David" },
+				},
+			],
+			{ metadata: { openclaw_source: "hot_buffer" } },
+		);
+		const messages = (calls[0].body.messages as Array<Record<string, unknown>>);
+		assert.deepEqual(messages[0].metadata, {
+			openclaw_source: "hot_buffer",
+			openclaw_speaker_role: "user",
+			openclaw_speaker_name: "David",
+		});
+	} finally {
+		restore();
+	}
+});
+
 test("sendMessages — omits the metadata key entirely when none is given", async () => {
 	const { calls, restore } = stubFetch();
 	try {

@@ -504,7 +504,14 @@ export class HyperspellClient {
 	 * batch 1..1,000 messages. Callers should pre-enforce these.
 	 */
 	async sendMessages(
-		messages: Array<{ resourceId: string; messageId: string; content: string }>,
+		messages: Array<{
+			resourceId: string;
+			messageId: string;
+			content: string;
+			/** Per-message tags (e.g. speaker attribution) merged over the shared
+			 * options.metadata; per-message keys win on collision. */
+			metadata?: Record<string, string | number | boolean>;
+		}>,
 		options?: {
 			userId?: string;
 			source?: string;
@@ -525,15 +532,20 @@ export class HyperspellClient {
 		const metadata = options?.metadata;
 		const body = {
 			source,
-			messages: messages.map((m) => ({
-				resource_id: m.resourceId,
-				message_id: m.messageId,
-				content: m.content,
+			messages: messages.map((m) => {
 				// Per-message metadata (Hyperspell #1921): tags hot-buffer rows so
 				// retrieval can identify/filter them like /memories/add rows. Persists
 				// on the live hot row and is unioned onto the consolidated Resource.
-				...(metadata ? { metadata } : {}),
-			})),
+				// Row-specific tags (speaker attribution) merge over the shared batch
+				// tags, row keys winning on collision.
+				const md = { ...(metadata ?? {}), ...(m.metadata ?? {}) };
+				return {
+					resource_id: m.resourceId,
+					message_id: m.messageId,
+					content: m.content,
+					...(Object.keys(md).length > 0 ? { metadata: md } : {}),
+				};
+			}),
 		};
 
 		log.debugRequest("messages.create", {
