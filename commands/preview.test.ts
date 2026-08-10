@@ -32,6 +32,7 @@ const baseCfg = {
 	moodWeatherChance: 0.08,
 	autoContext: false,
 	excludeChannels: [],
+	quarantineResources: [],
 	relationshipId: "rel-x",
 	hotBuffer: { enabled: true },
 	autoTrace: { enabled: false },

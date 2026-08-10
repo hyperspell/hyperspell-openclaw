@@ -65,6 +65,7 @@ function makeCfg(overrides?: Partial<HyperspellConfig>): HyperspellConfig {
 		emotionalContext: false,
 		moodWeatherChance: 0,
 		excludeChannels: [],
+		quarantineResources: [],
 		startupOrientation: {
 			enabled: true,
 			recentDays: 7,
@@ -456,4 +457,50 @@ test("startup-orientation — uses resolved userId for both calls in multi-user 
 	await handler({}, { sessionKey: "s-known", senderId: "+111" });
 	assert.equal(client.listCalls[0]?.options?.userId, "alice");
 	assert.equal(client.searchCalls[0]?.options?.userId, "alice");
+});
+
+test("startup-orientation — quarantined resources are dropped from both recent sources", async () => {
+	// Hot-buffer path: quarantined conversation resource excluded from the block.
+	const conv = (id: string, title: string): ListedMemory => ({
+		resourceId: id,
+		source: "vault",
+		title,
+		metadata: { openclaw_source: HOT_BUFFER_SOURCE },
+	});
+	const hotClient = makeClient({
+		traces: [
+			conv("aaaaaaaa-1111-2222-3333-444444444444", "Quarantined amnesiac session"),
+			conv("bbbbbbbb-1111-2222-3333-444444444444", "Normal morning chat"),
+		],
+		loops: [],
+	});
+	const hotHandler = buildStartupOrientationHandler(
+		hotClient as unknown as HyperspellClient,
+		makeCfg({
+			hotBuffer: { enabled: true, source: "vault", writeUser: true, writeAssistant: true },
+			autoTrace: { enabled: false, extract: ["procedure"] },
+			quarantineResources: ["aaaaaaaa-1111-2222-3333-444444444444"],
+		}),
+	);
+	const hotOut = await hotHandler({}, { sessionKey: "s-quarantine-hot" });
+	const hotCtx = (hotOut as { prependContext?: string })?.prependContext ?? "";
+	assert.match(hotCtx, /Normal morning chat/);
+	assert.doesNotMatch(hotCtx, /Quarantined amnesiac session/);
+
+	// Auto-trace path: quarantined trace resource excluded the same way.
+	const traceClient = makeClient({
+		traces: [
+			makeTrace({ resourceId: "q-trace", title: "quarantined trace" }),
+			makeTrace({ resourceId: "ok-trace", title: "kept trace" }),
+		],
+		loops: [],
+	});
+	const traceHandler = buildStartupOrientationHandler(
+		traceClient as unknown as HyperspellClient,
+		makeCfg({ quarantineResources: ["q-trace"] }),
+	);
+	const traceOut = await traceHandler({}, { sessionKey: "s-quarantine-trace" });
+	const traceCtx = (traceOut as { prependContext?: string })?.prependContext ?? "";
+	assert.match(traceCtx, /kept trace/);
+	assert.doesNotMatch(traceCtx, /quarantined trace/);
 });

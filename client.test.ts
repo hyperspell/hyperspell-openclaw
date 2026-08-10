@@ -137,3 +137,104 @@ test("emotional-state GETs — non-object metadata is ignored, not mapped", asyn
 		}
 	}
 });
+
+// ---------------------------------------------------------------------------
+// Retrieval quarantine (quarantineResources) — enforced at the client boundary
+// so no search path can forget it. See lib/quarantine.ts.
+// ---------------------------------------------------------------------------
+
+function makeDoc(id: string, title = id) {
+	return {
+		resource_id: id,
+		title,
+		source: "vault",
+		score: 0.9,
+		metadata: {},
+		highlights: [{ id: "h1", score: 0.9, text: `text of ${id}` }],
+	};
+}
+
+/** Stub the SDK's memories.search on a client; returns the captured call bodies. */
+function stubSdkSearch(
+	target: HyperspellClient,
+	response: Record<string, unknown>,
+) {
+	const calls: Array<Record<string, unknown>> = [];
+	const sdk = (
+		target as unknown as {
+			client: { memories: { search: (body: Record<string, unknown>) => Promise<unknown> } };
+		}
+	).client;
+	sdk.memories.search = async (body: Record<string, unknown>) => {
+		calls.push(body);
+		return response;
+	};
+	return calls;
+}
+
+function quarantinedClient(ids: string[]) {
+	return new HyperspellClient(
+		parseConfig({ apiKey: "k", userId: "u1", quarantineResources: ids }),
+	);
+}
+
+test("search — quarantined resources are dropped and the fetch limit is widened to compensate", async () => {
+	const qc = quarantinedClient(["bad-1"]);
+	const calls = stubSdkSearch(qc, {
+		documents: [makeDoc("bad-1"), makeDoc("ok-1"), makeDoc("ok-2")],
+	});
+	const results = await qc.search("q", { limit: 2 });
+	assert.deepEqual(results.map((r) => r.resourceId), ["ok-1", "ok-2"]);
+	const opts = calls[0].options as { max_results: number };
+	assert.equal(opts.max_results, 3, "over-fetched by the quarantine count");
+});
+
+test("search — trims back to the requested limit after the drop", async () => {
+	const qc = quarantinedClient(["bad-1"]);
+	stubSdkSearch(qc, {
+		documents: [makeDoc("ok-1"), makeDoc("ok-2"), makeDoc("ok-3")],
+	});
+	const results = await qc.search("q", { limit: 2 });
+	assert.equal(results.length, 2, "over-fetch surplus trimmed when nothing was quarantined");
+});
+
+test("search — empty quarantine leaves the fetch limit untouched", async () => {
+	const qc = quarantinedClient([]);
+	const calls = stubSdkSearch(qc, { documents: [makeDoc("ok-1")] });
+	await qc.search("q", { limit: 2 });
+	const opts = calls[0].options as { max_results: number };
+	assert.equal(opts.max_results, 2);
+});
+
+test("searchRaw — documents filtered, sibling response fields preserved", async () => {
+	const qc = quarantinedClient(["bad-1"]);
+	stubSdkSearch(qc, {
+		documents: [makeDoc("bad-1"), makeDoc("ok-1")],
+		answer: "unrelated field",
+	});
+	const response = await qc.searchRaw("q", { limit: 5 });
+	const docs = response.documents as Array<{ resource_id: string }>;
+	assert.deepEqual(docs.map((d) => d.resource_id), ["ok-1"]);
+	assert.equal(response.answer, "unrelated field", "non-document fields pass through");
+});
+
+test("searchWithAnswer — answer discarded when a quarantined record was in the synthesis pool", async () => {
+	const qc = quarantinedClient(["bad-1"]);
+	stubSdkSearch(qc, {
+		documents: [makeDoc("bad-1"), makeDoc("ok-1")],
+		answer: "synthesized from a pool that included bad-1",
+	});
+	const out = await qc.searchWithAnswer("q");
+	assert.deepEqual(out.documents.map((d) => d.resourceId), ["ok-1"]);
+	assert.equal(out.answer, null, "tainted answer must not leak quarantined content");
+});
+
+test("searchWithAnswer — answer kept when nothing was quarantined from the pool", async () => {
+	const qc = quarantinedClient(["bad-1"]);
+	stubSdkSearch(qc, {
+		documents: [makeDoc("ok-1")],
+		answer: "clean answer",
+	});
+	const out = await qc.searchWithAnswer("q");
+	assert.equal(out.answer, "clean answer");
+});

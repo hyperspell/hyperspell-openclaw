@@ -146,6 +146,7 @@ files back to Hyperspell.
 | `ranking` | object | see below | Composite re-ranking of auto-context results — see [Composite ranking](#composite-ranking--surfacing-your-active-work) |
 | `ranking.storyTerms` | string[] | `[]` | **Off until you set it.** Words/phrases identifying your active creative work, so it outranks conversation chatter (matched at word boundaries, case-insensitive) |
 | `excludeChannels` | string[] | `[]` | Conversation/channel ids fully quarantined from memory: no context injection, no memory writes, no memory tools. Threads inherit. **Forward-only** — see [below](#excludechannels-is-forward-only). |
+| `quarantineResources` | string[] | `[]` | Vault resource ids excluded from every retrieval-pool read while the records stay in the vault. For kept-but-poison records — see [Retrieval quarantine](#quarantineresources--retrieval-quarantine-for-kept-records). |
 | `knowledgeGraph.enabled` | boolean | `false` | Memory Network: extract entities (people, projects, organizations, topics) from memories into `memory/` markdown files. See [Memory Network](#memory-network). |
 | `knowledgeGraph.scanIntervalMinutes` | number | `60` | Extraction cadence the setup wizard bakes into the cron job it creates. The cron job is the runtime source of truth — to change cadence after setup, edit the cron job (and keep this field in sync). |
 | `knowledgeGraph.batchSize` | number | `20` | Memories per extraction scan batch |
@@ -423,6 +424,20 @@ Adding a channel to `excludeChannels` stops all future injection/writes/tools fo
 - **Server-side extractions** derived from traces (`extract: ["procedure", "memory", "mood"]`) are created backend-side; whether deleting the parent trace removes them is an open backend question (see `docs/hyperspell-backend-followups.md`).
 
 The purge command prints these standing limitations on every run.
+
+### `quarantineResources` — retrieval quarantine for kept records
+
+Some records should be **kept but never surfaced as live context**: correctly attributed, deliberately preserved (an audit trail, a documented failure), yet false or poisonous as testimony about the present. Deleting them destroys evidence; leaving them in the retrieval pool re-injects them as if current.
+
+`quarantineResources` lists vault resource ids that every retrieval-pool read skips — auto-context (both single- and multi-user lanes), the `hyperspell_search` tool, startup orientation, and `/getcontext`. The drop happens client-side after fetch (no added search latency, no write to the record needed), and the fetch limit is widened to compensate so quarantined hits don't eat result slots.
+
+What quarantine does **not** do:
+
+- It does not delete or modify anything — the records stay in the vault untouched.
+- It does not block addressed reads: fetching a quarantined record directly by id still works. The point is to stop ambient injection, not to make the record unreadable.
+- It does not hide records from management enumeration — `purge-channel` and similar tooling still see them.
+
+The ids to use are exactly the `resource_id` values shown in injected context blocks and search results. Design rationale (including why this is not a backend metadata filter): [docs/quarantine-retrieval.md](docs/quarantine-retrieval.md).
 
 ## Available Sources
 

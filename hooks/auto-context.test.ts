@@ -65,6 +65,7 @@ function makeCfg(overrides?: Partial<HyperspellConfig>): HyperspellConfig {
     emotionalContext: false,
     moodWeatherChance: 0,
     excludeChannels: [],
+    quarantineResources: [],
     startupOrientation: {
       enabled: false,
       recentDays: 7,

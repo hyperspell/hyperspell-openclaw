@@ -183,6 +183,17 @@ export type HyperspellConfig = {
 	 * Hyperspell; use the purge-channel CLI command to remove tagged content.
 	 */
 	excludeChannels: string[];
+	/**
+	 * Vault resource ids excluded from every retrieval-pool read (auto-context,
+	 * the search tool, startup orientation, /getcontext) while the records
+	 * themselves stay in the vault, readable by direct `getMemory` and visible
+	 * to management enumeration. For kept-but-poison records: correctly
+	 * attributed and deliberately preserved, but false as live testimony about
+	 * the present. Read-side sibling of `excludeChannels` (which quarantines a
+	 * conversation at the write side). Default: []. See
+	 * docs/quarantine-retrieval.md.
+	 */
+	quarantineResources: string[];
 	relationshipId?: string;
 	startupOrientation: StartupOrientationConfig;
 	syncMemories: boolean;
@@ -214,6 +225,7 @@ const ALLOWED_KEYS = [
 	"emotionalContext",
 	"moodWeatherChance",
 	"excludeChannels",
+	"quarantineResources",
 	"relationshipId",
 	"startupOrientation",
 	"syncMemories",
@@ -702,6 +714,11 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 			? (cfg.excludeChannels as unknown[])
 					.map((c) => String(c).trim())
 					.filter((c) => c.length > 0)
+			: [],
+		quarantineResources: Array.isArray(cfg.quarantineResources)
+			? (cfg.quarantineResources as unknown[])
+					.map((r) => String(r).trim())
+					.filter((r) => r.length > 0)
 			: [],
 		relationshipId: cfg.relationshipId as string | undefined,
 		startupOrientation: {
