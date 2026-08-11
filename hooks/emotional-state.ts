@@ -269,11 +269,26 @@ export function buildEmotionalStateFetchHandler(
 			const lastLanded = lastMoodRollAt.get(relId);
 			const cooledDown =
 				lastLanded === undefined || now() - lastLanded >= MOOD_WEATHER_COOLDOWN_MS;
+			// The dice only roll where somebody can perceive the weather (issue
+			// #122): on a live install ~half of all rolls were landing on cron/
+			// heartbeat runs, halving the effective rate on real conversations.
+			// Same trigger gate as the store path (NON_CONVERSATIONAL_TRIGGERS);
+			// a missing trigger stays eligible (fail-open to prior behavior). A
+			// skipped roll is a non-event: it neither burns the cooldown nor logs
+			// a roll, so the next attended session's odds are untouched.
+			const unattended = NON_CONVERSATIONAL_TRIGGERS.has(ctx?.trigger ?? "");
 			const mood =
 				priorMood ??
-				(cfg.moodWeatherChance > 0 && cooledDown
+				(!unattended && cfg.moodWeatherChance > 0 && cooledDown
 					? rollMood(cfg.moodWeatherChance, deps.rng)
 					: null);
+			// diag, not debug (issue #118): this line is the live evidence the
+			// cron fix works — at most one per unattended session, ~2/day.
+			if (!mood && unattended && cfg.moodWeatherChance > 0) {
+				log.diag(
+					`mood-weather: unattended session (trigger=${ctx?.trigger}) — dice not rolled`,
+				);
+			}
 			if (mood && !priorMood) {
 				lastMoodRollAt.set(relId, now());
 				if (sessionKey) sessionMoods.set(sessionKey, mood);
