@@ -723,3 +723,66 @@ test("mood weather observability — chance 0 writes nothing", async () => {
 	await flushAsyncWrites();
 	assert.equal(client.added.length, 0);
 });
+
+// ---- mood weather: unattended sessions don't roll (issue #122) --------------
+
+test("mood weather — cron/heartbeat/memory triggers never roll, user does", async () => {
+	for (const trigger of ["cron", "heartbeat", "memory"]) {
+		const { client } = makeClient("Warm and steady.");
+		const handler = buildEmotionalStateFetchHandler(
+			client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+			moodCfg(`rel-unattended-${trigger}`),
+			{ now: () => 1_000_000, rng: () => 0 },
+		);
+		const out = await handler({}, { sessionKey: `unatt-${trigger}`, trigger });
+		assert.ok(
+			!hasMood(out),
+			`trigger=${trigger} must not roll even with chance=1 and a hitting rng`,
+		);
+		assert.match(
+			String((out as { prependContext?: string })?.prependContext ?? ""),
+			/Warm and steady/,
+			"arc injection itself is unaffected — only the dice are skipped",
+		);
+	}
+
+	const { client } = makeClient("Warm and steady.");
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-attended-user"),
+		{ now: () => 1_000_000, rng: () => 0 },
+	);
+	const out = await handler({}, { sessionKey: "att-user", trigger: "user" });
+	assert.ok(hasMood(out), "trigger=user rolls normally");
+});
+
+test("mood weather — missing trigger stays eligible (fail-open to prior behavior)", async () => {
+	const { client } = makeClient("Warm and steady.");
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-no-trigger"),
+		{ now: () => 1_000_000, rng: () => 0 },
+	);
+	const out = await handler({}, { sessionKey: "no-trigger-s1" });
+	assert.ok(hasMood(out), "no trigger in ctx → rolls as before");
+});
+
+test("mood weather — a skipped cron roll does not burn the cross-session cooldown", async () => {
+	const { client } = makeClient("Warm and steady.");
+	let t = 1_000_000;
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		moodCfg("rel-cron-no-burn"),
+		{ now: () => t, rng: () => 0 },
+	);
+
+	const cronOut = await handler({}, { sessionKey: "burn-cron", trigger: "cron" });
+	assert.ok(!hasMood(cronOut), "cron session skipped the dice");
+
+	t += 60 * 1000; // one minute later — far inside what a cooldown would cover
+	const userOut = await handler({}, { sessionKey: "burn-user", trigger: "user" });
+	assert.ok(
+		hasMood(userOut),
+		"the skipped cron roll left the window untouched — the next real conversation can land weather",
+	);
+});
