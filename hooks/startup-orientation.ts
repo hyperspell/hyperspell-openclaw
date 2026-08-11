@@ -114,6 +114,7 @@ async function fetchRecentTraces(
 	cutoff: Date,
 	limit: number,
 	userId: string | undefined,
+	quarantine: readonly string[],
 ): Promise<SearchResult[]> {
 	const buffer: SearchResult[] = [];
 	let scanned = 0;
@@ -126,6 +127,11 @@ async function fetchRecentTraces(
 	})) {
 		scanned++;
 		if (scanned > RECENT_BUFFER_LIMIT) break;
+
+		// listMemories is unfiltered at the client level (management enumeration
+		// must see everything — see lib/quarantine.ts), so this context path
+		// applies the retrieval quarantine itself.
+		if (quarantine.includes(memory.resourceId)) continue;
 
 		const meta = memory.metadata;
 		if (meta.openclaw_source !== "agent_end") continue;
@@ -174,6 +180,7 @@ async function fetchRecentConversations(
 	client: HyperspellClient,
 	limit: number,
 	userId: string | undefined,
+	quarantine: readonly string[],
 ): Promise<SearchResult[]> {
 	const out: SearchResult[] = [];
 	const seenTitles = new Set<string>();
@@ -185,6 +192,9 @@ async function fetchRecentConversations(
 	})) {
 		scanned++;
 		if (scanned > RECENT_BUFFER_LIMIT) break;
+		// Same reason as fetchRecentTraces: this is a context path fed by the
+		// deliberately-unfiltered listMemories, so the quarantine applies here.
+		if (quarantine.includes(memory.resourceId)) continue;
 		if (!UUID_RE.test(memory.resourceId)) continue;
 		if (memory.metadata?.openclaw_source !== HOT_BUFFER_SOURCE) continue;
 		const title = memory.title ?? "";
@@ -249,13 +259,19 @@ export async function gatherOrientation(
 			: ("none" as const);
 	const recentFetch =
 		recentSource === "hotBuffer"
-			? fetchRecentConversations(client, so.recentLimit, userId)
+			? fetchRecentConversations(
+					client,
+					so.recentLimit,
+					userId,
+					cfg.quarantineResources,
+				)
 			: recentSource === "autoTrace"
 				? fetchRecentTraces(
 						client,
 						isoDaysAgo(so.recentDays),
 						so.recentLimit,
 						userId,
+						cfg.quarantineResources,
 					)
 				: Promise.resolve([] as SearchResult[]);
 

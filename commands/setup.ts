@@ -354,6 +354,7 @@ async function runSetup(): Promise<void> {
         emotionalContext: false,
         moodWeatherChance: 0,
         excludeChannels: [],
+        quarantineResources: [],
         syncMemories: true,
         syncMemoriesConfig: {
           enabled: true,

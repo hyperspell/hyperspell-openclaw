@@ -52,6 +52,11 @@
 			"help": "Conversation/channel ids fully quarantined from memory: no context injection, no memory writes, no memory tools in those sessions. Threads inside an excluded channel inherit the quarantine. Forward-only; already-synced content is not removed (see purge-channel CLI command).",
 			"advanced": true
 		},
+		"quarantineResources": {
+			"label": "Quarantined Resources",
+			"help": "Vault resource ids excluded from every retrieval-pool read (auto-context, search tool, startup orientation, /getcontext) while the records stay in the vault, readable by direct fetch. For records that are deliberately kept but must not surface as live context.",
+			"advanced": true
+		},
 		"startupOrientation": {
 			"label": "Startup Orientation",
 			"help": "Inject recent-interactions and unfinished-loops blocks once per session at startup. Costs two extra calls + ~500–800 tokens of injection per session; off by default.",
@@ -155,6 +160,10 @@
 				"maximum": 1
 			},
 			"excludeChannels": {
+				"type": "array",
+				"items": { "type": "string" }
+			},
+			"quarantineResources": {
 				"type": "array",
 				"items": { "type": "string" }
 			},

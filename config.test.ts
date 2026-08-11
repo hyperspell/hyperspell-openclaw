@@ -401,6 +401,27 @@ test("parseConfig — non-array excludeChannels falls back to empty", () => {
   assert.deepEqual(cfg.excludeChannels, [])
 })
 
+test("parseConfig — quarantineResources defaults to empty", () => {
+  const cfg = parseConfig(base)
+  assert.deepEqual(cfg.quarantineResources, [])
+})
+
+test("parseConfig — quarantineResources trims entries and drops empties", () => {
+  const cfg = parseConfig({
+    ...base,
+    quarantineResources: [" 0471aa5b-2c34-43d0-a810-3bd846076e43 ", "", "bmUWAL0A8ieq9Q"],
+  })
+  assert.deepEqual(cfg.quarantineResources, [
+    "0471aa5b-2c34-43d0-a810-3bd846076e43",
+    "bmUWAL0A8ieq9Q",
+  ])
+})
+
+test("parseConfig — non-array quarantineResources falls back to empty", () => {
+  const cfg = parseConfig({ ...base, quarantineResources: "abc" })
+  assert.deepEqual(cfg.quarantineResources, [])
+})
+
 test("parseConfig — moodWeatherChance defaults to 0 (mood weather off)", () => {
   assert.equal(parseConfig(base).moodWeatherChance, 0)
 })

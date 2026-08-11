@@ -5,6 +5,7 @@ import type {
 	ScopeName,
 } from "./config.ts";
 import { normalizeScope } from "./config.ts";
+import { dropQuarantined, overfetchLimit } from "./lib/quarantine.ts";
 import { log } from "./logger.ts";
 
 export type Highlight = {
@@ -89,6 +90,13 @@ export class HyperspellClient {
 		log.info(
 			`client initialized${config.userId ? ` for user ${config.userId}` : ""}`,
 		);
+		if (config.quarantineResources.length > 0) {
+			// One startup line so an active quarantine is never invisible: it
+			// changes what every retrieval path can recall.
+			log.info(
+				`retrieval quarantine active for ${config.quarantineResources.length} resource(s)`,
+			);
+		}
 	}
 
 	private rawHeaders(): Record<string, string> {
@@ -122,6 +130,11 @@ export class HyperspellClient {
 		const sources =
 			options?.sources ??
 			(this.config.sources.length > 0 ? this.config.sources : undefined);
+		// Quarantined resources are dropped post-fetch (client-side by design —
+		// see lib/quarantine.ts); over-fetch so the drop doesn't eat pool slots,
+		// then trim back to the requested limit below.
+		const quarantine = this.config.quarantineResources;
+		const fetchLimit = overfetchLimit(limit, quarantine.length);
 
 		log.debugRequest("memories.search", {
 			query,
@@ -138,7 +151,7 @@ export class HyperspellClient {
 				query,
 				sources,
 				options: {
-					max_results: limit,
+					max_results: fetchLimit,
 					...(options?.after ? { after: options.after } : {}),
 					...(options?.before ? { before: options.before } : {}),
 					...(options?.filter ? { filter: options.filter } : {}),
@@ -147,7 +160,7 @@ export class HyperspellClient {
 			this.requestOptions(options?.userId),
 		);
 
-		const results: SearchResult[] = response.documents.map((doc) => {
+		const mapped: SearchResult[] = response.documents.map((doc) => {
 			const raw = doc as typeof doc & {
 				highlights?: Array<{ id: string; score: number; text: string }>;
 			};
@@ -165,6 +178,12 @@ export class HyperspellClient {
 				})),
 			};
 		});
+		const results = dropQuarantined(
+			mapped,
+			quarantine,
+			(r) => r.resourceId,
+			"search",
+		).slice(0, limit);
 
 		log.debugResponse("memories.search", { count: results.length });
 		return results;
@@ -185,6 +204,8 @@ export class HyperspellClient {
 		const sources =
 			options?.sources ??
 			(this.config.sources.length > 0 ? this.config.sources : undefined);
+		const quarantine = this.config.quarantineResources;
+		const fetchLimit = overfetchLimit(limit, quarantine.length);
 
 		log.debugRequest("memories.search (raw)", {
 			query,
@@ -201,7 +222,7 @@ export class HyperspellClient {
 				query,
 				sources,
 				options: {
-					max_results: limit,
+					max_results: fetchLimit,
 					...(options?.after ? { after: options.after } : {}),
 					...(options?.before ? { before: options.before } : {}),
 					...(options?.filter ? { filter: options.filter } : {}),
@@ -210,11 +231,18 @@ export class HyperspellClient {
 			this.requestOptions(options?.userId),
 		);
 
+		const documents = dropQuarantined(
+			response.documents,
+			quarantine,
+			(doc) => doc.resource_id,
+			"search (raw)",
+		).slice(0, limit);
+
 		log.debugResponse("memories.search (raw)", {
-			count: response.documents.length,
+			count: documents.length,
 		});
 
-		return response as unknown as Record<string, unknown>;
+		return { ...response, documents } as unknown as Record<string, unknown>;
 	}
 
 	async searchWithAnswer(
@@ -252,7 +280,7 @@ export class HyperspellClient {
 			this.requestOptions(options?.userId),
 		);
 
-		const documents: SearchResult[] = response.documents.map((doc) => ({
+		const mapped: SearchResult[] = response.documents.map((doc) => ({
 			resourceId: doc.resource_id,
 			title: doc.title ?? null,
 			source: doc.source as HyperspellSource,
@@ -261,14 +289,29 @@ export class HyperspellClient {
 			createdAt: (doc.metadata?.created_at as string | null) ?? null,
 			highlights: [],
 		}));
+		const documents = dropQuarantined(
+			mapped,
+			this.config.quarantineResources,
+			(r) => r.resourceId,
+			"search (with answer)",
+		);
+		// The answer is synthesized SERVER-side from the pre-drop pool, so if a
+		// quarantined record was in it, the answer itself may carry that record's
+		// content — discard it rather than let quarantine leak through synthesis.
+		const tainted = documents.length < mapped.length;
+		if (tainted && response.answer) {
+			log.warn(
+				"search (with answer): answer discarded — synthesized from a pool containing quarantined resource(s)",
+			);
+		}
 
 		log.debugResponse("memories.search (with answer)", {
 			count: documents.length,
-			hasAnswer: !!response.answer,
+			hasAnswer: !!response.answer && !tainted,
 		});
 
 		return {
-			answer: response.answer ?? null,
+			answer: tainted ? null : (response.answer ?? null),
 			documents,
 		};
 	}

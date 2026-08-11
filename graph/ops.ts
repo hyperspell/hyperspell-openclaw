@@ -135,6 +135,10 @@ export async function scanMemories(
       // Mood-weather roll records are observability-only (issue #71): the graph
       // feeds context, so ingesting them would leak the rolls back into recall.
       if (mem.metadata?.openclaw_source === MOOD_WEATHER_SOURCE) continue
+      // Quarantined resources are kept-but-poison (lib/quarantine.ts): the
+      // graph feeds context, so extracting entities from them would launder
+      // the quarantined content back into recall via entity files.
+      if (cfg.quarantineResources.includes(mem.resourceId)) continue
 
       let summary = ""
       try {

@@ -20,6 +20,7 @@ function cfg(overrides: Partial<HyperspellConfig["multiUser"]> = {}): Hyperspell
     emotionalContext: false,
     moodWeatherChance: 0,
     excludeChannels: [],
+    quarantineResources: [],
     syncMemories: false,
     syncMemoriesConfig: {
       enabled: false,
@@ -266,6 +267,7 @@ function singleUserCfg(userId = "alinea"): HyperspellConfig {
     emotionalContext: false,
     moodWeatherChance: 0,
     excludeChannels: [],
+    quarantineResources: [],
     syncMemories: false,
     syncMemoriesConfig: {
       enabled: false,
