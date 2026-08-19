@@ -27,6 +27,7 @@ function makeResult(overrides?: Partial<SearchResult>): SearchResult {
 		source: "vault",
 		score: 0.71239,
 		metaSource: null,
+		metaSpeakerRole: null,
 		metaFilePath: null,
 		url: null,
 		createdAt: "2026-07-01T00:00:00.000Z",

@@ -9,6 +9,7 @@ const mk = (over: Partial<SearchResult>): SearchResult => ({
 	source: "vault" as SearchResult["source"],
 	score: null,
 	metaSource: null,
+	metaSpeakerRole: null,
 	metaFilePath: null,
 	url: null,
 	createdAt: null,

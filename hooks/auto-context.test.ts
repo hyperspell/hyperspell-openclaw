@@ -19,6 +19,7 @@ function result(resourceId: string): SearchResult {
     url: null,
     createdAt: null,
     metaSource: null,
+    metaSpeakerRole: null,
     metaFilePath: null,
     highlights: [],
   }
@@ -106,6 +107,7 @@ function searchResult(over: Partial<SearchResult>): SearchResult {
     url: null,
     createdAt: null,
     metaSource: null,
+    metaSpeakerRole: null,
     metaFilePath: null,
     highlights: [],
     ...over,

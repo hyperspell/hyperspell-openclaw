@@ -149,6 +149,7 @@ async function fetchRecentTraces(
 			url: null,
 			createdAt: createdRaw,
 			metaSource: "agent_end",
+			metaSpeakerRole: null,
 			metaFilePath: null,
 			highlights: [],
 		});
@@ -215,6 +216,7 @@ async function fetchRecentConversations(
 			url: null,
 			createdAt: null,
 			metaSource: HOT_BUFFER_SOURCE,
+			metaSpeakerRole: null,
 			metaFilePath: null,
 			highlights: [],
 		});

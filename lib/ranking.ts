@@ -194,7 +194,14 @@ export function classifyResult(
 	// hot-buffer session resource, which would otherwise read as curated and
 	// hand a conversation echo the curation boost. Tag when present is truth;
 	// the shape heuristic below stays as the fallback for legacy/untagged rows.
-	if (r.metaSource === HOT_BUFFER_SOURCE || r.metaSource === AGENT_END_SOURCE) {
+	// Speaker-role tags count as conversation-origin too: only hot-buffer
+	// writes and the attribution backfill stamp them, and backfilled rows
+	// carry NO openclaw_source (verified live 2026-08-18).
+	if (
+		r.metaSource === HOT_BUFFER_SOURCE ||
+		r.metaSource === AGENT_END_SOURCE ||
+		r.metaSpeakerRole !== null
+	) {
 		return "chatter";
 	}
 	if (processPaths.length > 0 && r.metaFilePath) {

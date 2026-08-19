@@ -20,6 +20,7 @@ function mkResult(
 		url: null,
 		createdAt: null,
 		metaSource: null,
+		metaSpeakerRole: null,
 		metaFilePath: null,
 		highlights: [],
 		quarantined: false,

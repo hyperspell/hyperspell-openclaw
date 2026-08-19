@@ -26,6 +26,12 @@ export type SearchResult = {
 	 * truth for classification: a consolidator-titled session resource still
 	 * reads as a conversation echo through this, not as curated memory. */
 	metaSource: string | null;
+	/** metadata.openclaw_speaker_role when echoed. Only hot-buffer writes (and
+	 * the attribution backfill) stamp it, so its mere presence marks a
+	 * conversation row — backfilled rows verified live 2026-08-18 to carry
+	 * speaker tags but NO openclaw_source, and would otherwise dodge the
+	 * origin-based chatter rule. */
+	metaSpeakerRole: string | null;
 	/** metadata.file_path when echoed — the workspace file a synced section
 	 * came from. Keys ranking's per-file diversity cap and processPaths. */
 	metaFilePath: string | null;
@@ -196,6 +202,7 @@ export class HyperspellClient {
 				url: (doc.metadata?.url as string | null) ?? null,
 				createdAt: (doc.metadata?.created_at as string | null) ?? null,
 				metaSource: metaString(doc.metadata, "openclaw_source"),
+				metaSpeakerRole: metaString(doc.metadata, "openclaw_speaker_role"),
 				metaFilePath: metaString(doc.metadata, "file_path"),
 				highlights: (raw.highlights ?? []).map((h) => ({
 					id: h.id,
@@ -314,6 +321,7 @@ export class HyperspellClient {
 			url: (doc.metadata?.url as string | null) ?? null,
 			createdAt: (doc.metadata?.created_at as string | null) ?? null,
 			metaSource: metaString(doc.metadata, "openclaw_source"),
+			metaSpeakerRole: metaString(doc.metadata, "openclaw_speaker_role"),
 			metaFilePath: metaString(doc.metadata, "file_path"),
 			highlights: [],
 		}));
@@ -402,6 +410,7 @@ export class HyperspellClient {
 				url: (doc.metadata?.url as string | null) ?? null,
 				createdAt: (doc.metadata?.created_at as string | null) ?? null,
 				metaSource: metaString(doc.metadata, "openclaw_source"),
+				metaSpeakerRole: metaString(doc.metadata, "openclaw_speaker_role"),
 				metaFilePath: metaString(doc.metadata, "file_path"),
 				highlights: (raw.highlights ?? []).map((h) => ({
 					id: h.id,

@@ -39,6 +39,7 @@ test("harness reports failures for wrong expectations", () => {
 				url: null,
 				createdAt: "2026-06-01T12:00:00Z",
 				metaSource: null,
+				metaSpeakerRole: null,
 				metaFilePath: null,
 				highlights: [{ id: "h1", score: 0.9, text: "real" }],
 			},

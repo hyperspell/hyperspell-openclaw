@@ -22,6 +22,7 @@ const mk = (over: Partial<SearchResult>): SearchResult => ({
 	url: null,
 	createdAt: null,
 	metaSource: null,
+	metaSpeakerRole: null,
 	metaFilePath: null,
 	highlights: [],
 	...over,
@@ -832,4 +833,17 @@ test("explainSelection — a near-duplicate cut does not charge the file slot (o
 		[null, "near-duplicate", null, "file-cap"],
 		"the dup was never charged, so s3 fits under the cap and s4 is the overflow",
 	);
+});
+
+test("classify — speaker-role metadata marks a conversation row even without openclaw_source (backfilled rows)", () => {
+	// Live 2026-08-18: attribution-backfilled hot rows carry openclaw_speaker_*
+	// but no openclaw_source, and have content-derived titles + UUID ids —
+	// the shape heuristic read them as 'other', dodging the chatter penalty.
+	const backfilled = mk({
+		resourceId: "a6f8d42b-ea6b-45bd-9c0d-1e2f3a4b5c6d",
+		title: "[Agent]: Goodnight.",
+		metaSource: null,
+		metaSpeakerRole: "assistant",
+	});
+	assert.equal(classifyResult(backfilled, []), "chatter");
 });
