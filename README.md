@@ -145,6 +145,8 @@ files back to Hyperspell.
 | `relevanceThreshold` | number | `0.6` | Minimum (composite) score a memory needs to be injected by auto-context |
 | `ranking` | object | see below | Composite re-ranking of auto-context results — see [Composite ranking](#composite-ranking--surfacing-your-active-work) |
 | `ranking.storyTerms` | string[] | `[]` | **Off until you set it.** Words/phrases identifying your active creative work, so it outranks conversation chatter (matched at word boundaries, case-insensitive) |
+| `ranking.processPaths` | string[] | `[]` | Case-insensitive path substrings marking synced files as the **agent's own process output** (thought logs, caches, heartbeat notes). Matches classify as `process` and score neutral — no curation boost, full-speed recency decay — instead of being promoted as curated user truth. |
+| `ranking.perFileCap` | number | `2` | Max injected results per synced source file. Distinct sections of one document pass near-duplicate dedup individually and would otherwise monopolize the pool at near-identical scores. `0` disables. |
 | `excludeChannels` | string[] | `[]` | Conversation/channel ids fully quarantined from memory: no context injection, no memory writes, no memory tools. Threads inherit. **Forward-only** — see [below](#excludechannels-is-forward-only). |
 | `quarantineResources` | string[] | `[]` | Vault resource ids excluded from every retrieval-pool read while the records stay in the vault. For kept-but-poison records — see [Retrieval quarantine](#quarantineresources--retrieval-quarantine-for-kept-records). |
 | `knowledgeGraph.enabled` | boolean | `false` | Memory Network: extract entities (people, projects, organizations, topics) from memories into `memory/` markdown files. See [Memory Network](#memory-network). |
@@ -244,6 +246,7 @@ The plugin registers tools that the AI can use autonomously:
 
 - **hyperspell_search** - Search through connected sources
 - **hyperspell_remember** - Save information to memory
+- **hyperspell_vault_triage** - Read-only audit search that does NOT apply the retrieval quarantine: quarantined hits come back flagged with content suppressed, plus the current quarantine roster. For hunting bad/stale/misattributed records proactively (quarantine is otherwise discovered only by being injected) and for verifying a quarantine took effect — not for normal recall
 - **hyperspell_emotional_arc** - Re-fetch the recent emotional arc mid-conversation (requires `emotionalContext: true`); returns the same block injected at session start, e.g. after compaction removed it
 
 ## Auto-Context
@@ -272,6 +275,23 @@ composite = relevance
 
 Chatter is additionally capped at `chatterQuota` results per injection,
 regardless of score.
+
+Classification is **origin-aware where origin is known**: results carrying the
+plugin's own write-pipeline metadata are classified by that tag first (a
+hot-buffer session the backend consolidator happened to *title* is still a
+conversation echo, not curated memory), and synced files matching
+`ranking.processPaths` classify as `process` — the agent's own operational
+output, scored neutral rather than promoted. Without that knob, a "titled,
+non-UUID" heuristic hands agent thought-logs and caches the same curation
+boost as deliberately kept user notes, and at volume the agent's process noise
+out-competes the user's quiet, durable memory. The title/id-shape heuristic
+remains the fallback for records with no origin metadata.
+
+One more diversity guard: `ranking.perFileCap` (default `2`) bounds how many
+sections of a single synced file can be injected at once. Sectionized sync
+turns a big file into many sibling candidates at near-identical scores; they
+pass near-duplicate dedup individually (different text, same document) and
+would otherwise fill the pool.
 
 Provenance is a signal too: an optional `sourceWeights` map multiplies a
 result's **base relevance** (before the kind boosts/penalties are added) by a
@@ -570,6 +590,13 @@ the scanner skip memories synced from the entity directories.
 - Enable `debug: true` — the ranked/cut/injection summary lines land in
   `gateway.log` at default host log levels
 - Check that you have memories matching your conversation topics
+- **After a gateway update**, grep `gateway.log` for `unknown typed hook` — a
+  host release that renames/removes a hook silently disables the feature
+  behind it (writes can keep working while all injection is dead). The plugin
+  logs its registered hooks at startup (`typed hooks registered: …`) and runs
+  a cross-hook liveness watchdog: if turn traffic proves one of the
+  injection/write hook pair alive while its sibling never fires, it logs an
+  **error** naming the dead hook instead of staying silent.
 
 ### Enabling `memory-core` disabled Hyperspell
 - This means `memory-core` was placed in `plugins.slots.memory`. The slot should stay on `openclaw-hyperspell`; `memory-core` rides alongside as a sidecar.

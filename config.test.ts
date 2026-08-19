@@ -446,6 +446,17 @@ test("parseConfig — recency fields default when absent", () => {
   assert.equal(cfg.ranking.recencyCuratedFactor, 0.5)
 })
 
+test("parseConfig — ranking.processPaths trimmed/lowercased/deduped; perFileCap defaults to 2, clamps at 0", () => {
+  const cfg = parseConfig({
+    ...base,
+    ranking: { processPaths: ["  Thoughts-Log.md ", "thoughts-log.md", "", "brainstem/"] },
+  })
+  assert.deepEqual(cfg.ranking.processPaths, ["thoughts-log.md", "brainstem/"])
+  assert.equal(cfg.ranking.perFileCap, 2)
+  assert.equal(parseConfig({ ...base, ranking: { perFileCap: -3 } }).ranking.perFileCap, 0)
+  assert.deepEqual(parseConfig({ ...base, ranking: {} }).ranking.processPaths, [])
+})
+
 test("parseConfig — recency fields respected when present, clamped when out of range", () => {
   const cfg = parseConfig({
     ...base,

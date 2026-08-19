@@ -148,6 +148,8 @@ async function fetchRecentTraces(
 			score: null,
 			url: null,
 			createdAt: createdRaw,
+			metaSource: "agent_end",
+			metaFilePath: null,
 			highlights: [],
 		});
 	}
@@ -212,6 +214,8 @@ async function fetchRecentConversations(
 			score: null,
 			url: null,
 			createdAt: null,
+			metaSource: HOT_BUFFER_SOURCE,
+			metaFilePath: null,
 			highlights: [],
 		});
 		if (out.length >= limit) break; // newest-first → first N are most recent

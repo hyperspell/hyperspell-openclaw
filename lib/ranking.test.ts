@@ -21,6 +21,8 @@ const mk = (over: Partial<SearchResult>): SearchResult => ({
 	score: null,
 	url: null,
 	createdAt: null,
+	metaSource: null,
+	metaFilePath: null,
 	highlights: [],
 	...over,
 });
@@ -707,4 +709,127 @@ test("selectRanked — elbow disabled or omitted: behavior identical to today", 
 	assert.deepEqual(selectRanked(list, 10, 0.4, 2, 0, { ...ELBOW, enabled: false }), plain);
 	assert.deepEqual(selectRanked(list, 10, 0.4, 2, 0, DEFAULT_ELBOW), plain, "shipped default is off");
 	assert.equal(plain.length, 4);
+});
+
+// ---- origin-aware classification + per-file diversity (scale report 2026-08-18) ----
+
+test("classify — origin metadata beats the title heuristic: a consolidator-TITLED hot-buffer resource is still chatter", () => {
+	// Titled + non-UUID id would read curated under the shape heuristic — the
+	// exact loophole that hands conversation echoes the curation boost.
+	const titledEcho = mk({
+		resourceId: "consolidated-session-77",
+		title: "Tuesday planning chat",
+		metaSource: "hot_buffer",
+	});
+	assert.equal(classifyResult(titledEcho, []), "chatter");
+	assert.equal(classifyResult(mk({ ...titledEcho, metaSource: "agent_end" }), []), "chatter");
+});
+
+test("classify — processPaths marks the agent's own synced files as process, case-insensitively", () => {
+	const r = mk({
+		resourceId: "ws-abc123",
+		title: "thoughts-log — part 33",
+		metaSource: "memory_sync_section",
+		metaFilePath: "/Users/x/workspace/Thoughts-Log.md",
+	});
+	assert.equal(classifyResult(r, [], ["thoughts-log.md"]), "process");
+	// Same result without the config match stays curated (titled, non-UUID).
+	assert.equal(classifyResult(r, [], ["brainstem/"]), "curated");
+	assert.equal(classifyResult(r, []), "curated");
+});
+
+test("classify — story terms still win over process (operator terms are the strongest signal)", () => {
+	const r = mk({
+		resourceId: "ws-abc123",
+		title: "thoughts-log — Omuerta notes",
+		metaFilePath: "/ws/thoughts-log.md",
+	});
+	assert.equal(classifyResult(r, ["omuerta"], ["thoughts-log.md"]), "story");
+});
+
+test("scoreResult — process is neutral: no curation boost, full-speed recency decay", () => {
+	const now = Date.parse("2026-08-18T00:00:00Z");
+	const old = "2026-02-18T00:00:00Z"; // ~183 days: two half-lives at the default 90
+	const w = { ...DEFAULT_RANKING, processPaths: ["thoughts-log.md"] };
+	const curated = scoreResult(
+		mk({ resourceId: "note-1", title: "Journal", score: 0.8, createdAt: old }),
+		w,
+		now,
+	);
+	const process = scoreResult(
+		mk({
+			resourceId: "ws-1",
+			title: "thoughts-log — part 33",
+			score: 0.8,
+			createdAt: old,
+			metaFilePath: "/ws/thoughts-log.md",
+		}),
+		w,
+		now,
+	);
+	assert.equal(curated.kind, "curated");
+	assert.equal(process.kind, "process");
+	// Same base, but the process result gets no +0.2 boost and decays at the
+	// full factor — the crowding failure inverted.
+	assert.ok(curated.composite > process.composite + w.curationBoost - 1e-9);
+});
+
+const rankedFile = (
+	composite: number,
+	id: string,
+	text: string,
+	filePath: string | null,
+): RankedResult => ({
+	...mk({
+		resourceId: id,
+		title: `note ${id}`,
+		metaFilePath: filePath,
+		highlights: [{ id: "h", text, score: composite }],
+	}),
+	_kind: "curated",
+	_base: composite,
+	_composite: composite,
+});
+
+test("explainSelection — perFileCap: a third distinct section of one file is cut 'file-cap'; other files pass", () => {
+	const list = [
+		rankedFile(0.9, "s1", "the plan for the harbor market opens with three long stalls", "/ws/log.md"),
+		rankedFile(0.88, "s2", "a completely different passage about winter travel by rail", "/ws/log.md"),
+		rankedFile(0.86, "s3", "yet another unrelated musing on kitchen repairs and paint", "/ws/log.md"),
+		rankedFile(0.84, "d1", "an independent document about the garden fence project", "/ws/other.md"),
+	];
+	const ex = explainSelection(list, 10, 0.5, 5, 0.8, undefined, 2);
+	assert.deepEqual(
+		ex.map((e) => e.cut),
+		[null, null, "file-cap", null],
+	);
+});
+
+test("explainSelection — perFileCap 0 (and results without a file path) never cap", () => {
+	const list = [
+		rankedFile(0.9, "s1", "the plan for the harbor market opens with three long stalls", "/ws/log.md"),
+		rankedFile(0.88, "s2", "a completely different passage about winter travel by rail", "/ws/log.md"),
+		rankedFile(0.86, "s3", "yet another unrelated musing on kitchen repairs and paint", "/ws/log.md"),
+		rankedFile(0.84, "n1", "no file path on this one so the cap cannot apply", null),
+	];
+	assert.equal(explainSelection(list, 10, 0.5, 5, 0.8).filter((e) => e.selected).length, 4);
+	const capped = explainSelection(list, 10, 0.5, 5, 0.8, undefined, 2);
+	assert.equal(capped.filter((e) => e.selected).length, 3, "cap binds only the pathed file");
+	assert.equal(capped[3].selected, true, "pathless result unaffected");
+});
+
+test("explainSelection — a near-duplicate cut does not charge the file slot (only selected results consume)", () => {
+	const same = "Heath finally confronts Junii about the Omuerta binding and what it cost Tevre";
+	const list = [
+		rankedFile(0.9, "s1", same, "/ws/log.md"),
+		rankedFile(0.88, "s2", same, "/ws/log.md"), // near-duplicate of s1
+		rankedFile(0.86, "s3", "a completely different passage about winter travel by rail", "/ws/log.md"),
+		rankedFile(0.84, "s4", "yet another unrelated musing on kitchen repairs and paint", "/ws/log.md"),
+	];
+	const ex = explainSelection(list, 10, 0.5, 5, 0.8, undefined, 2);
+	assert.deepEqual(
+		ex.map((e) => e.cut),
+		[null, "near-duplicate", null, "file-cap"],
+		"the dup was never charged, so s3 fits under the cap and s4 is the overflow",
+	);
 });

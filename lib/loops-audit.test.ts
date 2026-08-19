@@ -26,6 +26,8 @@ function makeResult(overrides?: Partial<SearchResult>): SearchResult {
 		title: "A pending thing",
 		source: "vault",
 		score: 0.71239,
+		metaSource: null,
+		metaFilePath: null,
 		url: null,
 		createdAt: "2026-07-01T00:00:00.000Z",
 		highlights: [{ id: "h1", score: 0.7, text: "I said I'd\nfollow up on this" }],

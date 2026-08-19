@@ -26,10 +26,12 @@ import {
 	buildStartupOrientationSessionCleanupHandler,
 } from "./hooks/startup-orientation.ts"
 import { isExcludedChannel } from "./lib/exclude-channels.ts"
+import { checkSiblingLiveness, recordHookFired } from "./lib/hook-liveness.ts"
 import { initLogger, log } from "./logger.ts"
 import { createEmotionalArcToolFactory } from "./tools/emotional-arc.ts"
 import { createRememberToolFactory } from "./tools/remember.ts"
 import { createSearchToolFactory } from "./tools/search.ts"
+import { createTriageToolFactory } from "./tools/triage.ts"
 import { registerNetworkTools } from "./graph/index.ts"
 
 export default {
@@ -123,6 +125,33 @@ export default {
 
 		const client = new HyperspellClient(cfg);
 
+		// Typed-hook registration goes through onHook so every delivery is
+		// counted. A host update that drops a hook name kills its handler with
+		// zero in-process signal (the 2026-07-24 outage: writes alive, ALL
+		// injection dead for ~21h) — the liveness pairs below turn a surviving
+		// sibling hook into the witness that proves a dropped one dead.
+		type HookHandler = (
+			event: Record<string, unknown>,
+			ctx?: Record<string, unknown>,
+		) => Promise<{ prependContext?: string } | void> | void;
+		const registeredHooks: string[] = [];
+		// Populated after registration (names are known then); consulted per fire.
+		const livenessPairs: Array<{ witness: string; sibling: string }> = [];
+		const onHook = (name: string, handler: HookHandler): void => {
+			registeredHooks.push(name);
+			api.on(name, (event, ctx) => {
+				// Record at entry, before any guard — a quarantined/skipped turn
+				// still proves the gateway delivered the hook.
+				recordHookFired(name);
+				for (const p of livenessPairs) {
+					if (p.witness !== name) continue;
+					const alert = checkSiblingLiveness(p.witness, p.sibling);
+					if (alert) log.error(alert);
+				}
+				return handler(event, ctx);
+			});
+		};
+
 		// Channel quarantine (cfg.excludeChannels): excluded conversations get no
 		// memory surface in either direction. Guard the shared choke points here —
 		// the injection hook (all injection), agent_end (all writes), and the tool
@@ -147,6 +176,9 @@ export default {
 		});
 		api.registerTool(toolUnlessQuarantined(createRememberToolFactory(client, cfg)), {
 			name: "hyperspell_remember",
+		});
+		api.registerTool(toolUnlessQuarantined(createTriageToolFactory(client, cfg)), {
+			name: "hyperspell_vault_triage",
 		});
 
 		// Session-start context injectors (emotional fetch, auto-context,
@@ -184,9 +216,9 @@ export default {
 			startHandlers.push(
 				buildEmotionalStateFetchHandler(client, cfg) as StartHandler,
 			);
-			api.on("after_compaction", buildEmotionalStateCompactionHandler());
-			api.on("session_end", buildEmotionalStateSessionCleanupHandler());
-			api.on(
+			onHook("after_compaction", buildEmotionalStateCompactionHandler());
+			onHook("session_end", buildEmotionalStateSessionCleanupHandler());
+			onHook(
 				"agent_end",
 				unlessQuarantined(buildEmotionalStateStoreHandler(client, cfg)),
 			);
@@ -209,8 +241,8 @@ export default {
 			startHandlers.push(
 				buildStartupOrientationHandler(client, cfg) as StartHandler,
 			);
-			api.on("after_compaction", buildStartupOrientationCompactionHandler());
-			api.on("session_end", buildStartupOrientationSessionCleanupHandler());
+			onHook("after_compaction", buildStartupOrientationCompactionHandler());
+			onHook("session_end", buildStartupOrientationSessionCleanupHandler());
 		}
 
 		// Injection hook selection: OpenClaw 2026.7.2 removed the plugin-facing
@@ -235,7 +267,7 @@ export default {
 				: "before_agent_start";
 
 		if (startHandlers.length > 0) {
-			api.on(injectionHook, async (event, ctx) => {
+			onHook(injectionHook, async (event, ctx) => {
 				// Quarantined channels get no injected memory of any kind.
 				if (quarantined(ctx as Record<string, unknown> | undefined)) return undefined;
 				const results = await Promise.all(
@@ -260,7 +292,7 @@ export default {
 
 		// Register auto-trace hook (send conversations to Hyperspell on session end)
 		if (cfg.autoTrace.enabled) {
-			api.on(
+			onHook(
 				"agent_end",
 				unlessQuarantined(buildAutoTraceHandler(client, cfg)),
 			);
@@ -269,11 +301,11 @@ export default {
 		// Register hot-buffer hook: write each turn to POST /messages so it's
 		// instantly full-text searchable (vs. the slow /memories embedding path).
 		if (cfg.hotBuffer.enabled) {
-			api.on(
+			onHook(
 				"agent_end",
 				unlessQuarantined(buildHotBufferHandler(client, cfg)),
 			);
-			api.on("session_end", buildHotBufferSessionCleanupHandler());
+			onHook("session_end", buildHotBufferSessionCleanupHandler());
 		}
 
 		// Memory sync live watcher. Plugin-owned on every host version:
@@ -316,6 +348,21 @@ export default {
 
 		// Register slash commands
 		registerCommands(api, client, cfg);
+
+		// Liveness pairing: agent_end and the injection hook both fire on every
+		// conversational turn, so each is the other's traffic witness. Wider
+		// pairings (session_end, after_compaction) fire orders of magnitude less
+		// often and would false-positive on quiet days — deliberately excluded.
+		const hookNames = [...new Set(registeredHooks)];
+		if (hookNames.includes(injectionHook) && hookNames.includes("agent_end")) {
+			livenessPairs.push(
+				{ witness: "agent_end", sibling: injectionHook },
+				{ witness: injectionHook, sibling: "agent_end" },
+			);
+		}
+		// Greppable inventory: after a gateway update, diff this line against the
+		// host's 'unknown typed hook' warns to see exactly what was dropped.
+		log.info(`typed hooks registered: ${hookNames.join(", ")}`);
 
 		// Register service for lifecycle management
 		api.registerService({
