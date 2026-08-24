@@ -406,20 +406,23 @@ export function buildEmotionalStateStoreHandler(
 			return;
 		}
 
-		const transcript = messagesToTranscript(messages);
-		if (transcript.length < MIN_CONVERSATION_LENGTH) {
-			log.debug(
-				`emotional-state: skipping — conversation too short (${transcript.length} chars)`,
-			);
-			return;
-		}
-
-		// Debounce: at most one snapshot per STORE_DEBOUNCE_MS of active talk.
+		// Debounce BEFORE building the transcript: at most one snapshot per
+		// STORE_DEBOUNCE_MS of active talk, and a debounced turn must not pay
+		// the transcript build + sanitize cost just to discard the result
+		// (messagesToTranscript runs the full sanitizer over every message).
 		const relId = cfg.relationshipId ?? "";
 		const since = Date.now() - (lastStoreAt.get(relId) ?? 0);
 		if (since < STORE_DEBOUNCE_MS) {
 			log.debug(
 				`emotional-state: skipping — debounced (${Math.round(since / 1000)}s since last store)`,
+			);
+			return;
+		}
+
+		const transcript = messagesToTranscript(messages);
+		if (transcript.length < MIN_CONVERSATION_LENGTH) {
+			log.debug(
+				`emotional-state: skipping — conversation too short (${transcript.length} chars)`,
 			);
 			return;
 		}
