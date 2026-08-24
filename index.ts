@@ -364,6 +364,33 @@ export default {
 		// host's 'unknown typed hook' warns to see exactly what was dropped.
 		log.info(`typed hooks registered: ${hookNames.join(", ")}`);
 
+		// Cost disclosure: every heavy feature is opt-in, but opting in at
+		// config time is not the same as knowing what the enabled set spends
+		// on an ongoing basis. Say it once at startup, in cost terms.
+		const costLines: string[] = [];
+		if (cfg.autoContext)
+			costLines.push("autoContext: 1 backend search + context injection EVERY turn");
+		if (cfg.hotBuffer.enabled)
+			costLines.push("hotBuffer: every conversation turn written to the vault");
+		if (cfg.emotionalContext)
+			costLines.push(
+				"emotionalContext: full session transcript POSTed for register extraction up to every 3 min of active talk",
+			);
+		if (cfg.autoTrace.enabled)
+			costLines.push("autoTrace: full conversation JSONL stored per session");
+		if (cfg.startupOrientation.enabled)
+			costLines.push("startupOrientation: 2 backend fetches per session start");
+		if (cfg.syncMemories)
+			costLines.push("syncMemories: 1 write per changed memory section");
+		if (cfg.knowledgeGraph.enabled)
+			costLines.push(
+				`knowledgeGraph: entity-extraction scan every ${cfg.knowledgeGraph.scanIntervalMinutes} min`,
+			);
+		if (costLines.length > 0)
+			log.info(
+				`enabled features and what they spend:\n  - ${costLines.join("\n  - ")}`,
+			);
+
 		// Register service for lifecycle management
 		api.registerService({
 			id: "openclaw-hyperspell",
