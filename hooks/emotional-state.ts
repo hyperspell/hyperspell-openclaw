@@ -12,6 +12,7 @@ import {
 	type MoodSpec,
 	recordMoodRoll,
 	rollMood,
+	MOOD_WEATHER_COLLECTION,
 } from "./mood-weather.ts";
 
 /** How many recent registers to surface as the "arc" at session start. */
@@ -67,6 +68,57 @@ export const MOOD_WEATHER_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 /** relationshipId → when weather last actually landed (ms). Module-scoped, per process (mirrors lastStoreAt). */
 const lastMoodRollAt = new Map<string, number>();
+
+/** Relationships whose PERSISTED last-roll has been consulted this process. */
+const seededMoodCooldown = new Set<string>();
+
+/**
+ * Seed the mood cooldown from the persisted roll records (issue: restart
+ * amnesia). lastMoodRollAt is in-process, so every gateway restart re-armed
+ * the dice — five resets on 2026-08-24 alone gave far more weather than the
+ * 6h design. The rolls ARE durably recorded (recordMoodRoll, mood-weather
+ * collection, rolled_at metadata); consult them once per process, off the
+ * hot path (called fire-and-forget from service start).
+ *
+ * Fail-open by construction: any error, empty history, or unparseable
+ * timestamp leaves behavior exactly as today (eligible). Scans one page of
+ * records; list ordering is not guaranteed, so a very deep history could
+ * miss the newest roll — that degrades to under-suppression (today's
+ * behavior), never over-suppression. Never overwrites an in-process value:
+ * a roll that landed THIS process is fresher than anything persisted.
+ */
+export async function seedMoodCooldownFromRecords(
+	client: HyperspellClient,
+	cfg: HyperspellConfig,
+): Promise<number | null> {
+	const relId = cfg.relationshipId ?? "";
+	if (seededMoodCooldown.has(relId)) return null;
+	seededMoodCooldown.add(relId);
+	try {
+		let latest = 0;
+		let scanned = 0;
+		for await (const m of client.listMemories({
+			collection: MOOD_WEATHER_COLLECTION,
+			pageSize: 50,
+		})) {
+			if (++scanned > 50) break;
+			const recRel = m.metadata?.relationship_id;
+			if (typeof recRel === "string" && recRel !== relId) continue;
+			const ts = Date.parse(String(m.metadata?.rolled_at ?? ""));
+			if (!Number.isNaN(ts) && ts > latest) latest = ts;
+		}
+		if (latest > 0 && !lastMoodRollAt.has(relId)) {
+			lastMoodRollAt.set(relId, latest);
+			log.info(
+				`mood-weather: cooldown seeded from persisted roll record (last landed ${new Date(latest).toISOString()})`,
+			);
+			return latest;
+		}
+	} catch (err) {
+		log.debug("mood-weather: cooldown seed failed (fail-open — dice stay eligible)", err);
+	}
+	return null;
+}
 
 /**
  * sessionKey → the mood that landed for that session. Post-compaction
@@ -308,11 +360,15 @@ export function buildEmotionalStateFetchHandler(
 				currentSessionId: resolveCurrentSessionId(_event, ctx as Record<string, unknown> | undefined),
 			});
 
-			if (usable.length === 0 && states.length > 0) {
-				// State(s) exist but are all still extracting — don't cache, so a
-				// later turn re-fetches once extraction completes. Runs BEFORE the
-				// mood roll so a discarded turn can't land weather or burn the
-				// cross-session cooldown.
+			// "Still extracting" (all rows are raw-transcript placeholders) must
+			// NOT cache, so a later turn retries once extraction lands. But rows
+			// dropped by the SETTLING window won't change for an hour — that is
+			// "no injectable arc this session" and must fall through (mood may
+			// still roll, the session caches) or a busy day re-fetches every turn.
+			const anyExtracted = states.some(
+				(s) => s.summary && !looksLikeRawTranscript(s.summary),
+			);
+			if (usable.length === 0 && states.length > 0 && !anyExtracted) {
 				log.debug(
 					"emotional-context: state(s) still extracting — skipping injection this turn",
 				);

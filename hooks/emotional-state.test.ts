@@ -10,7 +10,8 @@ import {
 	messagesToTranscript,
 	MOOD_WEATHER_COOLDOWN_MS,
 
-	selectUsableRegisters,} from "./emotional-state.ts";
+	selectUsableRegisters,
+	seedMoodCooldownFromRecords,} from "./emotional-state.ts";
 import { MOOD_TABLE } from "./mood-weather.ts";
 
 type State = {
@@ -94,6 +95,31 @@ function makeArcClient(states: State[] | null): {
 const cfg = {
 	relationshipId: "rel-x",
 } as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[1];
+
+test("emotional-state fetch — all registers inside the settling window: no arc injected, session CACHES (no per-turn refetch)", async () => {
+	const fresh = (id: string) => ({
+		resourceId: id,
+		summary: "Genuine but too-fresh register (live-session echo).",
+		extractedAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(), // 5 min old
+		sessionId: null,
+		relationshipId: "rel-x",
+	});
+	const { client } = makeArcClient([fresh("es-1"), fresh("es-2")]);
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		cfg,
+	);
+	const ctx = { sessionKey: "session-settling" };
+	const first = await handler({}, ctx);
+	// Nothing usable → no emotional block this session (mood weather may still
+	// ride alone, but with chance 0 default there is none) — and crucially the
+	// session must CACHE: settled-out rows won't change for an hour, so
+	// re-fetching every turn is pure cost (unlike placeholders, which retry).
+	assert.equal(first, undefined);
+	assert.equal(client.recentCalls, 1);
+	await handler({}, ctx);
+	assert.equal(client.recentCalls, 1, "settled-out session must not refetch per turn");
+});
 
 test("emotional-state fetch — injects on first turn, skips on subsequent turns", async () => {
 	const { client } = makeClient("state summary");
@@ -846,4 +872,49 @@ test("selectUsableRegisters — settling window drops live-session echo; fail-op
 	);
 	// Trim: limit bounds the result.
 	assert.equal(selectUsableRegisters([settled, badTs, otherSession], 2, { now }).length, 2);
+});
+
+test("seedMoodCooldownFromRecords — seeds from persisted rolls, filters other relationships, idempotent, fail-open on error", async () => {
+	const rec = (rolled_at: string, relationship_id?: string) => ({
+		resourceId: `mw-${rolled_at}`,
+		source: "vault",
+		title: "Mood weather",
+		metadata: { openclaw_source: "mood_weather", rolled_at, ...(relationship_id ? { relationship_id } : {}) },
+	});
+	const mkListClient = (rows: unknown[]) =>
+		({
+			async *listMemories() {
+				for (const r of rows) yield r;
+			},
+		}) as unknown as Parameters<typeof seedMoodCooldownFromRecords>[0];
+
+	// Other-relationship rolls are ignored; the newest matching roll wins;
+	// legacy rows without relationship_id count for the configured one.
+	const seeded = await seedMoodCooldownFromRecords(
+		mkListClient([
+			rec("2026-08-24T20:00:00Z", "someone-else"),
+			rec("2026-08-24T18:00:00Z", "rel-seed"),
+			rec("2026-08-24T19:30:00Z"),
+		]),
+		{ relationshipId: "rel-seed" } as unknown as Parameters<typeof seedMoodCooldownFromRecords>[1],
+	);
+	assert.equal(seeded, Date.parse("2026-08-24T19:30:00Z"));
+
+	// Idempotent per process: second call is a no-op.
+	const again = await seedMoodCooldownFromRecords(
+		mkListClient([rec("2026-08-24T21:00:00Z", "rel-seed")]),
+		{ relationshipId: "rel-seed" } as unknown as Parameters<typeof seedMoodCooldownFromRecords>[1],
+	);
+	assert.equal(again, null);
+
+	// Errors fail open — dice stay eligible, nothing throws.
+	const failed = await seedMoodCooldownFromRecords(
+		({
+			async *listMemories(): AsyncGenerator<never> {
+				throw new Error("backend down");
+			},
+		}) as unknown as Parameters<typeof seedMoodCooldownFromRecords>[0],
+		{ relationshipId: "rel-seed-err" } as unknown as Parameters<typeof seedMoodCooldownFromRecords>[1],
+	);
+	assert.equal(failed, null);
 });

@@ -7,6 +7,7 @@ import { buildAutoContextHandler } from "./hooks/auto-context.ts"
 import { buildAutoTraceHandler } from "./hooks/auto-trace.ts"
 import {
 	buildEmotionalStateCompactionHandler,
+	seedMoodCooldownFromRecords,
 	buildEmotionalStateFetchHandler,
 	buildEmotionalStateSessionCleanupHandler,
 	buildEmotionalStateStoreHandler,
@@ -396,6 +397,13 @@ export default {
 			id: "openclaw-hyperspell",
 			start: async () => {
 				api.logger.info("hyperspell: connected");
+
+				// Seed the mood cooldown from persisted roll records — off the hot
+				// path, fire-and-forget. Without this every gateway restart re-armed
+				// the dice (in-process cooldown amnesia; five resets 2026-08-24).
+				if (cfg.emotionalContext && cfg.moodWeatherChance > 0) {
+					void seedMoodCooldownFromRecords(client, cfg).catch(() => {});
+				}
 
 				// Sync memories on startup if enabled.
 				//
