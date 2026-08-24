@@ -9,6 +9,7 @@ import {
   routeWrite,
 } from "../lib/sender.ts"
 import { resolveCurrentSessionId } from "../lib/session.ts"
+import { recordSessionWrite } from "../lib/session-writes.ts"
 import { isMultiSpeaker } from "../lib/speaker-tracker.ts"
 import { log } from "../logger.ts"
 
@@ -126,7 +127,7 @@ export function createRememberToolFactory(
       const channelId = channelIdFromCtx(ctx)
 
       try {
-        await client.addMemory(params.text, {
+        const written = await client.addMemory(params.text, {
           title: params.title,
           date: params.date,
           collection,
@@ -143,6 +144,12 @@ export function createRememberToolFactory(
           userId,
           scope: scopingEnabled ? scope : undefined,
         })
+
+        // Same-session echo guard (C3): a fresh remember id is invisible to
+        // dropCurrentSession, so without this the note comes straight back
+        // through the next turn's auto-context, curated-boosted. Recording it
+        // lets retrieval exclude it for the rest of THIS session only.
+        recordSessionWrite(sessionId, written.resourceId)
 
         const preview =
           params.text.length > 80 ? `${params.text.slice(0, 80)}…` : params.text

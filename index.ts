@@ -3,7 +3,11 @@ import { HyperspellClient } from "./client.ts"
 import { registerCommands } from "./commands/slash.ts"
 import { registerCliCommands } from "./commands/setup.ts"
 import { parseConfig, hyperspellConfigSchema, getWorkspaceDir, VALID_SOURCES } from "./config.ts"
-import { buildAutoContextHandler } from "./hooks/auto-context.ts"
+import {
+	buildAutoContextCompactionHandler,
+	buildAutoContextHandler,
+	buildAutoContextSessionCleanupHandler,
+} from "./hooks/auto-context.ts"
 import { buildAutoTraceHandler } from "./hooks/auto-trace.ts"
 import {
 	buildEmotionalStateCompactionHandler,
@@ -227,6 +231,12 @@ export default {
 
 		if (cfg.autoContext) {
 			startHandlers.push(buildAutoContextHandler(client, cfg) as StartHandler);
+			// Repeat-suppression lifecycle: compaction clears the injected-id
+			// memory (the earlier injection may have been compacted out —
+			// suppression must never outlive the context it saved); session_end
+			// bounds it.
+			onHook("after_compaction", buildAutoContextCompactionHandler());
+			onHook("session_end", buildAutoContextSessionCleanupHandler());
 		}
 
 		if (cfg.startupOrientation.enabled) {
