@@ -151,6 +151,7 @@ async function fetchRecentTraces(
 			metaSource: "agent_end",
 			metaSpeakerRole: null,
 			metaFilePath: null,
+			metaWriter: null,
 			highlights: [],
 		});
 	}
@@ -218,6 +219,7 @@ async function fetchRecentConversations(
 			metaSource: HOT_BUFFER_SOURCE,
 			metaSpeakerRole: null,
 			metaFilePath: null,
+			metaWriter: null,
 			highlights: [],
 		});
 		if (out.length >= limit) break; // newest-first → first N are most recent

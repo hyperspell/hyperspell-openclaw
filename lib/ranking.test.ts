@@ -24,6 +24,7 @@ const mk = (over: Partial<SearchResult>): SearchResult => ({
 	metaSource: null,
 	metaSpeakerRole: null,
 	metaFilePath: null,
+	metaWriter: null,
 	highlights: [],
 	...over,
 });
@@ -724,6 +725,40 @@ test("classify — origin metadata beats the title heuristic: a consolidator-TIT
 	});
 	assert.equal(classifyResult(titledEcho, []), "chatter");
 	assert.equal(classifyResult(mk({ ...titledEcho, metaSource: "agent_end" }), []), "chatter");
+});
+
+test("classify — agent-authored writes route to process: the agent never holds the curation boost on its own notes", () => {
+	// A titled, non-UUID remember-tool note — pre-2026-08 this classified
+	// curated (+0.2, half-speed decay): the author-blind classifier.
+	const agentNote = { title: "Plugin deploy checklist", resourceId: "aB3xYz9", metaWriter: "agent" as const };
+	assert.equal(classifyResult(mk(agentNote), []), "process");
+	// The user's /remember writes KEEP the boost.
+	assert.equal(classifyResult(mk({ ...agentNote, metaWriter: "user" }), []), "curated");
+	// Unstamped legacy rows fail OPEN to the title heuristic — never punish
+	// missing data (same rule as recencyPenalty and sourceWeight).
+	assert.equal(classifyResult(mk({ ...agentNote, metaWriter: null }), []), "curated");
+});
+
+test("classify — authorship routing yields to stronger evidence: story and chatter outrank the writer stamp", () => {
+	// Story match wins regardless of writer (deliberate: storyTerms protect
+	// the manuscript; flagged for the tuning window, not changed here).
+	assert.equal(
+		classifyResult(mk({ title: "Mira notes", resourceId: "aB3xYz9", metaWriter: "agent" }), ["mira"]),
+		"story",
+	);
+	// Conversation-origin evidence wins: an agent-writer row tagged hot_buffer
+	// is chatter (penalized), not process (neutral).
+	assert.equal(
+		classifyResult(mk({ title: "t", resourceId: "aB3xYz9", metaWriter: "agent", metaSource: "hot_buffer" }), []),
+		"chatter",
+	);
+});
+
+test("classify — emotional_state origin tag routes to process (C1 future-proofing: register prose must never classify curated if the backend ever indexes that store)", () => {
+	assert.equal(
+		classifyResult(mk({ title: "Register: warm, tired", resourceId: "aB3xYz9", metaSource: "emotional_state" }), []),
+		"process",
+	);
 });
 
 test("classify — processPaths marks the agent's own synced files as process, case-insensitively", () => {

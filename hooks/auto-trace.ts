@@ -39,6 +39,18 @@ export function sanitizeTraceText(input: string): string {
 		/<hyperspell-unfinished-loops>[\s\S]*?<\/hyperspell-unfinished-loops>\n?/g,
 		"",
 	);
+	// Mood weather is injected OUTSIDE the emotional-context wrapper (it can
+	// ride alone when no arc exists), so the strip above can't reach it. It
+	// MUST be stripped here: mood-weather.ts's "DOES NOT WRITE FORWARD …
+	// enforced by construction" contract is enforced in that file but was
+	// violated in this one — the block survived into hot-buffer rows, traces,
+	// and (worst) the emotional-state extractor's own input, which is exactly
+	// the "one random cold morning calcifies into the register" failure the
+	// contract names (Fable review C2, 2026-08-24).
+	out = out.replace(
+		/<hyperspell-mood-weather>[\s\S]*?<\/hyperspell-mood-weather>\n?/g,
+		"",
+	);
 	out = out.replace(
 		/Sender \(untrusted metadata\):\s*```json[\s\S]*?```\n?/g,
 		"",

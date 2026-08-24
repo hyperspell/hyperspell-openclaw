@@ -11,6 +11,7 @@ const mk = (over: Partial<SearchResult>): SearchResult => ({
 	metaSource: null,
 	metaSpeakerRole: null,
 	metaFilePath: null,
+	metaWriter: null,
 	url: null,
 	createdAt: null,
 	highlights: [],

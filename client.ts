@@ -35,6 +35,17 @@ export type SearchResult = {
 	/** metadata.file_path when echoed — the workspace file a synced section
 	 * came from. Keys ranking's per-file diversity cap and processPaths. */
 	metaFilePath: string | null;
+	/** Who authored the memory's content: "agent" | "user", else null.
+	 * Primary signal is the openclaw_writer stamp (written from 2026-08 on);
+	 * legacy rows fall back to metadata.source, which has distinguished the
+	 * agent's remember TOOL ("openclaw_tool") from the user's /remember
+	 * COMMAND ("openclaw_command") since the initial release — written since
+	 * January, read by nothing until now. Null = unknown, and ranking MUST
+	 * fail open on null (treat as today's behavior, never strip a boost on
+	 * missing data). Note the legacy signal marks the write SURFACE, not
+	 * strictly authorship — good enough for retrieval weighting, not for
+	 * attribution claims. */
+	metaWriter: "agent" | "user" | null;
 	highlights: Highlight[];
 };
 
@@ -105,6 +116,19 @@ function metaString(
 ): string | null {
 	const v = metadata?.[key];
 	return typeof v === "string" && v.length > 0 ? v : null;
+}
+
+/** Resolve authorship for SearchResult.metaWriter — openclaw_writer stamp
+ * first, legacy metadata.source surface tag as the retroactive fallback. */
+function writerOf(
+	metadata: Record<string, unknown> | null | undefined,
+): "agent" | "user" | null {
+	const stamped = metaString(metadata, "openclaw_writer");
+	if (stamped === "agent" || stamped === "user") return stamped;
+	const legacy = metaString(metadata, "source");
+	if (legacy === "openclaw_tool") return "agent";
+	if (legacy === "openclaw_command") return "user";
+	return null;
 }
 
 export class HyperspellClient {
@@ -204,6 +228,7 @@ export class HyperspellClient {
 				metaSource: metaString(doc.metadata, "openclaw_source"),
 				metaSpeakerRole: metaString(doc.metadata, "openclaw_speaker_role"),
 				metaFilePath: metaString(doc.metadata, "file_path"),
+			metaWriter: writerOf(doc.metadata),
 				highlights: (raw.highlights ?? []).map((h) => ({
 					id: h.id,
 					score: h.score,
@@ -323,6 +348,7 @@ export class HyperspellClient {
 			metaSource: metaString(doc.metadata, "openclaw_source"),
 			metaSpeakerRole: metaString(doc.metadata, "openclaw_speaker_role"),
 			metaFilePath: metaString(doc.metadata, "file_path"),
+			metaWriter: writerOf(doc.metadata),
 			highlights: [],
 		}));
 		const documents = dropQuarantined(
@@ -412,6 +438,7 @@ export class HyperspellClient {
 				metaSource: metaString(doc.metadata, "openclaw_source"),
 				metaSpeakerRole: metaString(doc.metadata, "openclaw_speaker_role"),
 				metaFilePath: metaString(doc.metadata, "file_path"),
+			metaWriter: writerOf(doc.metadata),
 				highlights: (raw.highlights ?? []).map((h) => ({
 					id: h.id,
 					score: h.score,

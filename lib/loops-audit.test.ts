@@ -29,6 +29,7 @@ function makeResult(overrides?: Partial<SearchResult>): SearchResult {
 		metaSource: null,
 		metaSpeakerRole: null,
 		metaFilePath: null,
+		metaWriter: null,
 		url: null,
 		createdAt: "2026-07-01T00:00:00.000Z",
 		highlights: [{ id: "h1", score: 0.7, text: "I said I'd\nfollow up on this" }],

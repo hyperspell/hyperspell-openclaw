@@ -1,6 +1,7 @@
 import type { EmotionalStateLatest, HyperspellClient } from "../client.ts";
 import type { HyperspellConfig } from "../config.ts";
 import { channelIdFromCtx } from "../lib/exclude-channels.ts";
+import { EMOTIONAL_STATE_SOURCE } from "../lib/filters.ts";
 import { resolveCurrentSessionId } from "../lib/session.ts";
 import { isMultiSpeaker } from "../lib/speaker-tracker.ts";
 import { log } from "../logger.ts";
@@ -431,7 +432,19 @@ export function buildEmotionalStateStoreHandler(
 			const result = await client.storeEmotionalState(transcript, {
 				relationshipId: cfg.relationshipId,
 				metadata: {
+					// Legacy key, kept for the mood-skew audit's bucketing of
+					// existing rows — but bare `source` is read by NOTHING on the
+					// retrieval path (the C1 key-name trap, Fable review
+					// 2026-08-24): it matches neither excludeFilterFor
+					// (openclaw_source) nor classifyResult (metaSource). Harmless
+					// today only because /emotional-state is a separate store the
+					// memories index never surfaces (census: zero rows).
 					source: "openclaw_agent_end",
+					// Pipeline tag on the standard key, so IF the backend ever
+					// indexes this store, ranking classifies the rows as process
+					// instead of promoting agent register prose to curated.
+					openclaw_source: EMOTIONAL_STATE_SOURCE,
+					openclaw_writer: "agent",
 					...(channelId ? { channelId } : {}),
 				},
 			});

@@ -1,5 +1,5 @@
 import type { SearchResult } from "../client.ts";
-import { AGENT_END_SOURCE, HOT_BUFFER_SOURCE } from "./filters.ts";
+import { AGENT_END_SOURCE, EMOTIONAL_STATE_SOURCE, HOT_BUFFER_SOURCE } from "./filters.ts";
 
 /**
  * Composite retrieval ranking — score memories by more than raw semantic
@@ -172,8 +172,10 @@ export function baseScore(r: SearchResult): number {
  *  - story:   matches a configured story term (manuscript / its notes & threads)
  *  - chatter: a conversation echo — tagged hot-buffer/agent-end origin, or
  *             untitled/"Unnamed Conversation" AND keyed by a bare session UUID
- *  - process: a synced file the operator marked as agent process output
- *             (ranking.processPaths) — scored neutral, never promoted
+ *  - process: agent-authored output scored neutral, never promoted — an
+ *             agent-written remember note (metaWriter "agent"), an
+ *             emotional-state register row, or a synced file the operator
+ *             marked as process via ranking.processPaths
  *  - curated: has a real, human title and is not a raw session row — a journal,
  *             a writing note, a synced memory section (deliberately kept)
  */
@@ -204,6 +206,23 @@ export function classifyResult(
 	) {
 		return "chatter";
 	}
+	// Emotional-state snapshots are agent-generated register prose. They live
+	// in a separate backend store today (census 2026-08-24: zero rows in the
+	// memories corpus), so this branch is future-proofing: if the backend ever
+	// indexes that store, the rows classify as process — never curated.
+	if (r.metaSource === EMOTIONAL_STATE_SOURCE) return "process";
+	// Agent-AUTHORED writes (the remember tool, vs the user's /remember
+	// command) score neutral: the curation boost answers "is this trustworthy
+	// about the user," and the agent is the interested party — a self-serving
+	// note must not outrank quiet user truth (the author-blind classifier,
+	// 2026-08-18 scale report §ranking; amendment: route to the existing
+	// process kind rather than adding a self-declared discriminator, so the
+	// agent never holds the knob on its own rank). metaWriter is null on
+	// unstamped legacy rows and MUST fail open to the heuristics below —
+	// never punish missing data. Checked after the chatter rules (origin
+	// evidence is stronger) and before the title heuristics (which is what
+	// mis-promoted these rows to curated).
+	if (r.metaWriter === "agent") return "process";
 	if (processPaths.length > 0 && r.metaFilePath) {
 		const filePath = r.metaFilePath.toLowerCase();
 		if (processPaths.some((p) => filePath.includes(p))) return "process";

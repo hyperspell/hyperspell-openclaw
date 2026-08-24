@@ -18,6 +18,14 @@ type ExcludeCfg = {
 export const AGENT_END_SOURCE = "agent_end"
 /** Metadata tag on mood-weather roll records (see `recordMoodRoll` in hooks/mood-weather.ts). */
 export const MOOD_WEATHER_SOURCE = "mood_weather"
+
+/** openclaw_source stamped on emotional-state register writes. Those POSTs go
+ * to /emotional-state — a separate backend store that is NOT in the memories
+ * corpus today (census 2026-08-24: zero rows), so this tag is deliberately NOT
+ * in excludeFilterFor (a predicate over zero rows is pure cost). It exists so
+ * that if the backend ever indexes that store, ranking classifies the rows as
+ * process instead of curated (the C1 latent trap, Fable review 2026-08-24). */
+export const EMOTIONAL_STATE_SOURCE = "emotional_state"
 /**
  * Metadata tag on hot-buffer conversation rows (written by hooks/hot-buffer.ts).
  * Readers must select ON this value, never "any tag means not mine" — hot rows

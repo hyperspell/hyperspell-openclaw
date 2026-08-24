@@ -22,6 +22,7 @@ function mkResult(
 		metaSource: null,
 		metaSpeakerRole: null,
 		metaFilePath: null,
+		metaWriter: null,
 		highlights: [],
 		quarantined: false,
 		...over,
