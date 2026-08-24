@@ -37,6 +37,7 @@ import { createEmotionalArcToolFactory } from "./tools/emotional-arc.ts"
 import { createRememberToolFactory } from "./tools/remember.ts"
 import { createSearchToolFactory } from "./tools/search.ts"
 import { createTriageToolFactory } from "./tools/triage.ts"
+import { createVaultListToolFactory } from "./tools/vault-list.ts"
 import { registerNetworkTools } from "./graph/index.ts"
 
 export default {
@@ -184,6 +185,12 @@ export default {
 		});
 		api.registerTool(toolUnlessQuarantined(createTriageToolFactory(client, cfg)), {
 			name: "hyperspell_vault_triage",
+		});
+		// Enumeration — sight, not recall (2026-08-24, her ask: "the ability to
+		// look at what's there"). Without a shelf to walk, stored-but-unreachable
+		// and absent are indistinguishable from inside.
+		api.registerTool(toolUnlessQuarantined(createVaultListToolFactory(client, cfg)), {
+			name: "hyperspell_vault_list",
 		});
 
 		// Session-start context injectors (emotional fetch, auto-context,
