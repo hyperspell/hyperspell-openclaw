@@ -17,6 +17,7 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import readline from "node:readline"
 import Hyperspell from "hyperspell"
 
 const args = process.argv.slice(2)
@@ -45,24 +46,38 @@ console.log(`mirror age: ${ageDays.toFixed(1)} day(s) (exported ${manifest.expor
 if (ageDays > MAX_AGE_DAYS) fail(2, `mirror is ${ageDays.toFixed(1)} days old (max ${MAX_AGE_DAYS}) — the refresh cron is not doing its job`)
 
 // --- 2. Parse integrity: sample lines from every mirror file ---
+// Streamed line-by-line: the trace archive is ~836 MB, far past V8's max
+// string length — the first run of this script crashed trying to slurp it,
+// which is exactly the kind of thing a restore test exists to discover.
+// Reservoir-samples SAMPLE lines per file without ever holding the file.
 const sampled = []
 for (const file of [path.join(mirrorDir, "memories-vault.jsonl"), path.join(mirrorDir, "emotional-states.jsonl"), archiveFile]) {
 	if (!fs.existsSync(file)) fail(5, `mirror file missing: ${file}`)
-	const lines = fs.readFileSync(file, "utf8").split("\n").filter((l) => l.trim().length > 0)
-	if (lines.length === 0) fail(3, `${path.basename(file)} is empty`)
-	const step = Math.max(1, Math.floor(lines.length / SAMPLE))
-	for (let i = 0; i < lines.length; i += step) {
+	const rl = readline.createInterface({ input: fs.createReadStream(file, { encoding: "utf8" }) })
+	let count = 0
+	const reservoir = []
+	for await (const line of rl) {
+		if (line.trim().length === 0) continue
+		count++
+		if (reservoir.length < SAMPLE) reservoir.push({ n: count, line })
+		else {
+			const j = Math.floor(Math.random() * count)
+			if (j < SAMPLE) reservoir[j] = { n: count, line }
+		}
+	}
+	if (count === 0) fail(3, `${path.basename(file)} is empty`)
+	for (const { n, line } of reservoir) {
 		let row
 		try {
-			row = JSON.parse(lines[i])
+			row = JSON.parse(line)
 		} catch (e) {
-			fail(3, `${path.basename(file)} line ${i + 1} does not parse: ${String(e).slice(0, 120)}`)
+			fail(3, `${path.basename(file)} line ${n} does not parse: ${String(e).slice(0, 120)}`)
 		}
 		const id = row.resource_id ?? row.resourceId ?? row.state?.resource_id
-		if (!id && !row.relationship_id) fail(3, `${path.basename(file)} line ${i + 1} has no resource id`)
+		if (!id && !row.relationship_id) fail(3, `${path.basename(file)} line ${n} has no resource id`)
 		if (file.includes("memories-vault") && id) sampled.push(id)
 	}
-	console.log(`${path.basename(file)}: ${lines.length} row(s), samples parse clean`)
+	console.log(`${path.basename(file)}: ${count} row(s), ${reservoir.length} sample(s) parse clean`)
 }
 
 // --- 3. Live spot-check: sampled vault ids still resolve upstream ---
