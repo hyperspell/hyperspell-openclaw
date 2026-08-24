@@ -508,13 +508,20 @@ export function buildEmotionalStateStoreHandler(
 
 		// Sender gate (2026-08-24, her specification: "do not let a peer-agent
 		// thread write to david-alinea"). The register records ONE human
-		// relationship; only turns from a resolvable sender may write it.
-		// CLI/peer-agent sessions carry no sender metadata — verified live:
-		// five genuine stores all carried sender+channel ids, the corrupting
-		// peer-review session carried none — so requiring a sender closes the
-		// corruption path with zero config. registerSenders (when set) narrows
-		// further to an allowlist, closing the hole the multi-speaker drift
-		// detector cannot see: a session where only a guest speaks.
+		// relationship; only turns from a resolvable sender may write it, and
+		// registerSenders (when set) narrows further to an allowlist — closing
+		// the hole the multi-speaker drift detector cannot see: a session
+		// where only a guest speaks.
+		//
+		// KNOWN LIMIT (verified live, same evening): on current OpenClaw the
+		// gate is necessary but NOT sufficient against CLI-driven peer turns —
+		// the gateway stamps them with the REQUESTER's identity (the human
+		// operator's sender id, channel, and the main session key), so they
+		// pass both layers wearing the human's id. es-o3ySb-x-n6E was written
+		// through this gate by a peer session. That is a host bug (the CLI
+		// boundary has the true session key and discards it); see
+		// docs/issue-openclaw-cli-ctx-identity.md. Until it lands upstream,
+		// the protection against peer writes is procedural, not mechanical.
 		const senderId = senderIdFromCtx(ctx as Record<string, unknown>);
 		const gateSessionId = resolveCurrentSessionId(event, ctx as Record<string, unknown>);
 		if (!senderId) {
