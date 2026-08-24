@@ -128,6 +128,11 @@ function writerOf(
 	const legacy = metaString(metadata, "source");
 	if (legacy === "openclaw_tool") return "agent";
 	if (legacy === "openclaw_command") return "user";
+	// Emotional-state registers (bare legacy key; see hooks/emotional-state.ts).
+	// Their transcripts were ALSO text-indexed into generic vault search until
+	// backend PR #3330 — chunks titled from the transcript's first line, so the
+	// title heuristic reads them as curated. Agent-generated either way.
+	if (legacy === "openclaw_agent_end") return "agent";
 	return null;
 }
 

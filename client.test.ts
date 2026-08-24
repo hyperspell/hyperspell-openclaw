@@ -178,6 +178,29 @@ function quarantinedClient(ids: string[]) {
 	);
 }
 
+test("search — metaWriter: openclaw_writer stamp wins; legacy metadata.source is the retroactive fallback", async () => {
+	const qc = quarantinedClient([]);
+	stubSdkSearch(qc, {
+		documents: [
+			{ ...makeDoc("r1"), metadata: { openclaw_writer: "user", source: "openclaw_tool" } },
+			{ ...makeDoc("r2"), metadata: { source: "openclaw_tool" } },
+			{ ...makeDoc("r3"), metadata: { source: "openclaw_command" } },
+			// Emotional-state registers: bare legacy key only — agent-generated
+			// (their transcripts were text-indexed into vault search until
+			// backend PR #3330; titled chunks read as curated without this).
+			{ ...makeDoc("r4"), metadata: { source: "openclaw_agent_end" } },
+			{ ...makeDoc("r5"), metadata: {} },
+			{ ...makeDoc("r6") },
+		],
+	});
+	const results = await qc.search("q", { limit: 10 });
+	assert.deepEqual(
+		results.map((r) => r.metaWriter),
+		["user", "agent", "user", "agent", null, null],
+		"stamp beats legacy; tool→agent, command→user, agent_end→agent; unknown→null (fail open)",
+	);
+});
+
 test("search — quarantined resources are dropped and the fetch limit is widened to compensate", async () => {
 	const qc = quarantinedClient(["bad-1"]);
 	const calls = stubSdkSearch(qc, {
