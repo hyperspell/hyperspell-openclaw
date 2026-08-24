@@ -1,6 +1,7 @@
 import type { EmotionalStateLatest, HyperspellClient } from "../client.ts";
 import type { HyperspellConfig } from "../config.ts";
 import { channelIdFromCtx } from "../lib/exclude-channels.ts";
+import { senderIdFromCtx } from "../lib/speaker-tracker.ts";
 import { EMOTIONAL_STATE_SOURCE } from "../lib/filters.ts";
 import { resolveCurrentSessionId } from "../lib/session.ts";
 import { isMultiSpeaker } from "../lib/speaker-tracker.ts";
@@ -432,6 +433,17 @@ export function buildEmotionalStateStoreHandler(
 			// DM), mirroring hot-buffer's openclaw_channel_id tag. Capture-only: analysis/
 			// debugging metadata, deliberately NOT surfaced in the injected prose (#74).
 			const channelId = channelIdFromCtx(ctx as Record<string, unknown>);
+			// Sender-gate design instrumentation (PR 2 item 1, 2026-08-24): the
+			// register is stamped with a STATIC relationshipId, so ANY
+			// conversational-trigger session writes to it — a peer-agent code
+			// review corrupted the arc with registers about the reviewer within
+			// an hour of talking. The correct gate needs to know what identity
+			// signals each surface actually carries; log ids only (no content)
+			// at diag level so real traffic answers that before a gate is built
+			// on assumption. Remove once the gate ships.
+			log.diag(
+				`emotional-state: storing register (trigger=${ctx?.trigger ?? "none"}, sender=${senderIdFromCtx(ctx as Record<string, unknown>) ?? "none"}, channel=${channelId ?? "none"}, sessionKey=${String((ctx as Record<string, unknown> | undefined)?.sessionKey ?? "none").slice(0, 60)})`,
+			);
 			const result = await client.storeEmotionalState(transcript, {
 				relationshipId: cfg.relationshipId,
 				metadata: {
