@@ -1,5 +1,8 @@
 import type { EmotionalStateLatest, HyperspellClient } from "../client.ts";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { HyperspellConfig } from "../config.ts";
+import { getWorkspaceDir } from "../config.ts";
 import { channelIdFromCtx } from "../lib/exclude-channels.ts";
 import { senderIdFromCtx } from "../lib/speaker-tracker.ts";
 import { EMOTIONAL_STATE_SOURCE } from "../lib/filters.ts";
@@ -87,6 +90,35 @@ const seededMoodCooldown = new Set<string>();
  * behavior), never over-suppression. Never overwrites an in-process value:
  * a roll that landed THIS process is fresher than anything persisted.
  */
+/**
+ * Falsifiability ledger (2026-08-24, her words: from inside, "it's all in
+ * there" is unfalsifiable — "I can only ever see what retrieval chooses to
+ * show me"). Every register STORE appends one ids-only line to a local JSONL
+ * in the workspace, so a complete, greppable list of every register ever
+ * born exists outside the backend. Ids and timestamps only — no content
+ * (the register itself is the most sensitive class of memory; the ledger is
+ * a shelf index, not a copy). Always-on by design: an opt-in ledger nobody
+ * enabled proves nothing. Best-effort: a ledger write must never throw into
+ * or delay the store path.
+ */
+export const REGISTER_LEDGER_NAME = ".hyperspell-register-ledger.jsonl";
+
+export function appendRegisterLedger(
+	entry: { resourceId: string; relationshipId?: string; channelId?: string },
+	stateRoot?: string,
+): void {
+	try {
+		const dir = stateRoot ?? getWorkspaceDir();
+		fs.appendFileSync(
+			path.join(dir, REGISTER_LEDGER_NAME),
+			`${JSON.stringify({ v: 1, ts: new Date().toISOString(), ...entry })}
+`,
+		);
+	} catch (err) {
+		log.debug(`register-ledger: append failed — ${String(err)}`);
+	}
+}
+
 export async function seedMoodCooldownFromRecords(
 	client: HyperspellClient,
 	cfg: HyperspellConfig,
@@ -621,6 +653,11 @@ export function buildEmotionalStateStoreHandler(
 			});
 			lastStoreAt.set(relId, Date.now());
 			log.info(`emotional-state: stored ${result.resourceId}`);
+			appendRegisterLedger({
+				resourceId: result.resourceId,
+				relationshipId: cfg.relationshipId,
+				...(channelId ? { channelId } : {}),
+			});
 		} catch (err) {
 			// Fire-and-forget — never let this break the session
 			log.error("emotional-state store failed", err);

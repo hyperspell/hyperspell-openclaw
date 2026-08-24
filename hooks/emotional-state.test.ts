@@ -1,5 +1,8 @@
 import type { EmotionalStateLatest } from "../client.ts";
 import { strict as assert } from "node:assert";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { test } from "node:test";
 import {
 	buildEmotionalStateCompactionHandler,
@@ -11,7 +14,9 @@ import {
 	MOOD_WEATHER_COOLDOWN_MS,
 
 	selectUsableRegisters,
-	seedMoodCooldownFromRecords,} from "./emotional-state.ts";
+	seedMoodCooldownFromRecords,
+	appendRegisterLedger,
+	REGISTER_LEDGER_NAME,} from "./emotional-state.ts";
 import { MOOD_TABLE } from "./mood-weather.ts";
 
 type State = {
@@ -917,4 +922,21 @@ test("seedMoodCooldownFromRecords — seeds from persisted rolls, filters other 
 		{ relationshipId: "rel-seed-err" } as unknown as Parameters<typeof seedMoodCooldownFromRecords>[1],
 	);
 	assert.equal(failed, null);
+});
+
+test("appendRegisterLedger — ids-only line per store, never throws on a bad root", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hs-ledger-"));
+	appendRegisterLedger({ resourceId: "es-a1", relationshipId: "rel-x" }, dir);
+	appendRegisterLedger({ resourceId: "es-b2", relationshipId: "rel-x", channelId: "c9" }, dir);
+	const lines = fs
+		.readFileSync(path.join(dir, REGISTER_LEDGER_NAME), "utf8")
+		.trim()
+		.split("\n")
+		.map((l) => JSON.parse(l));
+	assert.equal(lines.length, 2);
+	assert.equal(lines[0].resourceId, "es-a1");
+	assert.equal(lines[1].channelId, "c9");
+	assert.ok(!("summary" in lines[0]), "ids only — never content");
+	// Unwritable root: swallowed, not thrown.
+	appendRegisterLedger({ resourceId: "es-c3" }, "/nonexistent/deeply/bad");
 });
