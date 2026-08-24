@@ -297,8 +297,10 @@ const richMessages = [
 	{ role: "assistant", content: "I'm here. Tell me what happened — take your time." },
 	{ role: "user", content: "the deploy broke and I felt awful, but you always help me feel better" },
 ];
-const storeCfg = (relationshipId: string) =>
-	({ relationshipId }) as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[1];
+const storeCfg = (relationshipId: string, registerSenders: string[] = []) =>
+	({ relationshipId, registerSenders }) as unknown as Parameters<
+		typeof buildEmotionalStateStoreHandler
+	>[1];
 
 test("emotional-state store — skips automated triggers (cron/heartbeat/memory don't count)", async () => {
 	for (const trigger of ["cron", "heartbeat", "memory"]) {
@@ -318,7 +320,7 @@ test("emotional-state store — stores for a real user conversation", async () =
 		client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
 		storeCfg("rel-user-store"),
 	);
-	await handler({ success: true, messages: richMessages }, { trigger: "user" });
+	await handler({ success: true, messages: richMessages }, { trigger: "user", senderId: "sender-david" });
 	assert.equal(stores.length, 1);
 	assert.equal(stores[0].opts.relationshipId, "rel-user-store");
 });
@@ -352,7 +354,7 @@ test("emotional-state store — cron-originated session that becomes a real conv
 	];
 	await handler(
 		{ success: true, messages: grownTranscript },
-		{ sessionKey, trigger: "user" },
+		{ sessionKey, trigger: "user", senderId: "sender-david" },
 	);
 	assert.equal(stores.length, 1, "the human turn of a cron-originated session must store");
 	assert.equal(stores[0].opts.relationshipId, "rel-cron-to-real");
@@ -364,8 +366,34 @@ test("emotional-state store — undefined trigger still stores (don't skip when 
 		client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
 		storeCfg("rel-undef"),
 	);
-	await handler({ success: true, messages: richMessages }, {});
+	await handler({ success: true, messages: richMessages }, { senderId: "sender-david" });
 	assert.equal(stores.length, 1);
+});
+
+test("emotional-state store — sender gate: no resolvable sender never stores (peer/CLI sessions must not write the register)", async () => {
+	const { client, stores } = makeStoreClient();
+	const handler = buildEmotionalStateStoreHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
+		storeCfg("rel-gate"),
+	);
+	// trigger=user but NO senderId — the live corruption case (a peer-agent
+	// review session wrote registers about the reviewer under the couple's id).
+	await handler({ success: true, messages: richMessages }, { trigger: "user", sessionKey: "agent:main:peer-review" });
+	assert.equal(stores.length, 0);
+});
+
+test("emotional-state store — sender gate: registerSenders allowlist blocks unlisted senders, admits listed ones", async () => {
+	const { client, stores } = makeStoreClient();
+	const handler = buildEmotionalStateStoreHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
+		storeCfg("rel-allow", ["sender-david"]),
+	);
+	// A single-speaker guest session: drift detection can't see it; the
+	// allowlist is the only thing that can.
+	await handler({ success: true, messages: richMessages }, { trigger: "user", senderId: "sender-guest", sessionKey: "s-guest" });
+	assert.equal(stores.length, 0, "unlisted sender must not write the register");
+	await handler({ success: true, messages: richMessages }, { trigger: "user", senderId: "sender-david", sessionKey: "s-david" });
+	assert.equal(stores.length, 1, "listed sender stores normally");
 });
 
 test("emotional-state store — debounces repeated stores within the window", async () => {
@@ -374,8 +402,8 @@ test("emotional-state store — debounces repeated stores within the window", as
 		client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
 		storeCfg("rel-debounce"),
 	);
-	await handler({ success: true, messages: richMessages }, { trigger: "user" });
-	await handler({ success: true, messages: richMessages }, { trigger: "user" });
+	await handler({ success: true, messages: richMessages }, { trigger: "user", senderId: "sender-david" });
+	await handler({ success: true, messages: richMessages }, { trigger: "user", senderId: "sender-david" });
 	assert.equal(stores.length, 1, "second store within the debounce window is skipped");
 });
 
@@ -390,7 +418,7 @@ test("emotional-state store — tags metadata with channelId from ctx (#74)", as
 	);
 	await handler(
 		{ success: true, messages: richMessages },
-		{ trigger: "user", channelId: "chan-42" } as never,
+		{ trigger: "user", senderId: "sender-david", channelId: "chan-42" } as never,
 	);
 	assert.equal(stores.length, 1);
 	assert.equal(stores[0].opts.metadata?.source, "openclaw_agent_end");
@@ -405,7 +433,7 @@ test("emotional-state store — resolves channelId from composite sessionKey whe
 	);
 	await handler(
 		{ success: true, messages: richMessages },
-		{ trigger: "user", sessionKey: "agent:main:discord:channel:222" },
+		{ trigger: "user", senderId: "sender-david", sessionKey: "agent:main:discord:channel:222" },
 	);
 	assert.equal(stores.length, 1);
 	assert.equal(stores[0].opts.metadata?.channelId, "222");
@@ -418,7 +446,7 @@ test("emotional-state store — omits channelId when unresolvable, still stores 
 		storeCfg("rel-chan-none"),
 	);
 	// e.g. a manual CLI run: no channelId, sessionKey has no conversation segment.
-	await handler({ success: true, messages: richMessages }, { trigger: "user" });
+	await handler({ success: true, messages: richMessages }, { trigger: "user", senderId: "sender-david" });
 	assert.equal(stores.length, 1);
 	assert.equal(stores[0].opts.metadata?.source, "openclaw_agent_end");
 	assert.equal("channelId" in (stores[0].opts.metadata ?? {}), false, "channelId key must be absent, not empty");

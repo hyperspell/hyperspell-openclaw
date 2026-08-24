@@ -353,6 +353,7 @@ async function runSetup(): Promise<void> {
         },
         emotionalContext: false,
         moodWeatherChance: 0,
+        registerSenders: [],
         excludeChannels: [],
         quarantineResources: [],
         syncMemories: true,

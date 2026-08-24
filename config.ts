@@ -195,6 +195,19 @@ export type HyperspellConfig = {
 	 */
 	quarantineResources: string[];
 	relationshipId?: string;
+	/**
+	 * Sender ids whose conversations may WRITE the emotional register
+	 * (matched against the connector's sender id — senderIdFromCtx). Empty
+	 * (the default): any turn with a RESOLVABLE sender may store; turns with
+	 * no sender metadata (CLI/peer-agent sessions) never store either way —
+	 * the register records one human relationship, and a peer-agent thread
+	 * must not write it (found live 2026-08-24: a code-review session
+	 * overwrote the arc with registers about the reviewer). Non-empty: the
+	 * sender must also be in this list, which closes the remaining hole the
+	 * multi-speaker drift detector can't see — a session where ONLY a guest
+	 * speaks. Reads (arc injection/tool) are unaffected.
+	 */
+	registerSenders: string[];
 	startupOrientation: StartupOrientationConfig;
 	syncMemories: boolean;
 	syncMemoriesConfig: SyncMemoriesConfig;
@@ -227,6 +240,7 @@ const ALLOWED_KEYS = [
 	"excludeChannels",
 	"quarantineResources",
 	"relationshipId",
+	"registerSenders",
 	"startupOrientation",
 	"syncMemories",
 	"sources",
@@ -734,6 +748,11 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 					.filter((r) => r.length > 0)
 			: [],
 		relationshipId: cfg.relationshipId as string | undefined,
+		registerSenders: Array.isArray(cfg.registerSenders)
+			? (cfg.registerSenders as unknown[])
+					.map((v) => String(v).trim())
+					.filter((v) => v.length > 0)
+			: [],
 		startupOrientation: {
 			enabled: (soRaw.enabled as boolean) ?? false,
 			recentDays: (soRaw.recentDays as number) ?? 7,

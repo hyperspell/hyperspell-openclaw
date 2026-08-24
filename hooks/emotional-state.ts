@@ -18,7 +18,12 @@ import {
 export const EMOTIONAL_ARC_LIMIT = 3;
 
 type Message = { role?: string; content?: string | unknown };
-type AgentContext = { sessionKey?: string; trigger?: string };
+type AgentContext = {
+	sessionKey?: string;
+	trigger?: string;
+	/** Connector sender id — read by the sender gate via senderIdFromCtx. */
+	senderId?: string;
+};
 
 const MIN_MESSAGES = 3;
 const MIN_CONVERSATION_LENGTH = 100;
@@ -86,6 +91,10 @@ const sessionMoods = new Map<string, MoodSpec>();
  *  - session_end: clean up to prevent unbounded Set growth.
  */
 const injectedSessions = new Set<string>();
+
+/** Sessions already warned about a sender-gate skip (the store fires every
+ * agent_end pre-debounce, so an unwarned loop would spam the log). */
+const warnedSenderGateSessions = new Set<string>();
 
 /**
  * Extract readable text from a message content, unwrapping the common
@@ -411,6 +420,7 @@ export function buildEmotionalStateSessionCleanupHandler() {
 		const sessionKey = ctx?.sessionKey;
 		if (sessionKey) {
 			injectedSessions.delete(sessionKey);
+			warnedSenderGateSessions.delete(sessionKey);
 			// Session over — its mood memo is dead weight. NOT cleared on
 			// compaction: surviving compaction is what makes the mood replay.
 			sessionMoods.delete(sessionKey);
@@ -437,6 +447,36 @@ export function buildEmotionalStateStoreHandler(
 		const trigger = ctx?.trigger;
 		if (trigger && NON_CONVERSATIONAL_TRIGGERS.has(trigger)) {
 			log.debug(`emotional-state: skipping — non-conversational trigger (${trigger})`);
+			return;
+		}
+
+		// Sender gate (2026-08-24, her specification: "do not let a peer-agent
+		// thread write to david-alinea"). The register records ONE human
+		// relationship; only turns from a resolvable sender may write it.
+		// CLI/peer-agent sessions carry no sender metadata — verified live:
+		// five genuine stores all carried sender+channel ids, the corrupting
+		// peer-review session carried none — so requiring a sender closes the
+		// corruption path with zero config. registerSenders (when set) narrows
+		// further to an allowlist, closing the hole the multi-speaker drift
+		// detector cannot see: a session where only a guest speaks.
+		const senderId = senderIdFromCtx(ctx as Record<string, unknown>);
+		const gateSessionId = resolveCurrentSessionId(event, ctx as Record<string, unknown>);
+		if (!senderId) {
+			if (gateSessionId && !warnedSenderGateSessions.has(gateSessionId)) {
+				warnedSenderGateSessions.add(gateSessionId);
+				log.warn(
+					"emotional-state: not storing — no resolvable sender for this session (peer-agent/CLI sessions must not write the relationship register). If this is a real human surface, its connector isn't passing senderId.",
+				);
+			}
+			return;
+		}
+		if (cfg.registerSenders.length > 0 && !cfg.registerSenders.includes(senderId)) {
+			if (gateSessionId && !warnedSenderGateSessions.has(gateSessionId)) {
+				warnedSenderGateSessions.add(gateSessionId);
+				log.info(
+					`emotional-state: not storing — sender ${senderId} is not in registerSenders`,
+				);
+			}
 			return;
 		}
 

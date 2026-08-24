@@ -64,6 +64,7 @@ function makeCfg(overrides?: Partial<HyperspellConfig>): HyperspellConfig {
 		hotBuffer: { enabled: false, source: "vault", writeUser: true, writeAssistant: true },
 		emotionalContext: false,
 		moodWeatherChance: 0,
+		registerSenders: [],
 		excludeChannels: [],
 		quarantineResources: [],
 		startupOrientation: {
