@@ -101,7 +101,10 @@ export const METADATA_CONTRACT: Record<string, MetadataKeyContract> = {
 		writtenIn: [
 			"hooks/hot-buffer.ts",
 			"hooks/auto-trace.ts",
-			"hooks/emotional-state.ts",
+			// NOT hooks/emotional-state.ts: it writes the separate bare
+			// `channelId` key (its own entry below) — listing it here was a
+			// false writer guarantee that passed the mentions-check via a
+			// comment (Entelligence CONTRACT_DRIFT on #127).
 			"tools/remember.ts",
 		],
 		readIn: ["commands/purge-channel.ts"],
@@ -123,6 +126,15 @@ export const METADATA_CONTRACT: Record<string, MetadataKeyContract> = {
 		readIn: {
 			external:
 				"Operator queries / future per-root retrieval weighting — additive key; openclaw_source stays the pipeline discriminator (see sync/markdown.ts comment)",
+		},
+	},
+	openclaw_backfilled: {
+		meaning:
+			"One-shot marker stamped by the attribution backfill script on rows it retro-tagged",
+		writtenIn: ["docs/backfill-attribution.mjs"],
+		readIn: {
+			external:
+				"Operator forensics / idempotency check when re-running the backfill — no runtime reader by design",
 		},
 	},
 	// ---- unprefixed keys (legacy / shared-convention). The drift scan cannot

@@ -213,6 +213,16 @@ export function classifyResult(
 	// this branch is future-proofing: if the backend ever indexes that store,
 	// the rows classify as process — never curated, never story.
 	if (r.metaSource === EMOTIONAL_STATE_SOURCE) return "process";
+	// processPaths is origin evidence too — the operator explicitly marked the
+	// file as agent process output — so it must beat story terms like every
+	// other origin signal (Entelligence MAJOR on #127: checked after story, a
+	// process file mentioning a story term collected the story and curation
+	// boosts the README promises it can never have; agent thought-logs discuss
+	// the story constantly, so this was the same laundering path again).
+	if (processPaths.length > 0 && r.metaFilePath) {
+		const filePath = r.metaFilePath.toLowerCase();
+		if (processPaths.some((p) => filePath.includes(p))) return "process";
+	}
 	if (storyTerms.length > 0) {
 		// \n-joined (not space-joined) so a multi-word phrase term can never
 		// spuriously match across the seam of two unrelated highlights (terms are
@@ -232,10 +242,6 @@ export function classifyResult(
 	// evidence is stronger) and before the title heuristics (which is what
 	// mis-promoted these rows to curated).
 	if (r.metaWriter === "agent") return "process";
-	if (processPaths.length > 0 && r.metaFilePath) {
-		const filePath = r.metaFilePath.toLowerCase();
-		if (processPaths.some((p) => filePath.includes(p))) return "process";
-	}
 	const untitled = title === "" || /^unnamed conversation$/i.test(title);
 	if (untitled && UUID_RE.test(r.resourceId)) return "chatter";
 	if (title !== "" && !UUID_RE.test(r.resourceId)) return "curated";

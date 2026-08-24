@@ -727,6 +727,22 @@ test("classify — origin metadata beats the title heuristic: a consolidator-TIT
 	assert.equal(classifyResult(mk({ ...titledEcho, metaSource: "agent_end" }), []), "chatter");
 });
 
+test("classify — processPaths beats story terms: a process file mentioning the story stays process (README contract)", () => {
+	assert.equal(
+		classifyResult(
+			mk({
+				title: "Thought log",
+				resourceId: "aB3xYz9",
+				metaFilePath: "/ws/dreaming/thought-log.md",
+				highlights: [{ id: "h", score: 0.9, text: "notes about Hourglass today" }],
+			}),
+			["hourglass"],
+			["dreaming"],
+		),
+		"process",
+	);
+});
+
 test("classify — origin evidence outranks story terms: a conversation echo MENTIONING the story is chatter, not story", () => {
 	// The live 2026-08-24 case: a hot-buffer echo quoting the agent's own
 	// instrument codenames (which sit in storyTerms) classified story-first,
@@ -802,13 +818,18 @@ test("classify — processPaths marks the agent's own synced files as process, c
 	assert.equal(classifyResult(r, []), "curated");
 });
 
-test("classify — story terms still win over process (operator terms are the strongest signal)", () => {
+test("classify — processPaths beats story terms (DECISION REVERSED on #127 review): an operator-marked process file mentioning the story is still process", () => {
+	// The original decision here was the opposite ("story terms win over
+	// process") — reversed by the Entelligence MAJOR on #127: the README
+	// promises processPaths ALWAYS classifies neutral, and agent thought-logs
+	// mention the story constantly, so story-first was a documented laundering
+	// path (the same origin-beats-topic rule as chatter-before-story).
 	const r = mk({
 		resourceId: "ws-abc123",
 		title: "thoughts-log — Omuerta notes",
 		metaFilePath: "/ws/thoughts-log.md",
 	});
-	assert.equal(classifyResult(r, ["omuerta"], ["thoughts-log.md"]), "story");
+	assert.equal(classifyResult(r, ["omuerta"], ["thoughts-log.md"]), "process");
 });
 
 test("scoreResult — process is neutral: no curation boost, full-speed recency decay", () => {

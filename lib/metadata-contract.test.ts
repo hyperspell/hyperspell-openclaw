@@ -24,7 +24,8 @@ import {
  */
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
-const SKIP_DIRS = new Set(["node_modules", "dist", ".git", "docs", "eval"]);
+const SKIP_DIRS = new Set(["node_modules", "dist", ".git"]);
+const SCRIPT_EXTS = [".ts", ".js", ".mjs", ".cjs"];
 
 function sourceFiles(dir: string, acc: string[] = []): string[] {
 	for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -33,7 +34,11 @@ function sourceFiles(dir: string, acc: string[] = []): string[] {
 				continue;
 			sourceFiles(path.join(dir, entry.name), acc);
 		} else if (
-			entry.name.endsWith(".ts") &&
+			// Executable scripts are metadata writers too — the backfill script
+			// stamped openclaw_backfilled and the .ts-only scan never saw it
+			// (Entelligence SCAN_COVERAGE on #127). Markdown/docs prose is
+			// naturally excluded by the extension filter.
+			SCRIPT_EXTS.some((e) => entry.name.endsWith(e)) &&
 			!entry.name.endsWith(".test.ts") &&
 			!entry.name.endsWith(".d.ts")
 		) {
