@@ -19,10 +19,12 @@ type State = {
   relationshipId: string | null
 }
 
-const st = (summary: string): State => ({
+// Settled by default (2h old): the selection policy drops registers inside
+// the 1h settling window as self-echo of the live conversation.
+const st = (summary: string, ageMs = 2 * 60 * 60 * 1000): State => ({
   resourceId: `es-${summary.slice(0, 4)}`,
   summary,
-  extractedAt: new Date().toISOString(),
+  extractedAt: new Date(Date.now() - ageMs).toISOString(),
   sessionId: null,
   relationshipId: "rel-x",
 })
@@ -124,5 +126,18 @@ test("emotional-arc tool — limit is forwarded and clamped to the max", async (
   })
   await tool.execute("call-1", { limit: 999 })
   await tool.execute("call-2", {})
-  assert.deepEqual(seen, [10, 3]) // MAX_ARC_LIMIT clamp; EMOTIONAL_ARC_LIMIT default
+  // Fetch overfetches to the pool floor (post-filter trimming backfills from
+  // older registers); the caller's limit bounds the RESULT, not the fetch.
+  assert.deepEqual(seen, [10, 10])
+})
+
+test("emotional-arc tool — settling window: fresh registers are dropped as live-session echo, older backfill", async () => {
+  const tool = toolWith({
+    async getRecentEmotionalStates() {
+      return [st("Echo of what you just said.", 5 * 60 * 1000), st("Settled register from yesterday.")]
+    },
+  })
+  const text = await runText(tool)
+  assert.doesNotMatch(text, /Echo of what you just said\./)
+  assert.match(text, /Settled register from yesterday\./)
 })

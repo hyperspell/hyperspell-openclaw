@@ -5,8 +5,9 @@ import {
   buildEmotionalContext,
   EMOTIONAL_ARC_LIMIT,
   fetchRecentOrLatest,
-  looksLikeRawTranscript,
+  selectUsableRegisters,
 } from "../hooks/emotional-state.ts"
+import { resolveCurrentSessionId } from "../lib/session.ts"
 import { log } from "../logger.ts"
 
 /** Hard cap so the agent can't ask the backend for an unbounded history. */
@@ -43,12 +44,14 @@ export function createEmotionalArcToolFactory(
       try {
         const states = await fetchRecentOrLatest(client, cfg, limit)
 
-        // Same placeholder filter as the injection path: for ~10s after a
-        // store, the register can be the RAW input transcript (status=pending),
-        // not a distilled feeling. Returning that would pollute tone.
-        const usable = states.filter(
-          (s) => s.summary && !looksLikeRawTranscript(s.summary),
-        )
+        // One shared policy with the injection path (selectUsableRegisters):
+        // placeholder summaries, the settling window (self-echo of the live
+        // conversation), and same-session registers are all dropped here too —
+        // this tool re-fetches the SAME arc mid-session (#76), so a weaker
+        // filter would reopen the self-echo loop the injection path closes.
+        const usable = selectUsableRegisters(states, limit, {
+          currentSessionId: resolveCurrentSessionId(undefined, _ctx),
+        })
 
         if (usable.length === 0) {
           const text =

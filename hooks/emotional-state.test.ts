@@ -1,3 +1,4 @@
+import type { EmotionalStateLatest } from "../client.ts";
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import {
@@ -8,7 +9,8 @@ import {
 	looksLikeRawTranscript,
 	messagesToTranscript,
 	MOOD_WEATHER_COOLDOWN_MS,
-} from "./emotional-state.ts";
+
+	selectUsableRegisters,} from "./emotional-state.ts";
 import { MOOD_TABLE } from "./mood-weather.ts";
 
 type State = {
@@ -785,4 +787,35 @@ test("mood weather — a skipped cron roll does not burn the cross-session coold
 		hasMood(userOut),
 		"the skipped cron roll left the window untouched — the next real conversation can land weather",
 	);
+});
+
+test("selectUsableRegisters — settling window drops live-session echo; fail-open on bad timestamps; same-session dropped; trims to limit", () => {
+	const now = Date.parse("2026-08-24T22:00:00Z");
+	const mk = (over: Partial<EmotionalStateLatest>): EmotionalStateLatest => ({
+		resourceId: "es-x",
+		summary: "Settled, genuine register prose.",
+		extractedAt: "2026-08-24T19:00:00Z", // 3h old — settled
+		sessionId: null,
+		relationshipId: "rel",
+		...over,
+	});
+	const fresh = mk({ resourceId: "es-fresh", extractedAt: "2026-08-24T21:30:00Z" }); // 30m — inside window
+	const settled = mk({ resourceId: "es-old" });
+	const badTs = mk({ resourceId: "es-bad", extractedAt: "not-a-date" });
+	const sameSession = mk({ resourceId: "es-same", sessionId: "sess-1" });
+	const otherSession = mk({ resourceId: "es-other", sessionId: "sess-2" });
+	const placeholder = mk({ resourceId: "es-ph", summary: "user: hello there\nassistant: hi" });
+
+	const out = selectUsableRegisters(
+		[fresh, settled, badTs, sameSession, otherSession, placeholder],
+		10,
+		{ now, currentSessionId: "sess-1" },
+	);
+	assert.deepEqual(
+		out.map((s) => s.resourceId),
+		["es-old", "es-bad", "es-other"],
+		"fresh → dropped (settling); bad timestamp → kept (fail open); same session → dropped; placeholder → dropped",
+	);
+	// Trim: limit bounds the result.
+	assert.equal(selectUsableRegisters([settled, badTs, otherSession], 2, { now }).length, 2);
 });

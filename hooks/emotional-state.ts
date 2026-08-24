@@ -151,6 +151,56 @@ export function looksLikeRawTranscript(summary: string): boolean {
 	);
 }
 
+/**
+ * Settling window: a register younger than this is treated as an echo of the
+ * conversation still in progress, not as relationship history. The register's
+ * job is "how we've BEEN", and the store debounce (3 min) means a live session
+ * writes registers continuously — without this window the arc's most-recent-N
+ * is dominated by the ongoing conversation's own turns, re-narrated back as
+ * emotional truth (the self-echo loop found live 2026-08-24: her last two
+ * messages, paraphrased, injected under a header claiming to be how-we've-been.
+ * The same #42 class auto-context fixed with dropCurrentSession — the
+ * emotional path never had the guard).
+ */
+export const REGISTER_SETTLING_MS = 60 * 60 * 1000;
+
+/** Overfetch floor: the arc renders top-N AFTER filtering, so fetch a wider
+ * pool or an active day filters the arc down to nothing when older genuine
+ * registers were available just past the requested limit. */
+const REGISTER_POOL_MIN = 10;
+
+/**
+ * The single selection policy for injectable registers, shared by the
+ * session-start injection, the on-demand arc tool, and /previewcontext (one
+ * selector so preview stays byte-identical to real injection). Drops:
+ *  - placeholder summaries (raw transcript echoed during/after extraction),
+ *  - registers inside the settling window (self-echo of the live conversation),
+ *  - registers from the CURRENT session when both session ids are known.
+ * Missing/unparseable extractedAt is treated as OLD — never drop legacy rows
+ * on absent data (the codebase-wide fail-open rule).
+ */
+export function selectUsableRegisters(
+	states: EmotionalStateLatest[],
+	limit: number,
+	opts?: { now?: number; currentSessionId?: string },
+): EmotionalStateLatest[] {
+	const now = opts?.now ?? Date.now();
+	return states
+		.filter((s) => s.summary && !looksLikeRawTranscript(s.summary))
+		.filter((s) => {
+			const ts = Date.parse(s.extractedAt ?? "");
+			if (Number.isNaN(ts)) return true; // unknown age — keep (fail open)
+			return now - ts >= REGISTER_SETTLING_MS;
+		})
+		.filter(
+			(s) =>
+				!opts?.currentSessionId ||
+				!s.sessionId ||
+				s.sessionId !== opts.currentSessionId,
+		)
+		.slice(0, limit);
+}
+
 /** Compact relative time for the arc labels (e.g. "just now", "3h ago", "2d ago"). */
 function relativeWhen(iso: string): string {
 	if (!iso) return "";
@@ -184,7 +234,11 @@ export async function fetchRecentOrLatest(
 	// always win outright; only the *default* when no limit is passed may depend
 	// on config (see #68's depth-weighted default) — a model's explicit ask
 	// should never be silently overridden by an unrelated config knob.
-	const fetchLimit = limit ?? EMOTIONAL_ARC_LIMIT;
+	const requested = limit ?? EMOTIONAL_ARC_LIMIT;
+	// Overfetch so post-filter trimming (settling window, placeholders) can
+	// backfill from older genuine registers; callers trim to their limit via
+	// selectUsableRegisters. An explicit caller limit still bounds the RESULT.
+	const fetchLimit = Math.max(requested, REGISTER_POOL_MIN);
 	try {
 		const recent = await client.getRecentEmotionalStates(
 			cfg.relationshipId,
@@ -239,12 +293,11 @@ export function buildEmotionalStateFetchHandler(
 		try {
 			const states = await fetchRecentOrLatest(client, cfg);
 
-			// Drop raw-transcript placeholders: extraction is async, so for ~10s
-			// after a store the register can be the RAW input transcript, not the
-			// distilled feeling. Injecting that is useless and pollutes tone.
-			const usable = states.filter(
-				(s) => s.summary && !looksLikeRawTranscript(s.summary),
-			);
+			// One shared policy (placeholders, settling window, same-session)
+			// — see selectUsableRegisters.
+			const usable = selectUsableRegisters(states, EMOTIONAL_ARC_LIMIT, {
+				currentSessionId: resolveCurrentSessionId(_event, ctx as Record<string, unknown> | undefined),
+			});
 
 			if (usable.length === 0 && states.length > 0) {
 				// State(s) exist but are all still extracting — don't cache, so a
