@@ -727,6 +727,34 @@ test("classify — origin metadata beats the title heuristic: a consolidator-TIT
 	assert.equal(classifyResult(mk({ ...titledEcho, metaSource: "agent_end" }), []), "chatter");
 });
 
+test("classify — origin evidence outranks story terms: a conversation echo MENTIONING the story is chatter, not story", () => {
+	// The live 2026-08-24 case: a hot-buffer echo quoting the agent's own
+	// instrument codenames (which sit in storyTerms) classified story-first,
+	// collected both boosts, and bypassed the chatter quota.
+	const echo = {
+		title: "[A Linea]: notes on the Hourglass run",
+		resourceId: "fccaa5b9-6d65-450c-94c3-a191c5de6f94",
+		metaSpeakerRole: "assistant",
+		highlights: [{ id: "h", score: 0.9, text: "the Hourglass receipt from Run 3" }],
+	};
+	assert.equal(classifyResult(mk(echo), ["hourglass"]), "chatter");
+	// agent_end traces: same rule via metaSource.
+	assert.equal(
+		classifyResult(mk({ ...echo, metaSpeakerRole: null, metaSource: "agent_end" }), ["hourglass"]),
+		"chatter",
+	);
+	// Register rows mentioning story terms stay process, never story.
+	assert.equal(
+		classifyResult(mk({ ...echo, metaSpeakerRole: null, metaSource: "emotional_state" }), ["hourglass"]),
+		"process",
+	);
+	// A genuine story note (no origin tags) is untouched by the reorder.
+	assert.equal(
+		classifyResult(mk({ title: "Hourglass chapter notes", resourceId: "aB3xYz9", highlights: [] }), ["hourglass"]),
+		"story",
+	);
+});
+
 test("classify — agent-authored writes route to process: the agent never holds the curation boost on its own notes", () => {
 	// A titled, non-UUID remember-tool note — pre-2026-08 this classified
 	// curated (+0.2, half-speed decay): the author-blind classifier.

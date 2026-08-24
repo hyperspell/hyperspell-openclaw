@@ -168,7 +168,9 @@ export function baseScore(r: SearchResult): number {
 
 /**
  * Classify a result by what KIND of memory it is — using only fields the search
- * already returns (origin metadata when echoed, else title shape + resource id):
+ * already returns. Evidence order is load-bearing: origin tags (what pipeline
+ * WROTE the row) outrank story terms (what the text MENTIONS), which outrank
+ * title shape. Kinds:
  *  - story:   matches a configured story term (manuscript / its notes & threads)
  *  - chatter: a conversation echo — tagged hot-buffer/agent-end origin, or
  *             untitled/"Unnamed Conversation" AND keyed by a bare session UUID
@@ -185,17 +187,16 @@ export function classifyResult(
 	processPaths: string[] = [],
 ): ResultKind {
 	const title = (r.title ?? "").trim();
-	if (storyTerms.length > 0) {
-		// \n-joined (not space-joined) so a multi-word phrase term can never
-		// spuriously match across the seam of two unrelated highlights (terms are
-		// escaped literals, so a phrase's inner space cannot match the \n).
-		const hay = `${title}\n${r.highlights.map((h) => h.text).join("\n")}`.toLowerCase();
-		if (storyMatchers(storyTerms).some((re) => re.test(hay))) return "story";
-	}
-	// Origin metadata beats the title heuristic: the consolidator can TITLE a
-	// hot-buffer session resource, which would otherwise read as curated and
-	// hand a conversation echo the curation boost. Tag when present is truth;
-	// the shape heuristic below stays as the fallback for legacy/untagged rows.
+	// Origin evidence FIRST — before story terms, before everything. A
+	// conversation echo that MENTIONS the story is a conversation about the
+	// story, not the story: checked story-first, a hot-buffer row quoting a
+	// story term collected storyBoost + curationBoost + half-speed decay and
+	// bypassed the chatter quota entirely (found live 2026-08-24, minutes
+	// after the speaker-role fix deployed — the echoes wore the agent's own
+	// instrument codenames from storyTerms). Same failure class as the title
+	// heuristic below: a weaker signal answering before the stronger one.
+	// Origin tags beat topic; topic beats title shape.
+	//
 	// Speaker-role tags count as conversation-origin too: only hot-buffer
 	// writes and the attribution backfill stamp them, and backfilled rows
 	// carry NO openclaw_source (verified live 2026-08-18).
@@ -206,11 +207,19 @@ export function classifyResult(
 	) {
 		return "chatter";
 	}
-	// Emotional-state snapshots are agent-generated register prose. They live
-	// in a separate backend store today (census 2026-08-24: zero rows in the
-	// memories corpus), so this branch is future-proofing: if the backend ever
-	// indexes that store, the rows classify as process — never curated.
+	// Emotional-state snapshots are agent-generated register prose — origin
+	// evidence again, so also ahead of story. They live in a separate backend
+	// store today (census 2026-08-24: zero rows in the memories corpus), so
+	// this branch is future-proofing: if the backend ever indexes that store,
+	// the rows classify as process — never curated, never story.
 	if (r.metaSource === EMOTIONAL_STATE_SOURCE) return "process";
+	if (storyTerms.length > 0) {
+		// \n-joined (not space-joined) so a multi-word phrase term can never
+		// spuriously match across the seam of two unrelated highlights (terms are
+		// escaped literals, so a phrase's inner space cannot match the \n).
+		const hay = `${title}\n${r.highlights.map((h) => h.text).join("\n")}`.toLowerCase();
+		if (storyMatchers(storyTerms).some((re) => re.test(hay))) return "story";
+	}
 	// Agent-AUTHORED writes (the remember tool, vs the user's /remember
 	// command) score neutral: the curation boost answers "is this trustworthy
 	// about the user," and the agent is the interested party — a self-serving
