@@ -1,4 +1,8 @@
+import type { EmotionalStateLatest } from "../client.ts";
 import { strict as assert } from "node:assert";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { test } from "node:test";
 import {
 	buildEmotionalStateCompactionHandler,
@@ -8,7 +12,11 @@ import {
 	looksLikeRawTranscript,
 	messagesToTranscript,
 	MOOD_WEATHER_COOLDOWN_MS,
-} from "./emotional-state.ts";
+
+	selectUsableRegisters,
+	seedMoodCooldownFromRecords,
+	appendRegisterLedger,
+	REGISTER_LEDGER_NAME,} from "./emotional-state.ts";
 import { MOOD_TABLE } from "./mood-weather.ts";
 
 type State = {
@@ -92,6 +100,31 @@ function makeArcClient(states: State[] | null): {
 const cfg = {
 	relationshipId: "rel-x",
 } as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[1];
+
+test("emotional-state fetch — all registers inside the settling window: no arc injected, session CACHES (no per-turn refetch)", async () => {
+	const fresh = (id: string) => ({
+		resourceId: id,
+		summary: "Genuine but too-fresh register (live-session echo).",
+		extractedAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(), // 5 min old
+		sessionId: null,
+		relationshipId: "rel-x",
+	});
+	const { client } = makeArcClient([fresh("es-1"), fresh("es-2")]);
+	const handler = buildEmotionalStateFetchHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateFetchHandler>[0],
+		cfg,
+	);
+	const ctx = { sessionKey: "session-settling" };
+	const first = await handler({}, ctx);
+	// Nothing usable → no emotional block this session (mood weather may still
+	// ride alone, but with chance 0 default there is none) — and crucially the
+	// session must CACHE: settled-out rows won't change for an hour, so
+	// re-fetching every turn is pure cost (unlike placeholders, which retry).
+	assert.equal(first, undefined);
+	assert.equal(client.recentCalls, 1);
+	await handler({}, ctx);
+	assert.equal(client.recentCalls, 1, "settled-out session must not refetch per turn");
+});
 
 test("emotional-state fetch — injects on first turn, skips on subsequent turns", async () => {
 	const { client } = makeClient("state summary");
@@ -295,8 +328,10 @@ const richMessages = [
 	{ role: "assistant", content: "I'm here. Tell me what happened — take your time." },
 	{ role: "user", content: "the deploy broke and I felt awful, but you always help me feel better" },
 ];
-const storeCfg = (relationshipId: string) =>
-	({ relationshipId }) as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[1];
+const storeCfg = (relationshipId: string, registerSenders: string[] = []) =>
+	({ relationshipId, registerSenders }) as unknown as Parameters<
+		typeof buildEmotionalStateStoreHandler
+	>[1];
 
 test("emotional-state store — skips automated triggers (cron/heartbeat/memory don't count)", async () => {
 	for (const trigger of ["cron", "heartbeat", "memory"]) {
@@ -316,7 +351,7 @@ test("emotional-state store — stores for a real user conversation", async () =
 		client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
 		storeCfg("rel-user-store"),
 	);
-	await handler({ success: true, messages: richMessages }, { trigger: "user" });
+	await handler({ success: true, messages: richMessages }, { trigger: "user", senderId: "sender-david" });
 	assert.equal(stores.length, 1);
 	assert.equal(stores[0].opts.relationshipId, "rel-user-store");
 });
@@ -350,7 +385,7 @@ test("emotional-state store — cron-originated session that becomes a real conv
 	];
 	await handler(
 		{ success: true, messages: grownTranscript },
-		{ sessionKey, trigger: "user" },
+		{ sessionKey, trigger: "user", senderId: "sender-david" },
 	);
 	assert.equal(stores.length, 1, "the human turn of a cron-originated session must store");
 	assert.equal(stores[0].opts.relationshipId, "rel-cron-to-real");
@@ -362,8 +397,34 @@ test("emotional-state store — undefined trigger still stores (don't skip when 
 		client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
 		storeCfg("rel-undef"),
 	);
-	await handler({ success: true, messages: richMessages }, {});
+	await handler({ success: true, messages: richMessages }, { senderId: "sender-david" });
 	assert.equal(stores.length, 1);
+});
+
+test("emotional-state store — sender gate: no resolvable sender never stores (peer/CLI sessions must not write the register)", async () => {
+	const { client, stores } = makeStoreClient();
+	const handler = buildEmotionalStateStoreHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
+		storeCfg("rel-gate"),
+	);
+	// trigger=user but NO senderId — the live corruption case (a peer-agent
+	// review session wrote registers about the reviewer under the couple's id).
+	await handler({ success: true, messages: richMessages }, { trigger: "user", sessionKey: "agent:main:peer-review" });
+	assert.equal(stores.length, 0);
+});
+
+test("emotional-state store — sender gate: registerSenders allowlist blocks unlisted senders, admits listed ones", async () => {
+	const { client, stores } = makeStoreClient();
+	const handler = buildEmotionalStateStoreHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
+		storeCfg("rel-allow", ["sender-david"]),
+	);
+	// A single-speaker guest session: drift detection can't see it; the
+	// allowlist is the only thing that can.
+	await handler({ success: true, messages: richMessages }, { trigger: "user", senderId: "sender-guest", sessionKey: "s-guest" });
+	assert.equal(stores.length, 0, "unlisted sender must not write the register");
+	await handler({ success: true, messages: richMessages }, { trigger: "user", senderId: "sender-david", sessionKey: "s-david" });
+	assert.equal(stores.length, 1, "listed sender stores normally");
 });
 
 test("emotional-state store — debounces repeated stores within the window", async () => {
@@ -372,8 +433,8 @@ test("emotional-state store — debounces repeated stores within the window", as
 		client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
 		storeCfg("rel-debounce"),
 	);
-	await handler({ success: true, messages: richMessages }, { trigger: "user" });
-	await handler({ success: true, messages: richMessages }, { trigger: "user" });
+	await handler({ success: true, messages: richMessages }, { trigger: "user", senderId: "sender-david" });
+	await handler({ success: true, messages: richMessages }, { trigger: "user", senderId: "sender-david" });
 	assert.equal(stores.length, 1, "second store within the debounce window is skipped");
 });
 
@@ -388,7 +449,7 @@ test("emotional-state store — tags metadata with channelId from ctx (#74)", as
 	);
 	await handler(
 		{ success: true, messages: richMessages },
-		{ trigger: "user", channelId: "chan-42" } as never,
+		{ trigger: "user", senderId: "sender-david", channelId: "chan-42" } as never,
 	);
 	assert.equal(stores.length, 1);
 	assert.equal(stores[0].opts.metadata?.source, "openclaw_agent_end");
@@ -403,7 +464,7 @@ test("emotional-state store — resolves channelId from composite sessionKey whe
 	);
 	await handler(
 		{ success: true, messages: richMessages },
-		{ trigger: "user", sessionKey: "agent:main:discord:channel:222" },
+		{ trigger: "user", senderId: "sender-david", sessionKey: "agent:main:discord:channel:222" },
 	);
 	assert.equal(stores.length, 1);
 	assert.equal(stores[0].opts.metadata?.channelId, "222");
@@ -416,7 +477,7 @@ test("emotional-state store — omits channelId when unresolvable, still stores 
 		storeCfg("rel-chan-none"),
 	);
 	// e.g. a manual CLI run: no channelId, sessionKey has no conversation segment.
-	await handler({ success: true, messages: richMessages }, { trigger: "user" });
+	await handler({ success: true, messages: richMessages }, { trigger: "user", senderId: "sender-david" });
 	assert.equal(stores.length, 1);
 	assert.equal(stores[0].opts.metadata?.source, "openclaw_agent_end");
 	assert.equal("channelId" in (stores[0].opts.metadata ?? {}), false, "channelId key must be absent, not empty");
@@ -785,4 +846,97 @@ test("mood weather — a skipped cron roll does not burn the cross-session coold
 		hasMood(userOut),
 		"the skipped cron roll left the window untouched — the next real conversation can land weather",
 	);
+});
+
+test("selectUsableRegisters — settling window drops live-session echo; fail-open on bad timestamps; same-session dropped; trims to limit", () => {
+	const now = Date.parse("2026-08-24T22:00:00Z");
+	const mk = (over: Partial<EmotionalStateLatest>): EmotionalStateLatest => ({
+		resourceId: "es-x",
+		summary: "Settled, genuine register prose.",
+		extractedAt: "2026-08-24T19:00:00Z", // 3h old — settled
+		sessionId: null,
+		relationshipId: "rel",
+		...over,
+	});
+	const fresh = mk({ resourceId: "es-fresh", extractedAt: "2026-08-24T21:30:00Z" }); // 30m — inside window
+	const settled = mk({ resourceId: "es-old" });
+	const badTs = mk({ resourceId: "es-bad", extractedAt: "not-a-date" });
+	const sameSession = mk({ resourceId: "es-same", sessionId: "sess-1" });
+	const otherSession = mk({ resourceId: "es-other", sessionId: "sess-2" });
+	const placeholder = mk({ resourceId: "es-ph", summary: "user: hello there\nassistant: hi" });
+
+	const out = selectUsableRegisters(
+		[fresh, settled, badTs, sameSession, otherSession, placeholder],
+		10,
+		{ now, currentSessionId: "sess-1" },
+	);
+	assert.deepEqual(
+		out.map((s) => s.resourceId),
+		["es-old", "es-bad", "es-other"],
+		"fresh → dropped (settling); bad timestamp → kept (fail open); same session → dropped; placeholder → dropped",
+	);
+	// Trim: limit bounds the result.
+	assert.equal(selectUsableRegisters([settled, badTs, otherSession], 2, { now }).length, 2);
+});
+
+test("seedMoodCooldownFromRecords — seeds from persisted rolls, filters other relationships, idempotent, fail-open on error", async () => {
+	const rec = (rolled_at: string, relationship_id?: string) => ({
+		resourceId: `mw-${rolled_at}`,
+		source: "vault",
+		title: "Mood weather",
+		metadata: { openclaw_source: "mood_weather", rolled_at, ...(relationship_id ? { relationship_id } : {}) },
+	});
+	const mkListClient = (rows: unknown[]) =>
+		({
+			async *listMemories() {
+				for (const r of rows) yield r;
+			},
+		}) as unknown as Parameters<typeof seedMoodCooldownFromRecords>[0];
+
+	// Other-relationship rolls are ignored; the newest matching roll wins;
+	// legacy rows without relationship_id count for the configured one.
+	const seeded = await seedMoodCooldownFromRecords(
+		mkListClient([
+			rec("2026-08-24T20:00:00Z", "someone-else"),
+			rec("2026-08-24T18:00:00Z", "rel-seed"),
+			rec("2026-08-24T19:30:00Z"),
+		]),
+		{ relationshipId: "rel-seed" } as unknown as Parameters<typeof seedMoodCooldownFromRecords>[1],
+	);
+	assert.equal(seeded, Date.parse("2026-08-24T19:30:00Z"));
+
+	// Idempotent per process: second call is a no-op.
+	const again = await seedMoodCooldownFromRecords(
+		mkListClient([rec("2026-08-24T21:00:00Z", "rel-seed")]),
+		{ relationshipId: "rel-seed" } as unknown as Parameters<typeof seedMoodCooldownFromRecords>[1],
+	);
+	assert.equal(again, null);
+
+	// Errors fail open — dice stay eligible, nothing throws.
+	const failed = await seedMoodCooldownFromRecords(
+		({
+			async *listMemories(): AsyncGenerator<never> {
+				throw new Error("backend down");
+			},
+		}) as unknown as Parameters<typeof seedMoodCooldownFromRecords>[0],
+		{ relationshipId: "rel-seed-err" } as unknown as Parameters<typeof seedMoodCooldownFromRecords>[1],
+	);
+	assert.equal(failed, null);
+});
+
+test("appendRegisterLedger — ids-only line per store, never throws on a bad root", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hs-ledger-"));
+	appendRegisterLedger({ resourceId: "es-a1", relationshipId: "rel-x" }, dir);
+	appendRegisterLedger({ resourceId: "es-b2", relationshipId: "rel-x", channelId: "c9" }, dir);
+	const lines = fs
+		.readFileSync(path.join(dir, REGISTER_LEDGER_NAME), "utf8")
+		.trim()
+		.split("\n")
+		.map((l) => JSON.parse(l));
+	assert.equal(lines.length, 2);
+	assert.equal(lines[0].resourceId, "es-a1");
+	assert.equal(lines[1].channelId, "c9");
+	assert.ok(!("summary" in lines[0]), "ids only — never content");
+	// Unwritable root: swallowed, not thrown.
+	appendRegisterLedger({ resourceId: "es-c3" }, "/nonexistent/deeply/bad");
 });

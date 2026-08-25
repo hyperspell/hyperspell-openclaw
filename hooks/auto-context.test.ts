@@ -8,7 +8,14 @@ import type { HyperspellConfig } from "../config.ts"
 import { COVERAGE_LOG_NAME } from "../lib/coverage-log.ts"
 import { DEFAULT_RANKING, type RankedResult } from "../lib/ranking.ts"
 import { initLogger } from "../logger.ts"
-import { buildAutoContextHandler, dropCurrentSession, formatSelected } from "./auto-context.ts"
+import {
+  buildAutoContextCompactionHandler,
+  buildAutoContextHandler,
+  buildAutoContextSessionCleanupHandler,
+  dropCurrentSession,
+  formatSelected,
+} from "./auto-context.ts"
+import { recordSessionWrite } from "../lib/session-writes.ts"
 
 function result(resourceId: string): SearchResult {
   return {
@@ -587,4 +594,64 @@ test("formatSelected — hiFloor composes before the gap: a second failing the f
 test("formatSelected — all highlights below floor still degrade to a skipped section", () => {
   const out = formatSelected([selectedResult("a", 0.9, [0.3, 0.2])], 0.6)
   assert.equal(out, null)
+})
+
+test("repeat suppression — a memory injected once is not re-injected later in the same session; compaction clears; other sessions unaffected", async () => {
+  const pool = [
+    searchResult({
+      resourceId: "mem-repeat",
+      title: "Durable Note",
+      score: 0.9,
+      highlights: [{ id: "h1", text: "the important durable note", score: 0.9 }],
+    }),
+  ]
+  const client = { search: async () => pool } as unknown as HyperspellClient
+  const handler = buildAutoContextHandler(client, makeCfg())
+  const ctx = { sessionKey: "agent:main:discord:channel:rs-1", sessionId: "rs-session-1" }
+
+  const first = (await handler({ prompt: PROMPT }, ctx)) as { prependContext: string } | undefined
+  assert.ok(first?.prependContext.includes("mem-repeat"), "first turn injects")
+
+  const second = await handler({ prompt: PROMPT }, ctx)
+  assert.equal(second, undefined, "same memory must not be re-injected in the same session")
+
+  // A DIFFERENT session is unaffected by session 1's suppression.
+  const other = (await handler(
+    { prompt: PROMPT },
+    { sessionKey: "agent:main:discord:channel:rs-2", sessionId: "rs-session-2" },
+  )) as { prependContext: string } | undefined
+  assert.ok(other?.prependContext.includes("mem-repeat"))
+
+  // Compaction clears: the earlier injection may be gone from history.
+  buildAutoContextCompactionHandler()({}, ctx)
+  const third = (await handler({ prompt: PROMPT }, ctx)) as { prependContext: string } | undefined
+  assert.ok(third?.prependContext.includes("mem-repeat"), "after compaction, re-injection is allowed")
+
+  buildAutoContextSessionCleanupHandler()({}, ctx)
+  buildAutoContextSessionCleanupHandler()({}, { sessionId: "rs-session-2" })
+})
+
+test("repeat suppression — a remember write from THIS session is excluded from retrieval (C3), other sessions still see it", async () => {
+  const pool = [
+    searchResult({
+      resourceId: "mem-just-written",
+      title: "Note I just saved",
+      score: 0.95,
+      highlights: [{ id: "h1", text: "the note the agent just wrote", score: 0.95 }],
+    }),
+  ]
+  const client = { search: async () => pool } as unknown as HyperspellClient
+  const handler = buildAutoContextHandler(client, makeCfg())
+  recordSessionWrite("rw-session-1", "mem-just-written")
+
+  const same = await handler({ prompt: PROMPT }, { sessionId: "rw-session-1" })
+  assert.equal(same, undefined, "own just-written note must not echo back this session")
+
+  const other = (await handler({ prompt: PROMPT }, { sessionId: "rw-session-2" })) as
+    | { prependContext: string }
+    | undefined
+  assert.ok(other?.prependContext.includes("mem-just-written"), "later/other sessions recall it normally")
+
+  buildAutoContextSessionCleanupHandler()({}, { sessionId: "rw-session-1" })
+  buildAutoContextSessionCleanupHandler()({}, { sessionId: "rw-session-2" })
 })

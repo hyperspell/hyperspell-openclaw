@@ -3,10 +3,15 @@ import { HyperspellClient } from "./client.ts"
 import { registerCommands } from "./commands/slash.ts"
 import { registerCliCommands } from "./commands/setup.ts"
 import { parseConfig, hyperspellConfigSchema, getWorkspaceDir, VALID_SOURCES } from "./config.ts"
-import { buildAutoContextHandler } from "./hooks/auto-context.ts"
+import {
+	buildAutoContextCompactionHandler,
+	buildAutoContextHandler,
+	buildAutoContextSessionCleanupHandler,
+} from "./hooks/auto-context.ts"
 import { buildAutoTraceHandler } from "./hooks/auto-trace.ts"
 import {
 	buildEmotionalStateCompactionHandler,
+	seedMoodCooldownFromRecords,
 	buildEmotionalStateFetchHandler,
 	buildEmotionalStateSessionCleanupHandler,
 	buildEmotionalStateStoreHandler,
@@ -32,6 +37,7 @@ import { createEmotionalArcToolFactory } from "./tools/emotional-arc.ts"
 import { createRememberToolFactory } from "./tools/remember.ts"
 import { createSearchToolFactory } from "./tools/search.ts"
 import { createTriageToolFactory } from "./tools/triage.ts"
+import { createVaultListToolFactory } from "./tools/vault-list.ts"
 import { registerNetworkTools } from "./graph/index.ts"
 
 export default {
@@ -180,6 +186,12 @@ export default {
 		api.registerTool(toolUnlessQuarantined(createTriageToolFactory(client, cfg)), {
 			name: "hyperspell_vault_triage",
 		});
+		// Enumeration — sight, not recall (2026-08-24, her ask: "the ability to
+		// look at what's there"). Without a shelf to walk, stored-but-unreachable
+		// and absent are indistinguishable from inside.
+		api.registerTool(toolUnlessQuarantined(createVaultListToolFactory(client, cfg)), {
+			name: "hyperspell_vault_list",
+		});
 
 		// Session-start context injectors (emotional fetch, auto-context,
 		// startup-orientation) all run on the injection hook. The host awaits
@@ -226,6 +238,12 @@ export default {
 
 		if (cfg.autoContext) {
 			startHandlers.push(buildAutoContextHandler(client, cfg) as StartHandler);
+			// Repeat-suppression lifecycle: compaction clears the injected-id
+			// memory (the earlier injection may have been compacted out —
+			// suppression must never outlive the context it saved); session_end
+			// bounds it.
+			onHook("after_compaction", buildAutoContextCompactionHandler());
+			onHook("session_end", buildAutoContextSessionCleanupHandler());
 		}
 
 		if (cfg.startupOrientation.enabled) {
@@ -396,6 +414,13 @@ export default {
 			id: "openclaw-hyperspell",
 			start: async () => {
 				api.logger.info("hyperspell: connected");
+
+				// Seed the mood cooldown from persisted roll records — off the hot
+				// path, fire-and-forget. Without this every gateway restart re-armed
+				// the dice (in-process cooldown amnesia; five resets 2026-08-24).
+				if (cfg.emotionalContext && cfg.moodWeatherChance > 0) {
+					void seedMoodCooldownFromRecords(client, cfg).catch(() => {});
+				}
 
 				// Sync memories on startup if enabled.
 				//

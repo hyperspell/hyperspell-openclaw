@@ -3,7 +3,8 @@ import type { HyperspellConfig } from "../config.ts"
 import {
   buildEmotionalContext,
   fetchRecentOrLatest,
-  looksLikeRawTranscript,
+  selectUsableRegisters,
+  EMOTIONAL_ARC_LIMIT,
 } from "../hooks/emotional-state.ts"
 import { gatherOrientation, personalUserId } from "../hooks/startup-orientation.ts"
 import { isExcludedChannel } from "../lib/exclude-channels.ts"
@@ -38,7 +39,9 @@ export async function buildPreviewReport(
   } else {
     try {
       const states = await fetchRecentOrLatest(client, cfg)
-      const usable = states.filter((s) => s.summary && !looksLikeRawTranscript(s.summary))
+      // Shared policy with real injection (minus same-session: preview runs
+      // outside any session) so the preview stays honest about what would land.
+      const usable = selectUsableRegisters(states, EMOTIONAL_ARC_LIMIT)
       if (usable.length > 0) {
         const pending = states.length - usable.length
         const pendingNote =

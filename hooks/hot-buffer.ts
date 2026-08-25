@@ -168,10 +168,18 @@ export function buildHotBufferHandler(
 		// growing transcript, and (b) scattered a session’s turns across
 		// per-turn resources, so nothing could exclude "the current session"
 		// (issue #42). Prefer ctx.sessionId; keep event/random as fallbacks.
-		const sessionId =
-			(ctx?.sessionId as string) ??
-			(event.sessionId as string) ??
-			crypto.randomUUID();
+		const resolvedSessionId =
+			(ctx?.sessionId as string) ?? (event.sessionId as string);
+		// C5 (2026-08-24): the random fallback silently re-opens the issue-#42
+		// echo — each turn writes under a fresh resource id that dropCurrentSession
+		// can never match. Believed unreachable in practice; if it ever fires, it
+		// must be SEEN, not discovered by its symptoms.
+		if (!resolvedSessionId) {
+			log.warn(
+				"hot-buffer: no session id on ctx OR event — falling back to a random resource id; the current-session echo guard cannot match these rows (issue #42 re-opened for this session)",
+			);
+		}
+		const sessionId = resolvedSessionId ?? crypto.randomUUID();
 		const resourceId = sessionId;
 		// Fall back to disk before assuming "nothing sent yet" — an empty
 		// in-memory entry is ambiguous between "brand new session" and "this

@@ -21,6 +21,7 @@ import {
 } from "../lib/coverage-log.ts"
 import { classifySearchError, logSearchError } from "../lib/search-error.ts"
 import { resolveCurrentSessionId } from "../lib/session.ts"
+import { clearSessionWrites, sessionWrittenIds } from "../lib/session-writes.ts"
 import { recordSender, senderIdFromCtx } from "../lib/speaker-tracker.ts"
 import { log } from "../logger.ts"
 
@@ -237,6 +238,86 @@ function topScoreOf(results: SearchResult[]): number | null {
   return results.length ? Math.max(...results.map((r) => r.score ?? 0)) : null
 }
 
+/**
+ * Per-session memory of resource ids ALREADY INJECTED by auto-context.
+ * Auto-context runs every turn with no repeat suppression, so the same
+ * top-ranked memories recurred turn after turn by construction — the "same
+ * irrelevant items, four consecutive turns" complaint from the 2026-08-24
+ * audit. Once injected, a memory is in the conversation context; injecting
+ * it again spends tokens on what the model can already see.
+ *
+ * Lifecycle mirrors emotional-state's inject-once cache:
+ *  - injection records the selected ids under the session id;
+ *  - after_compaction CLEARS the session (the earlier injection may have
+ *    been compacted out of history — suppressing then would hide memory
+ *    exactly when it was lost);
+ *  - session_end cleans up; a size cap guards hosts that never send it.
+ */
+const injectedResources = new Map<string, Set<string>>();
+const MAX_TRACKED_SESSIONS = 500;
+
+function recordInjected(sessionId: string | undefined, ids: string[]): void {
+  if (!sessionId || ids.length === 0) return;
+  let set = injectedResources.get(sessionId);
+  if (!set) {
+    if (injectedResources.size >= MAX_TRACKED_SESSIONS) {
+      const oldest = injectedResources.keys().next().value;
+      if (oldest !== undefined) injectedResources.delete(oldest);
+    }
+    set = new Set();
+    injectedResources.set(sessionId, set);
+  }
+  for (const id of ids) set.add(id);
+}
+
+/**
+ * Drop results already injected this session, and results WRITTEN this
+ * session via the remember tool (finding C3: a fresh remember id is invisible
+ * to dropCurrentSession and comes straight back, curated-boosted, on the next
+ * turn). Purely subtractive, same contract as dropCurrentSession.
+ */
+export function dropAlreadySurfaced(
+  results: SearchResult[],
+  currentSessionId: string | undefined,
+): SearchResult[] {
+  if (!currentSessionId) return results;
+  const injected = injectedResources.get(currentSessionId);
+  const writtenIds = sessionWrittenIds(currentSessionId);
+  if (!injected?.size && !writtenIds?.size) return results;
+  const kept = results.filter(
+    (r) => !injected?.has(r.resourceId) && !writtenIds?.has(r.resourceId),
+  );
+  const dropped = results.length - kept.length;
+  if (dropped > 0) {
+    log.debug(
+      `auto-context: suppressed ${dropped} result(s) already injected or written this session`,
+    );
+  }
+  return kept;
+}
+
+/** after_compaction: forget what was injected — it may have been compacted
+ * out of history, and suppression must never outlive the context it saved. */
+export function buildAutoContextCompactionHandler() {
+  return (event: Record<string, unknown>, ctx?: Record<string, unknown>) => {
+    const sessionId = resolveCurrentSessionId(event, ctx);
+    if (sessionId && injectedResources.delete(sessionId)) {
+      log.debug("auto-context: compaction — cleared injected-resource memory for session");
+    }
+  };
+}
+
+/** session_end: bound memory. Session-write records go with it. */
+export function buildAutoContextSessionCleanupHandler() {
+  return (event: Record<string, unknown>, ctx?: Record<string, unknown>) => {
+    const sessionId = resolveCurrentSessionId(event, ctx);
+    if (sessionId) {
+      injectedResources.delete(sessionId);
+      clearSessionWrites(sessionId);
+    }
+  };
+}
+
 export function buildAutoContextHandler(
   client: HyperspellClient,
   cfg: HyperspellConfig,
@@ -280,9 +361,13 @@ export function buildAutoContextHandler(
         limit,
         filter: excludeFilterFor(cfg),
       })
-      const results = dropCurrentSession(rawResults, currentSessionId)
+      const results = dropAlreadySurfaced(
+        dropCurrentSession(rawResults, currentSessionId),
+        currentSessionId,
+      )
 
       let formatted: string | null
+      let injectedIds: string[] | undefined
       if (ranking.enabled) {
         const ranked = rerank(results, ranking)
         // Threshold + chatter quota applied here, so a high-similarity echo can
@@ -340,6 +425,7 @@ export function buildAutoContextHandler(
           )
         }
 
+        injectedIds = selected.map((r) => r.resourceId)
         formatted = formatSelected(selected, cfg.relevanceThreshold)
         if (formatted) {
           log.diag(
@@ -378,6 +464,18 @@ export function buildAutoContextHandler(
         }
         return
       }
+      // Remember what landed so later turns spend their budget on NEW memory.
+      // Ranked path records the exact selected ids; the legacy unranked path
+      // approximates with the formatted window (first maxResults above bar).
+      recordInjected(
+        currentSessionId,
+        (injectedIds ?? []).length > 0
+          ? (injectedIds as string[])
+          : results
+              .slice(0, cfg.maxResults)
+              .filter((r) => (r.score ?? 0) >= cfg.relevanceThreshold)
+              .map((r) => r.resourceId),
+      )
       return { prependContext: wrapContext(formatted) }
     } catch (err) {
       // A transient backend throttle (429 / Retry-After) must not be swallowed

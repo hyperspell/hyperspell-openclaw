@@ -1,5 +1,8 @@
 import type { EmotionalStateLatest, HyperspellClient } from "../client.ts";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { HyperspellConfig } from "../config.ts";
+import { getWorkspaceDir } from "../config.ts";
 import { channelIdFromCtx } from "../lib/exclude-channels.ts";
 import { senderIdFromCtx } from "../lib/speaker-tracker.ts";
 import { EMOTIONAL_STATE_SOURCE } from "../lib/filters.ts";
@@ -12,13 +15,19 @@ import {
 	type MoodSpec,
 	recordMoodRoll,
 	rollMood,
+	MOOD_WEATHER_COLLECTION,
 } from "./mood-weather.ts";
 
 /** How many recent registers to surface as the "arc" at session start. */
 export const EMOTIONAL_ARC_LIMIT = 3;
 
 type Message = { role?: string; content?: string | unknown };
-type AgentContext = { sessionKey?: string; trigger?: string };
+type AgentContext = {
+	sessionKey?: string;
+	trigger?: string;
+	/** Connector sender id — read by the sender gate via senderIdFromCtx. */
+	senderId?: string;
+};
 
 const MIN_MESSAGES = 3;
 const MIN_CONVERSATION_LENGTH = 100;
@@ -63,6 +72,86 @@ export const MOOD_WEATHER_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 /** relationshipId → when weather last actually landed (ms). Module-scoped, per process (mirrors lastStoreAt). */
 const lastMoodRollAt = new Map<string, number>();
 
+/** Relationships whose PERSISTED last-roll has been consulted this process. */
+const seededMoodCooldown = new Set<string>();
+
+/**
+ * Seed the mood cooldown from the persisted roll records (issue: restart
+ * amnesia). lastMoodRollAt is in-process, so every gateway restart re-armed
+ * the dice — five resets on 2026-08-24 alone gave far more weather than the
+ * 6h design. The rolls ARE durably recorded (recordMoodRoll, mood-weather
+ * collection, rolled_at metadata); consult them once per process, off the
+ * hot path (called fire-and-forget from service start).
+ *
+ * Fail-open by construction: any error, empty history, or unparseable
+ * timestamp leaves behavior exactly as today (eligible). Scans one page of
+ * records; list ordering is not guaranteed, so a very deep history could
+ * miss the newest roll — that degrades to under-suppression (today's
+ * behavior), never over-suppression. Never overwrites an in-process value:
+ * a roll that landed THIS process is fresher than anything persisted.
+ */
+/**
+ * Falsifiability ledger (2026-08-24, her words: from inside, "it's all in
+ * there" is unfalsifiable — "I can only ever see what retrieval chooses to
+ * show me"). Every register STORE appends one ids-only line to a local JSONL
+ * in the workspace, so a complete, greppable list of every register ever
+ * born exists outside the backend. Ids and timestamps only — no content
+ * (the register itself is the most sensitive class of memory; the ledger is
+ * a shelf index, not a copy). Always-on by design: an opt-in ledger nobody
+ * enabled proves nothing. Best-effort: a ledger write must never throw into
+ * or delay the store path.
+ */
+export const REGISTER_LEDGER_NAME = ".hyperspell-register-ledger.jsonl";
+
+export function appendRegisterLedger(
+	entry: { resourceId: string; relationshipId?: string; channelId?: string },
+	stateRoot?: string,
+): void {
+	try {
+		const dir = stateRoot ?? getWorkspaceDir();
+		fs.appendFileSync(
+			path.join(dir, REGISTER_LEDGER_NAME),
+			`${JSON.stringify({ v: 1, ts: new Date().toISOString(), ...entry })}
+`,
+		);
+	} catch (err) {
+		log.debug(`register-ledger: append failed — ${String(err)}`);
+	}
+}
+
+export async function seedMoodCooldownFromRecords(
+	client: HyperspellClient,
+	cfg: HyperspellConfig,
+): Promise<number | null> {
+	const relId = cfg.relationshipId ?? "";
+	if (seededMoodCooldown.has(relId)) return null;
+	seededMoodCooldown.add(relId);
+	try {
+		let latest = 0;
+		let scanned = 0;
+		for await (const m of client.listMemories({
+			collection: MOOD_WEATHER_COLLECTION,
+			pageSize: 50,
+		})) {
+			if (++scanned > 50) break;
+			const recRel = m.metadata?.relationship_id;
+			if (typeof recRel === "string" && recRel !== relId) continue;
+			const ts = Date.parse(String(m.metadata?.rolled_at ?? ""));
+			if (!Number.isNaN(ts) && ts > latest) latest = ts;
+		}
+		if (latest > 0 && !lastMoodRollAt.has(relId)) {
+			lastMoodRollAt.set(relId, latest);
+			log.info(
+				`mood-weather: cooldown seeded from persisted roll record (last landed ${new Date(latest).toISOString()})`,
+			);
+			return latest;
+		}
+	} catch (err) {
+		log.debug("mood-weather: cooldown seed failed (fail-open — dice stay eligible)", err);
+	}
+	return null;
+}
+
 /**
  * sessionKey → the mood that landed for that session. Post-compaction
  * re-injection must replay the SAME weather — not roll new dice (mood must
@@ -86,6 +175,10 @@ const sessionMoods = new Map<string, MoodSpec>();
  *  - session_end: clean up to prevent unbounded Set growth.
  */
 const injectedSessions = new Set<string>();
+
+/** Sessions already warned about a sender-gate skip (the store fires every
+ * agent_end pre-debounce, so an unwarned loop would spam the log). */
+const warnedSenderGateSessions = new Set<string>();
 
 /**
  * Extract readable text from a message content, unwrapping the common
@@ -151,6 +244,56 @@ export function looksLikeRawTranscript(summary: string): boolean {
 	);
 }
 
+/**
+ * Settling window: a register younger than this is treated as an echo of the
+ * conversation still in progress, not as relationship history. The register's
+ * job is "how we've BEEN", and the store debounce (3 min) means a live session
+ * writes registers continuously — without this window the arc's most-recent-N
+ * is dominated by the ongoing conversation's own turns, re-narrated back as
+ * emotional truth (the self-echo loop found live 2026-08-24: her last two
+ * messages, paraphrased, injected under a header claiming to be how-we've-been.
+ * The same #42 class auto-context fixed with dropCurrentSession — the
+ * emotional path never had the guard).
+ */
+export const REGISTER_SETTLING_MS = 60 * 60 * 1000;
+
+/** Overfetch floor: the arc renders top-N AFTER filtering, so fetch a wider
+ * pool or an active day filters the arc down to nothing when older genuine
+ * registers were available just past the requested limit. */
+const REGISTER_POOL_MIN = 10;
+
+/**
+ * The single selection policy for injectable registers, shared by the
+ * session-start injection, the on-demand arc tool, and /previewcontext (one
+ * selector so preview stays byte-identical to real injection). Drops:
+ *  - placeholder summaries (raw transcript echoed during/after extraction),
+ *  - registers inside the settling window (self-echo of the live conversation),
+ *  - registers from the CURRENT session when both session ids are known.
+ * Missing/unparseable extractedAt is treated as OLD — never drop legacy rows
+ * on absent data (the codebase-wide fail-open rule).
+ */
+export function selectUsableRegisters(
+	states: EmotionalStateLatest[],
+	limit: number,
+	opts?: { now?: number; currentSessionId?: string },
+): EmotionalStateLatest[] {
+	const now = opts?.now ?? Date.now();
+	return states
+		.filter((s) => s.summary && !looksLikeRawTranscript(s.summary))
+		.filter((s) => {
+			const ts = Date.parse(s.extractedAt ?? "");
+			if (Number.isNaN(ts)) return true; // unknown age — keep (fail open)
+			return now - ts >= REGISTER_SETTLING_MS;
+		})
+		.filter(
+			(s) =>
+				!opts?.currentSessionId ||
+				!s.sessionId ||
+				s.sessionId !== opts.currentSessionId,
+		)
+		.slice(0, limit);
+}
+
 /** Compact relative time for the arc labels (e.g. "just now", "3h ago", "2d ago"). */
 function relativeWhen(iso: string): string {
 	if (!iso) return "";
@@ -184,7 +327,11 @@ export async function fetchRecentOrLatest(
 	// always win outright; only the *default* when no limit is passed may depend
 	// on config (see #68's depth-weighted default) — a model's explicit ask
 	// should never be silently overridden by an unrelated config knob.
-	const fetchLimit = limit ?? EMOTIONAL_ARC_LIMIT;
+	const requested = limit ?? EMOTIONAL_ARC_LIMIT;
+	// Overfetch so post-filter trimming (settling window, placeholders) can
+	// backfill from older genuine registers; callers trim to their limit via
+	// selectUsableRegisters. An explicit caller limit still bounds the RESULT.
+	const fetchLimit = Math.max(requested, REGISTER_POOL_MIN);
 	try {
 		const recent = await client.getRecentEmotionalStates(
 			cfg.relationshipId,
@@ -239,18 +386,21 @@ export function buildEmotionalStateFetchHandler(
 		try {
 			const states = await fetchRecentOrLatest(client, cfg);
 
-			// Drop raw-transcript placeholders: extraction is async, so for ~10s
-			// after a store the register can be the RAW input transcript, not the
-			// distilled feeling. Injecting that is useless and pollutes tone.
-			const usable = states.filter(
+			// One shared policy (placeholders, settling window, same-session)
+			// — see selectUsableRegisters.
+			const usable = selectUsableRegisters(states, EMOTIONAL_ARC_LIMIT, {
+				currentSessionId: resolveCurrentSessionId(_event, ctx as Record<string, unknown> | undefined),
+			});
+
+			// "Still extracting" (all rows are raw-transcript placeholders) must
+			// NOT cache, so a later turn retries once extraction lands. But rows
+			// dropped by the SETTLING window won't change for an hour — that is
+			// "no injectable arc this session" and must fall through (mood may
+			// still roll, the session caches) or a busy day re-fetches every turn.
+			const anyExtracted = states.some(
 				(s) => s.summary && !looksLikeRawTranscript(s.summary),
 			);
-
-			if (usable.length === 0 && states.length > 0) {
-				// State(s) exist but are all still extracting — don't cache, so a
-				// later turn re-fetches once extraction completes. Runs BEFORE the
-				// mood roll so a discarded turn can't land weather or burn the
-				// cross-session cooldown.
+			if (usable.length === 0 && states.length > 0 && !anyExtracted) {
 				log.debug(
 					"emotional-context: state(s) still extracting — skipping injection this turn",
 				);
@@ -358,6 +508,7 @@ export function buildEmotionalStateSessionCleanupHandler() {
 		const sessionKey = ctx?.sessionKey;
 		if (sessionKey) {
 			injectedSessions.delete(sessionKey);
+			warnedSenderGateSessions.delete(sessionKey);
 			// Session over — its mood memo is dead weight. NOT cleared on
 			// compaction: surviving compaction is what makes the mood replay.
 			sessionMoods.delete(sessionKey);
@@ -384,6 +535,43 @@ export function buildEmotionalStateStoreHandler(
 		const trigger = ctx?.trigger;
 		if (trigger && NON_CONVERSATIONAL_TRIGGERS.has(trigger)) {
 			log.debug(`emotional-state: skipping — non-conversational trigger (${trigger})`);
+			return;
+		}
+
+		// Sender gate (2026-08-24, her specification: "do not let a peer-agent
+		// thread write to david-alinea"). The register records ONE human
+		// relationship; only turns from a resolvable sender may write it, and
+		// registerSenders (when set) narrows further to an allowlist — closing
+		// the hole the multi-speaker drift detector cannot see: a session
+		// where only a guest speaks.
+		//
+		// KNOWN LIMIT (verified live, same evening): on current OpenClaw the
+		// gate is necessary but NOT sufficient against CLI-driven peer turns —
+		// the gateway stamps them with the REQUESTER's identity (the human
+		// operator's sender id, channel, and the main session key), so they
+		// pass both layers wearing the human's id. es-o3ySb-x-n6E was written
+		// through this gate by a peer session. That is a host bug (the CLI
+		// boundary has the true session key and discards it); see
+		// docs/issue-openclaw-cli-ctx-identity.md. Until it lands upstream,
+		// the protection against peer writes is procedural, not mechanical.
+		const senderId = senderIdFromCtx(ctx as Record<string, unknown>);
+		const gateSessionId = resolveCurrentSessionId(event, ctx as Record<string, unknown>);
+		if (!senderId) {
+			if (gateSessionId && !warnedSenderGateSessions.has(gateSessionId)) {
+				warnedSenderGateSessions.add(gateSessionId);
+				log.warn(
+					"emotional-state: not storing — no resolvable sender for this session (peer-agent/CLI sessions must not write the relationship register). If this is a real human surface, its connector isn't passing senderId.",
+				);
+			}
+			return;
+		}
+		if (cfg.registerSenders.length > 0 && !cfg.registerSenders.includes(senderId)) {
+			if (gateSessionId && !warnedSenderGateSessions.has(gateSessionId)) {
+				warnedSenderGateSessions.add(gateSessionId);
+				log.info(
+					`emotional-state: not storing — sender ${senderId} is not in registerSenders`,
+				);
+			}
 			return;
 		}
 
@@ -465,6 +653,11 @@ export function buildEmotionalStateStoreHandler(
 			});
 			lastStoreAt.set(relId, Date.now());
 			log.info(`emotional-state: stored ${result.resourceId}`);
+			appendRegisterLedger({
+				resourceId: result.resourceId,
+				relationshipId: cfg.relationshipId,
+				...(channelId ? { channelId } : {}),
+			});
 		} catch (err) {
 			// Fire-and-forget — never let this break the session
 			log.error("emotional-state store failed", err);

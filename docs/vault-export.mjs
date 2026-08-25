@@ -46,13 +46,31 @@ const limitIdx = args.indexOf("--limit")
 const LIMIT = limitIdx >= 0 ? Number(args[limitIdx + 1]) : Infinity
 
 const workspace = path.join(os.homedir(), ".openclaw", "workspace")
-const outDir = path.join(workspace, "vault-mirror")
+// --limit runs are SMOKE runs: they must never overwrite the real mirror (a
+// 3-resource smoke overwrote the full 1,270-resource export on 2026-08-24 —
+// a verification action corrupting the artifact it verified). Smoke output
+// goes to sibling -smoke directories, which are disposable.
+const isSmoke = Number.isFinite(LIMIT)
+const outDir = path.join(workspace, isSmoke ? "vault-mirror-smoke" : "vault-mirror")
 // Trace exports are huge (~877 MB observed live) and the workspace repo
 // pushes to GitHub, which hard-rejects files >100 MB — so traces go to a
 // plain directory OUTSIDE the git workspace. Vault (~25 MB) stays inside,
 // riding the daily git backup.
-const archiveDir = path.join(os.homedir(), ".openclaw", "vault-archive")
+const archiveDir = path.join(os.homedir(), ".openclaw", "vault-archive" + (isSmoke ? "-smoke" : ""))
 fs.mkdirSync(outDir, { recursive: true })
+
+// One-generation rotation: NEVER overwrite an output file in place — the
+// previous export survives as .prev until the next successful run replaces
+// it. On 2026-08-24 an in-place overwrite destroyed the only local copy of
+// the 877MB trace archive (a smoke run, before smoke dirs existed). Two
+// copies in different failure domains is the actual rule; this is the
+// script-level floor under it.
+function writeRotated(filePath, contents) {
+	try {
+		if (fs.existsSync(filePath)) fs.renameSync(filePath, `${filePath}.prev`)
+	} catch {}
+	fs.writeFileSync(filePath, contents)
+}
 fs.mkdirSync(archiveDir, { recursive: true })
 
 // Plugin-owned sources only: vault (hot buffer, /remember, synced memory files)
@@ -149,18 +167,40 @@ for (const source of SOURCES) {
 	console.log(`  wrote ${ok}/${items.length} → ${path.basename(outPath)}`)
 }
 
-// Emotional-state register: latest per configured relationship (plus the
-// unscoped latest). GET /emotional-state is the verified endpoint shape.
+// Emotional-state registers: the /recent arc (endpoint max 20) per configured
+// relationship, falling back to the single-latest endpoint where /recent
+// isn't deployed. The old latest-only fetch captured 2 of 20+ registers —
+// the least-covered class of the record was the one that can't be
+// reconstructed from transcripts (found 2026-08-24). CEILING, on the record:
+// /recent caps at 20 by design, so FULL register history is not exportable
+// client-side today — the backend retention rule must not land before a
+// full-history export path exists (see the sequencing note in the roadmap).
 console.log("Fetching emotional states…")
 const states = []
+const seenStateIds = new Set()
 const relIds = [undefined, cfg.relationshipId].filter((v, i, a) => a.indexOf(v) === i)
+const headers = { Authorization: `Bearer ${apiKey}`, ...(userId ? { "X-As-User": userId } : {}) }
 for (const rel of relIds) {
 	try {
+		const recentUrl = new URL(`${API_BASE_URL}/emotional-state/recent`)
+		if (rel) recentUrl.searchParams.set("relationship_id", rel)
+		recentUrl.searchParams.set("limit", "20")
+		const recentRes = await fetch(recentUrl.toString(), { headers })
+		if (recentRes.ok) {
+			const data = await recentRes.json()
+			const list = Array.isArray(data) ? data : (data?.states ?? [])
+			for (const st of list) {
+				const id = st?.resource_id ?? st?.resourceId ?? JSON.stringify(st).slice(0, 40)
+				if (seenStateIds.has(id)) continue
+				seenStateIds.add(id)
+				states.push({ relationship_id: rel ?? null, state: st })
+			}
+			continue
+		}
+		// /recent unavailable — fall back to the single latest (old behavior).
 		const url = new URL(`${API_BASE_URL}/emotional-state`)
 		if (rel) url.searchParams.set("relationship_id", rel)
-		const res = await fetch(url.toString(), {
-			headers: { Authorization: `Bearer ${apiKey}`, ...(userId ? { "X-As-User": userId } : {}) },
-		})
+		const res = await fetch(url.toString(), { headers })
 		if (res.ok) {
 			const data = await res.json()
 			if (data) states.push({ relationship_id: rel ?? null, state: data })
@@ -169,13 +209,13 @@ for (const rel of relIds) {
 		manifest.failures.push({ stage: "emotional-state", relationship_id: rel ?? null, error: String(e).slice(0, 200) })
 	}
 }
-fs.writeFileSync(
+writeRotated(
 	path.join(outDir, "emotional-states.jsonl"),
 	states.map((s) => JSON.stringify(s)).join("\n") + (states.length ? "\n" : ""),
 )
 manifest.emotional_states = states.length
 
-fs.writeFileSync(path.join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2))
+writeRotated(path.join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2))
 
 console.log("\nExport complete:")
 for (const [source, s] of Object.entries(manifest.sources)) {
