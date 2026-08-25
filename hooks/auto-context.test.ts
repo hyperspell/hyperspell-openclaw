@@ -655,3 +655,87 @@ test("repeat suppression — a remember write from THIS session is excluded from
   buildAutoContextSessionCleanupHandler()({}, { sessionId: "rw-session-1" })
   buildAutoContextSessionCleanupHandler()({}, { sessionId: "rw-session-2" })
 })
+
+test("multi-user ranking parity — chatter is penalized and capped per lane, exactly like single-user", async () => {
+	const personal = [
+		searchResult({
+			resourceId: "note-1",
+			title: "Journal — durable note",
+			score: 0.75,
+			highlights: [{ id: "h", text: "quiet true memory", score: 0.75 }],
+		}),
+		// Three high-similarity conversation echoes (speaker-role tagged) — the
+		// old path injected all of them, quota never consulted.
+		...[1, 2, 3].map((i) =>
+			searchResult({
+				resourceId: `${CHATTER_UUID(i)}`,
+				title: `[Dave]: echo ${i}`,
+				metaSpeakerRole: "user",
+				score: 0.95,
+				highlights: [{ id: `h${i}`, text: `echo body ${i}`, score: 0.95 }],
+			}),
+		),
+	]
+	const handler = buildAutoContextHandler(
+		makeLaneClient(personal, []),
+		makeCfg({
+			multiUser: MULTI_USER,
+			ranking: { ...makeCfg().ranking, enabled: true, chatterQuota: 1, chatterPenalty: 0 },
+		}),
+	)
+	const out = (await handler(
+		{ prompt: PROMPT },
+		{ senderId: "dave", sessionId: "mu-rank-1" },
+	)) as { prependContext: string } | undefined
+	assert.ok(out, "injects")
+	const echoes = (out.prependContext.match(/echo body/g) ?? []).length
+	assert.equal(echoes, 1, "chatter quota (1) enforced in the personal lane")
+	assert.match(out.prependContext, /quiet true memory/)
+	buildAutoContextSessionCleanupHandler()({}, { sessionId: "mu-rank-1" })
+})
+
+test("multi-user ranking parity — C6: a null-doc-score row with strong highlights now surfaces", async () => {
+	const personal = [
+		searchResult({
+			resourceId: "consolidated-1",
+			title: "Consolidated session note",
+			score: null as never,
+			highlights: [{ id: "h", text: "the highlight carries the relevance", score: 0.9 }],
+		}),
+	]
+	const handler = buildAutoContextHandler(
+		makeLaneClient(personal, []),
+		makeCfg({ multiUser: MULTI_USER, ranking: { ...makeCfg().ranking, enabled: true } }),
+	)
+	const out = (await handler(
+		{ prompt: PROMPT },
+		{ senderId: "dave", sessionId: "mu-c6-1" },
+	)) as { prependContext: string } | undefined
+	assert.ok(
+		out?.prependContext.includes("the highlight carries the relevance"),
+		"formatHighlightBullets' doc-score gate skipped this row; ranked _base admits it",
+	)
+	buildAutoContextSessionCleanupHandler()({}, { sessionId: "mu-c6-1" })
+})
+
+test("multi-user ranking parity — repeat suppression works across turns in multiUser sessions", async () => {
+	const personal = [
+		searchResult({
+			resourceId: "mu-repeat-note",
+			title: "Durable Note",
+			score: 0.9,
+			highlights: [{ id: "h", text: "important note body", score: 0.9 }],
+		}),
+	]
+	const handler = buildAutoContextHandler(
+		makeLaneClient(personal, []),
+		makeCfg({ multiUser: MULTI_USER, ranking: { ...makeCfg().ranking, enabled: true } }),
+	)
+	const ctx = { senderId: "dave", sessionId: "mu-repeat-1" }
+	const first = (await handler({ prompt: PROMPT }, ctx)) as { prependContext: string } | undefined
+	assert.ok(first?.prependContext.includes("important note body"))
+	const second = (await handler({ prompt: PROMPT }, ctx)) as { prependContext: string } | undefined
+	// Identity preamble may still inject; the MEMORY must not repeat.
+	assert.ok(!second?.prependContext?.includes("important note body"), "no re-injection in-session")
+	buildAutoContextSessionCleanupHandler()({}, ctx)
+})

@@ -488,10 +488,12 @@ export function buildAutoContextHandler(
   }
 }
 
-// Score logging / cut attribution (proposal 02) applies to the ranked
-// single-user path only: this path never runs rerank/explainSelection, so
-// there is no composite score to attribute. If ranking ever lands here, call
-// logScoreSamples with scope "personal" / "shared" per search.
+// Ranking landed here 2026-08-24 (the parity gap flagged by every review
+// that day): each lane runs the same rerank/explainSelection machinery as
+// the single-user path, with per-lane budgets and score-log scopes
+// ("personal"/"shared"). The chatter quota applies PER LANE — a deliberate
+// simplification (worst case 2× quota across both lanes), documented rather
+// than silently split.
 async function multiUserSearch(
   client: HyperspellClient,
   cfg: HyperspellConfig,
@@ -518,10 +520,20 @@ async function multiUserSearch(
     `auto-context: searching for "${prompt.slice(0, 50)}..." user=${resolved?.userId ?? "unknown"} canRead=${JSON.stringify(canRead)}`,
   )
 
+  // Composite ranking parity with the single-user path (the gap flagged in
+  // every 2026-08-24 review: this path never ranked, so multi-user installs
+  // got no chatter quota, no dedup, no authorship routing — and a stricter
+  // admission rule via formatHighlightBullets' doc-score gate). When ranking
+  // is on, fetch a WIDER candidate pool per lane, same rationale as
+  // single-user: quiet-but-true memory must be present to be re-ranked.
+  const ranking = cfg.ranking
+  const pool = (base: number) =>
+    ranking.enabled ? base * ranking.candidateMultiplier : base
+
   // Build parallel searches — personal (known senders only) + shared
   const personalSearch = isKnownSender
     ? client.search(prompt, {
-        limit: cfg.maxResults,
+        limit: pool(cfg.maxResults),
         userId: resolved!.userId,
         filter: excludeFilterFor(cfg),
       })
@@ -534,7 +546,7 @@ async function multiUserSearch(
   const sharedSearch =
     includeShared || !isKnownSender
       ? client.search(prompt, {
-          limit: sharedLimit,
+          limit: pool(sharedLimit),
           userId: multiUser.sharedUserId,
           filter: mergeWithExclude(scopeFilter, cfg),
         })
@@ -561,7 +573,10 @@ async function multiUserSearch(
     if (r.status === "fulfilled") {
       personalOk = true
       rawPersonalCount = r.value.length
-      personalResults = dropCurrentSession(r.value, currentSessionId)
+      personalResults = dropAlreadySurfaced(
+        dropCurrentSession(r.value, currentSessionId),
+        currentSessionId,
+      )
     } else {
       logSearchError(
         log,
@@ -576,7 +591,10 @@ async function multiUserSearch(
     if (r.status === "fulfilled") {
       sharedOk = true
       rawSharedCount = r.value.length
-      sharedResults = dropCurrentSession(r.value, currentSessionId)
+      sharedResults = dropAlreadySurfaced(
+        dropCurrentSession(r.value, currentSessionId),
+        currentSessionId,
+      )
     } else {
       logSearchError(
         log,
@@ -588,6 +606,55 @@ async function multiUserSearch(
   }
 
   const sections: string[] = []
+  const laneInjectedIds: string[] = []
+
+  // One selection policy per lane, sharing the single-user machinery. Lanes
+  // keep their own budgets and their own wrappers (scoping semantics), but a
+  // multi-user install now gets the same composite ranking, chatter quota
+  // (per lane), near-duplicate dedup, per-file cap, elbow, and score logging
+  // as single-user. formatSelected also closes C6: a null-doc-score row whose
+  // relevance arrives via highlights ranks on _base instead of being silently
+  // skipped by formatHighlightBullets' doc-score gate.
+  const rankLane = (
+    laneResults: SearchResult[],
+    laneLimit: number,
+    scope: "personal" | "shared",
+  ): string | null => {
+    if (!ranking.enabled) {
+      const formatted = formatHighlightBullets(
+        laneResults,
+        laneLimit,
+        cfg.relevanceThreshold,
+      )
+      if (formatted) {
+        laneInjectedIds.push(
+          ...laneResults
+            .slice(0, laneLimit)
+            .filter((r) => (r.score ?? 0) >= cfg.relevanceThreshold)
+            .map((r) => r.resourceId),
+        )
+      }
+      return formatted
+    }
+    const ranked = rerank(laneResults, ranking)
+    const explained = explainSelection(
+      ranked,
+      laneLimit,
+      cfg.relevanceThreshold,
+      ranking.chatterQuota,
+      ranking.dedupThreshold,
+      ranking.elbow,
+      ranking.perFileCap,
+    )
+    logScoreSamples(prompt, currentSessionId, scope, explained, cfg.relevanceThreshold)
+    const selected = explained.filter((e) => e.selected).map((e) => e.result)
+    log.diag(
+      `auto-context[${scope}]: ranked ${JSON.stringify(kindTally(ranked))} → selected ${JSON.stringify(kindTally(selected))} (chatter cap ${ranking.chatterQuota})`,
+    )
+    const formatted = formatSelected(selected, cfg.relevanceThreshold)
+    if (formatted) laneInjectedIds.push(...selected.map((r) => r.resourceId))
+    return formatted
+  }
 
   // User identity preamble
   if (isKnownSender && resolved) {
@@ -597,11 +664,7 @@ async function multiUserSearch(
 
   // Personal section (threshold-filtered per PR #11/#12 format)
   if (isKnownSender && personalResults.length > 0 && resolved) {
-    const formatted = formatHighlightBullets(
-      personalResults,
-      cfg.maxResults,
-      cfg.relevanceThreshold,
-    )
+    const formatted = rankLane(personalResults, cfg.maxResults, "personal")
     if (formatted) {
       sections.push(
         `<personal-context>\nMemories from ${resolved.name}'s personal sources and history.\n\n${formatted}\n</personal-context>`,
@@ -614,11 +677,7 @@ async function multiUserSearch(
     const sharedDisplayLimit = isKnownSender
       ? Math.ceil(cfg.maxResults / 2)
       : cfg.maxResults
-    const formatted = formatHighlightBullets(
-      sharedResults,
-      sharedDisplayLimit,
-      cfg.relevanceThreshold,
-    )
+    const formatted = rankLane(sharedResults, sharedDisplayLimit, "shared")
     if (formatted) {
       sections.push(
         `<shared-context>\nShared memories available to all users.\n\n${formatted}\n</shared-context>`,
@@ -696,6 +755,10 @@ async function multiUserSearch(
   log.debug(
     `auto-context: injecting ${totalCount} memories (${personalResults.length} personal, ${sharedResults.length} shared)`,
   )
+
+  // Same repeat-suppression contract as single-user: what landed is
+  // remembered per session so later turns spend the budget on NEW memory.
+  recordInjected(currentSessionId, laneInjectedIds)
 
   return {
     prependContext: `<hyperspell-context>\n${sections.join("\n\n")}\n\n${AUTHORITY_GUARD}\n\n${DISCLAIMER}\n</hyperspell-context>`,
