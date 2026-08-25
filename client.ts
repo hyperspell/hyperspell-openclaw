@@ -78,6 +78,9 @@ export type EmotionalStateResponse = {
   resourceId: string
   summary: string
   extractedAt: string
+  /** See EmotionalStateLatest.summarySource. At store time this is
+   * "placeholder" by construction once hyperspell #3364 deploys. */
+  summarySource: "placeholder" | "extracted" | "unknown" | null
   sessionId: string | null
   relationshipId: string | null
   status: string
@@ -89,6 +92,15 @@ export type EmotionalStateLatest = {
   extractedAt: string
   sessionId: string | null
   relationshipId: string | null
+  /**
+   * Backend-authoritative provenance of `summary` (hyperspell PR #3364):
+   * "placeholder" = store-time transcript slice (extraction pending or
+   * yielded no mood memory); "extracted" = the LLM register; "unknown" =
+   * legacy row, could be either. Null until the backend deploys the field —
+   * callers fall back to the looksLikeRawTranscript heuristic. First-class
+   * on the response, so NOT gated on the metadata-echo issue (#116).
+   */
+  summarySource: "placeholder" | "extracted" | "unknown" | null
   /**
    * Echo of store-time metadata — Postmark's `channelId` (#74), future depth
    * signals (#68). Absent until the backend echoes stored metadata on
@@ -811,6 +823,12 @@ export class HyperspellClient {
 			resourceId: data.resource_id,
 			summary: data.summary,
 			extractedAt: data.extracted_at,
+			summarySource:
+				data.summary_source === "placeholder" ||
+				data.summary_source === "extracted" ||
+				data.summary_source === "unknown"
+					? data.summary_source
+					: null,
 			sessionId: data.session_id ?? null,
 			relationshipId: data.relationship_id ?? null,
 			status: data.status,
@@ -846,6 +864,12 @@ export class HyperspellClient {
 			resourceId: data.resource_id,
 			summary: data.summary,
 			extractedAt: data.extracted_at,
+			summarySource:
+				data.summary_source === "placeholder" ||
+				data.summary_source === "extracted" ||
+				data.summary_source === "unknown"
+					? data.summary_source
+					: null,
 			sessionId: data.session_id ?? null,
 			relationshipId: data.relationship_id ?? null,
 			// Metadata echo maps through only when present and object-shaped —
@@ -895,6 +919,12 @@ export class HyperspellClient {
 			resourceId: d.resource_id as string,
 			summary: (d.summary as string) ?? "",
 			extractedAt: (d.extracted_at as string) ?? "",
+			summarySource:
+				d.summary_source === "placeholder" ||
+				d.summary_source === "extracted" ||
+				d.summary_source === "unknown"
+					? d.summary_source
+					: null,
 			sessionId: (d.session_id as string | null) ?? null,
 			relationshipId: (d.relationship_id as string | null) ?? null,
 			// Same conditional echo as getEmotionalState — see the note there.

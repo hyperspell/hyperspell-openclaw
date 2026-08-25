@@ -856,6 +856,7 @@ test("selectUsableRegisters — settling window drops live-session echo; fail-op
 		extractedAt: "2026-08-24T19:00:00Z", // 3h old — settled
 		sessionId: null,
 		relationshipId: "rel",
+		summarySource: null,
 		...over,
 	});
 	const fresh = mk({ resourceId: "es-fresh", extractedAt: "2026-08-24T21:30:00Z" }); // 30m — inside window
@@ -939,4 +940,29 @@ test("appendRegisterLedger — ids-only line per store, never throws on a bad ro
 	assert.ok(!("summary" in lines[0]), "ids only — never content");
 	// Unwritable root: swallowed, not thrown.
 	appendRegisterLedger({ resourceId: "es-c3" }, "/nonexistent/deeply/bad");
+});
+
+test("selectUsableRegisters — summary_source is authoritative when present; heuristic only for legacy", () => {
+	const now = Date.parse("2026-08-25T22:00:00Z");
+	const mk = (over: Partial<EmotionalStateLatest>): EmotionalStateLatest => ({
+		resourceId: "es-x",
+		summary: "Settled register prose.",
+		extractedAt: "2026-08-25T19:00:00Z",
+		sessionId: null,
+		relationshipId: "rel",
+		summarySource: null,
+		...over,
+	});
+	// Flagged placeholder: dropped even though the shape heuristic would pass it.
+	const flaggedPh = mk({ resourceId: "es-ph", summary: "Reads like normal prose.", summarySource: "placeholder" });
+	// Flagged extracted: kept even though it QUOTES dialogue (heuristic would drop it).
+	const quoting = mk({
+		resourceId: "es-quote",
+		summary: 'The moment that mattered: user: "stay" — and the register shifted.',
+		summarySource: "extracted",
+	});
+	// Legacy transcript-shaped: heuristic still catches it.
+	const legacyPh = mk({ resourceId: "es-legacy", summary: "user: hello\nassistant: hi", summarySource: "unknown" });
+	const out = selectUsableRegisters([flaggedPh, quoting, legacyPh], 10, { now });
+	assert.deepEqual(out.map((s) => s.resourceId), ["es-quote"]);
 });

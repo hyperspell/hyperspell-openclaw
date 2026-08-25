@@ -279,7 +279,17 @@ export function selectUsableRegisters(
 ): EmotionalStateLatest[] {
 	const now = opts?.now ?? Date.now();
 	return states
-		.filter((s) => s.summary && !looksLikeRawTranscript(s.summary))
+		.filter((s) => {
+			if (!s.summary) return false;
+			// Backend-authoritative provenance when present (hyperspell #3364):
+			// "placeholder" is a raw transcript slice regardless of shape, and
+			// "extracted" is the genuine register even when it QUOTES dialogue
+			// (the heuristic would false-positive on that). Legacy/pre-deploy
+			// rows (null/"unknown") keep the shape heuristic.
+			if (s.summarySource === "placeholder") return false;
+			if (s.summarySource === "extracted") return true;
+			return !looksLikeRawTranscript(s.summary);
+		})
 		.filter((s) => {
 			const ts = Date.parse(s.extractedAt ?? "");
 			if (Number.isNaN(ts)) return true; // unknown age — keep (fail open)
@@ -398,7 +408,10 @@ export function buildEmotionalStateFetchHandler(
 			// "no injectable arc this session" and must fall through (mood may
 			// still roll, the session caches) or a busy day re-fetches every turn.
 			const anyExtracted = states.some(
-				(s) => s.summary && !looksLikeRawTranscript(s.summary),
+				(s) =>
+					s.summary &&
+					s.summarySource !== "placeholder" &&
+					(s.summarySource === "extracted" || !looksLikeRawTranscript(s.summary)),
 			);
 			if (usable.length === 0 && states.length > 0 && !anyExtracted) {
 				log.debug(
