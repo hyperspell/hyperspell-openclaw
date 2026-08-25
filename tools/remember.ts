@@ -132,6 +132,12 @@ export function createRememberToolFactory(
           collection,
           metadata: {
             source: "openclaw_tool",
+            // Authorship stamp (2026-08-24): this tool is the AGENT writing.
+            // Ranking routes agent-authored rows to the neutral process kind —
+            // the agent must never hold the curation boost on its own notes.
+            // Legacy rows lack the stamp; client.writerOf falls back to the
+            // source surface tag above, which has been written since January.
+            openclaw_writer: "agent",
             ...(channelId ? { openclaw_channel_id: channelId } : {}),
           },
           userId,

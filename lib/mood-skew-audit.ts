@@ -201,6 +201,7 @@ export function bucketSource(metadata: Record<string, unknown>): SourceBucket {
 	if (src === "command") return "command";
 	if (src === "memory_sync" || src === "memory_sync_section")
 		return "memory_sync";
+	if (src === "emotional_state") return "emotional_state";
 	if (metadata.source === "openclaw_agent_end") return "emotional_state";
 	return "other";
 }

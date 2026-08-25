@@ -29,6 +29,10 @@ function make(over: Partial<SearchResult> & { resourceId: string }): SearchResul
 		score: null,
 		url: null,
 		createdAt: FIXED_CREATED_AT,
+		metaSource: null,
+		metaSpeakerRole: null,
+		metaFilePath: null,
+		metaWriter: null,
 		highlights: [],
 		...over,
 	};

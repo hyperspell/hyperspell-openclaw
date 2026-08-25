@@ -120,6 +120,10 @@ function makeSearchResult(partial: Partial<SearchResult>): SearchResult {
 		source: "trace",
 		score: 0.6,
 		url: null,
+		metaSource: null,
+		metaSpeakerRole: null,
+		metaFilePath: null,
+		metaWriter: null,
 		createdAt: new Date().toISOString(),
 		highlights: [{ id: "h1", score: 0.5, text: "open thread text" }],
 		...partial,
@@ -246,7 +250,7 @@ test("startup-orientation — list call passes source:trace and userId", async (
 test("startup-orientation — neither hot-buffer nor auto-trace: skips recent fetch (perf), still runs loops", async () => {
 	// No session record source available → nothing to fetch, and the trace-source
 	// list is expensive (~12s + failures observed live), so skip it entirely.
-	const client = makeClient({ traces: [makeTrace({})], loops: [{ resourceId: "r", title: "t", source: "vault", score: 0.9, url: null, createdAt: null, highlights: [] }] });
+	const client = makeClient({ traces: [makeTrace({})], loops: [{ resourceId: "r", title: "t", source: "vault", score: 0.9, url: null, createdAt: null, metaSource: null, metaSpeakerRole: null, metaFilePath: null, metaWriter: null, highlights: [] }] });
 	const handler = buildStartupOrientationHandler(
 		client as unknown as HyperspellClient,
 		makeCfg({

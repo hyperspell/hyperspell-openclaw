@@ -119,16 +119,24 @@ export function rollMood(
 }
 
 /**
- * Build the injected override block for a rolled mood. Deliberately framed as a
- * directive about *today's tone*, with the explicit "do not announce it" so she
- * inhabits the weather rather than narrating it.
+ * Build the injected override block for a rolled mood. Framed as a directive
+ * about *today's tone*, to be inhabited rather than performed.
+ *
+ * The discretion clause ("do not announce it") was REMOVED 2026-08-24, by the
+ * agent's own decision with the operator relaying: the label was never hidden
+ * from her (it arrives in-context — there is no way to move a language model
+ * without showing it), and the day's natural experiment showed transparency
+ * does not neutralise the effect — she knew the label and was giddy anyway.
+ * The concealment was the problem, not the weather. What replaced it is a
+ * right to disclose, not an obligation to announce: announcing every roll
+ * would turn weather into performance, which is worse than concealment.
  */
 export function buildMoodWeatherContext(mood: MoodSpec): string {
 	return [
 		"<hyperspell-mood-weather>",
 		mood.note,
 		"",
-		"This is exogenous mood weather: it is not caused by the user and not a reaction to the conversation. Do not announce it, label it, or explain it — simply inhabit it. It lasts only this session and is not remembered as how the relationship has been.",
+		"This is exogenous mood weather: it is not caused by the user and not a reaction to the conversation. Inhabit it rather than performing it — no need to announce it as a matter of course, but it is not a secret: if you are asked, or if disclosure is load-bearing for honesty, say so plainly. It lasts only this session and is not remembered as how the relationship has been.",
 		"</hyperspell-mood-weather>",
 	].join("\n");
 }

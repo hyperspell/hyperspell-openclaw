@@ -8,6 +8,7 @@
 		"tools": [
 			"hyperspell_search",
 			"hyperspell_remember",
+			"hyperspell_vault_triage",
 			"hyperspell_emotional_arc",
 			"hyperspell_network_scan",
 			"hyperspell_network_write",
@@ -82,7 +83,7 @@
 		},
 		"ranking": {
 			"label": "Composite Ranking",
-			"help": "Rank memories by more than raw relevance: boost curated memory and the active story, penalize auto-saved conversation fragments. Set storyTerms to 3-15 distinctive names/terms of the active thread (characters, codenames, invented words; matched case-insensitively at word boundaries) so it outranks chatter; update the list when the active story changes. Old results accrue a small bounded recency penalty (half-life recencyHalfLifeDays, cap recencyMaxPenalty; kept memory ages at recencyCuratedFactor); recencyHalfLifeDays 0 disables it. { enabled, storyTerms, curationBoost, storyBoost, chatterPenalty, candidateMultiplier, chatterQuota, recencyHalfLifeDays, recencyMaxPenalty, recencyCuratedFactor, sourceWeights, dedupThreshold, elbow }",
+			"help": "Rank memories by more than raw relevance: boost curated memory and the active story, penalize auto-saved conversation fragments. Set storyTerms to 3-15 distinctive names/terms of the active thread (characters, codenames, invented words; matched case-insensitively at word boundaries) so it outranks chatter; update the list when the active story changes. Old results accrue a small bounded recency penalty (half-life recencyHalfLifeDays, cap recencyMaxPenalty; kept memory ages at recencyCuratedFactor); recencyHalfLifeDays 0 disables it. Set processPaths to mark the agent's own synced process files (thought logs, caches) so they score neutral instead of curated; perFileCap bounds how many sections of one file can be injected. { enabled, storyTerms, curationBoost, storyBoost, chatterPenalty, candidateMultiplier, chatterQuota, recencyHalfLifeDays, recencyMaxPenalty, recencyCuratedFactor, sourceWeights, dedupThreshold, processPaths, perFileCap, elbow }",
 			"advanced": true
 		},
 		"coverageLog": {
@@ -204,6 +205,17 @@
 					"recencyMaxPenalty": { "type": "number", "minimum": 0, "maximum": 1 },
 					"recencyCuratedFactor": { "type": "number", "minimum": 0, "maximum": 1 },
 					"dedupThreshold": { "type": "number", "minimum": 0, "maximum": 1 },
+					"processPaths": {
+						"type": "array",
+						"items": { "type": "string" },
+						"description": "Case-insensitive path substrings marking synced files as agent process output (thought logs, caches, heartbeat notes). Matches classify as 'process' and score neutral — no curation boost, full-speed recency decay — instead of being promoted as curated user truth."
+					},
+					"perFileCap": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 20,
+						"description": "Max injected results per synced source file. A sectionized file surfaces as many sibling candidates at near-identical scores; this stops one document from monopolizing the injection pool. 0 disables (default: 2)."
+					},
 					"elbow": {
 						"type": "object",
 						"additionalProperties": false,

@@ -149,7 +149,10 @@ export function registerCommands(
 
       try {
         await client.addMemory(text, {
-          metadata: { source: "openclaw_command" },
+          // openclaw_writer: the /remember COMMAND is the USER writing —
+          // these rows keep the curation boost (vs the agent's tool writes,
+          // routed to process). Paired stamp; see tools/remember.ts.
+          metadata: { source: "openclaw_command", openclaw_writer: "user" },
           collection,
           userId,
           scope: scopingEnabled ? scope : undefined,

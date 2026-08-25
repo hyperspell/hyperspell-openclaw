@@ -86,6 +86,7 @@ export function runCase(c: EvalCase): CaseResult {
 		c.weights.chatterQuota,
 		c.weights.dedupThreshold,
 		c.weights.elbow,
+		c.weights.perFileCap,
 	);
 	const ids = selected.map((r) => r.resourceId);
 

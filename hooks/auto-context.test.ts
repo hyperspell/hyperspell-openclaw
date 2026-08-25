@@ -18,6 +18,10 @@ function result(resourceId: string): SearchResult {
     score: 0.9,
     url: null,
     createdAt: null,
+    metaSource: null,
+    metaSpeakerRole: null,
+    metaFilePath: null,
+    metaWriter: null,
     highlights: [],
   }
 }
@@ -103,6 +107,10 @@ function searchResult(over: Partial<SearchResult>): SearchResult {
     score: null,
     url: null,
     createdAt: null,
+    metaSource: null,
+    metaSpeakerRole: null,
+    metaFilePath: null,
+    metaWriter: null,
     highlights: [],
     ...over,
   }

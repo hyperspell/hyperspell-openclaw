@@ -21,6 +21,10 @@ const mk = (over: Partial<SearchResult>): SearchResult => ({
 	score: null,
 	url: null,
 	createdAt: null,
+	metaSource: null,
+	metaSpeakerRole: null,
+	metaFilePath: null,
+	metaWriter: null,
 	highlights: [],
 	...over,
 });
@@ -707,4 +711,223 @@ test("selectRanked — elbow disabled or omitted: behavior identical to today", 
 	assert.deepEqual(selectRanked(list, 10, 0.4, 2, 0, { ...ELBOW, enabled: false }), plain);
 	assert.deepEqual(selectRanked(list, 10, 0.4, 2, 0, DEFAULT_ELBOW), plain, "shipped default is off");
 	assert.equal(plain.length, 4);
+});
+
+// ---- origin-aware classification + per-file diversity (scale report 2026-08-18) ----
+
+test("classify — origin metadata beats the title heuristic: a consolidator-TITLED hot-buffer resource is still chatter", () => {
+	// Titled + non-UUID id would read curated under the shape heuristic — the
+	// exact loophole that hands conversation echoes the curation boost.
+	const titledEcho = mk({
+		resourceId: "consolidated-session-77",
+		title: "Tuesday planning chat",
+		metaSource: "hot_buffer",
+	});
+	assert.equal(classifyResult(titledEcho, []), "chatter");
+	assert.equal(classifyResult(mk({ ...titledEcho, metaSource: "agent_end" }), []), "chatter");
+});
+
+test("classify — processPaths beats story terms: a process file mentioning the story stays process (README contract)", () => {
+	assert.equal(
+		classifyResult(
+			mk({
+				title: "Thought log",
+				resourceId: "aB3xYz9",
+				metaFilePath: "/ws/dreaming/thought-log.md",
+				highlights: [{ id: "h", score: 0.9, text: "notes about Hourglass today" }],
+			}),
+			["hourglass"],
+			["dreaming"],
+		),
+		"process",
+	);
+});
+
+test("classify — origin evidence outranks story terms: a conversation echo MENTIONING the story is chatter, not story", () => {
+	// The live 2026-08-24 case: a hot-buffer echo quoting the agent's own
+	// instrument codenames (which sit in storyTerms) classified story-first,
+	// collected both boosts, and bypassed the chatter quota.
+	const echo = {
+		title: "[A Linea]: notes on the Hourglass run",
+		resourceId: "fccaa5b9-6d65-450c-94c3-a191c5de6f94",
+		metaSpeakerRole: "assistant",
+		highlights: [{ id: "h", score: 0.9, text: "the Hourglass receipt from Run 3" }],
+	};
+	assert.equal(classifyResult(mk(echo), ["hourglass"]), "chatter");
+	// agent_end traces: same rule via metaSource.
+	assert.equal(
+		classifyResult(mk({ ...echo, metaSpeakerRole: null, metaSource: "agent_end" }), ["hourglass"]),
+		"chatter",
+	);
+	// Register rows mentioning story terms stay process, never story.
+	assert.equal(
+		classifyResult(mk({ ...echo, metaSpeakerRole: null, metaSource: "emotional_state" }), ["hourglass"]),
+		"process",
+	);
+	// A genuine story note (no origin tags) is untouched by the reorder.
+	assert.equal(
+		classifyResult(mk({ title: "Hourglass chapter notes", resourceId: "aB3xYz9", highlights: [] }), ["hourglass"]),
+		"story",
+	);
+});
+
+test("classify — agent-authored writes route to process: the agent never holds the curation boost on its own notes", () => {
+	// A titled, non-UUID remember-tool note — pre-2026-08 this classified
+	// curated (+0.2, half-speed decay): the author-blind classifier.
+	const agentNote = { title: "Plugin deploy checklist", resourceId: "aB3xYz9", metaWriter: "agent" as const };
+	assert.equal(classifyResult(mk(agentNote), []), "process");
+	// The user's /remember writes KEEP the boost.
+	assert.equal(classifyResult(mk({ ...agentNote, metaWriter: "user" }), []), "curated");
+	// Unstamped legacy rows fail OPEN to the title heuristic — never punish
+	// missing data (same rule as recencyPenalty and sourceWeight).
+	assert.equal(classifyResult(mk({ ...agentNote, metaWriter: null }), []), "curated");
+});
+
+test("classify — authorship routing yields to stronger evidence: story and chatter outrank the writer stamp", () => {
+	// Story match wins regardless of writer (deliberate: storyTerms protect
+	// the manuscript; flagged for the tuning window, not changed here).
+	assert.equal(
+		classifyResult(mk({ title: "Mira notes", resourceId: "aB3xYz9", metaWriter: "agent" }), ["mira"]),
+		"story",
+	);
+	// Conversation-origin evidence wins: an agent-writer row tagged hot_buffer
+	// is chatter (penalized), not process (neutral).
+	assert.equal(
+		classifyResult(mk({ title: "t", resourceId: "aB3xYz9", metaWriter: "agent", metaSource: "hot_buffer" }), []),
+		"chatter",
+	);
+});
+
+test("classify — emotional_state origin tag routes to process (C1 future-proofing: register prose must never classify curated if the backend ever indexes that store)", () => {
+	assert.equal(
+		classifyResult(mk({ title: "Register: warm, tired", resourceId: "aB3xYz9", metaSource: "emotional_state" }), []),
+		"process",
+	);
+});
+
+test("classify — processPaths marks the agent's own synced files as process, case-insensitively", () => {
+	const r = mk({
+		resourceId: "ws-abc123",
+		title: "thoughts-log — part 33",
+		metaSource: "memory_sync_section",
+		metaFilePath: "/Users/x/workspace/Thoughts-Log.md",
+	});
+	assert.equal(classifyResult(r, [], ["thoughts-log.md"]), "process");
+	// Same result without the config match stays curated (titled, non-UUID).
+	assert.equal(classifyResult(r, [], ["brainstem/"]), "curated");
+	assert.equal(classifyResult(r, []), "curated");
+});
+
+test("classify — processPaths beats story terms (DECISION REVERSED on #127 review): an operator-marked process file mentioning the story is still process", () => {
+	// The original decision here was the opposite ("story terms win over
+	// process") — reversed by the Entelligence MAJOR on #127: the README
+	// promises processPaths ALWAYS classifies neutral, and agent thought-logs
+	// mention the story constantly, so story-first was a documented laundering
+	// path (the same origin-beats-topic rule as chatter-before-story).
+	const r = mk({
+		resourceId: "ws-abc123",
+		title: "thoughts-log — Omuerta notes",
+		metaFilePath: "/ws/thoughts-log.md",
+	});
+	assert.equal(classifyResult(r, ["omuerta"], ["thoughts-log.md"]), "process");
+});
+
+test("scoreResult — process is neutral: no curation boost, full-speed recency decay", () => {
+	const now = Date.parse("2026-08-18T00:00:00Z");
+	const old = "2026-02-18T00:00:00Z"; // ~183 days: two half-lives at the default 90
+	const w = { ...DEFAULT_RANKING, processPaths: ["thoughts-log.md"] };
+	const curated = scoreResult(
+		mk({ resourceId: "note-1", title: "Journal", score: 0.8, createdAt: old }),
+		w,
+		now,
+	);
+	const process = scoreResult(
+		mk({
+			resourceId: "ws-1",
+			title: "thoughts-log — part 33",
+			score: 0.8,
+			createdAt: old,
+			metaFilePath: "/ws/thoughts-log.md",
+		}),
+		w,
+		now,
+	);
+	assert.equal(curated.kind, "curated");
+	assert.equal(process.kind, "process");
+	// Same base, but the process result gets no +0.2 boost and decays at the
+	// full factor — the crowding failure inverted.
+	assert.ok(curated.composite > process.composite + w.curationBoost - 1e-9);
+});
+
+const rankedFile = (
+	composite: number,
+	id: string,
+	text: string,
+	filePath: string | null,
+): RankedResult => ({
+	...mk({
+		resourceId: id,
+		title: `note ${id}`,
+		metaFilePath: filePath,
+		highlights: [{ id: "h", text, score: composite }],
+	}),
+	_kind: "curated",
+	_base: composite,
+	_composite: composite,
+});
+
+test("explainSelection — perFileCap: a third distinct section of one file is cut 'file-cap'; other files pass", () => {
+	const list = [
+		rankedFile(0.9, "s1", "the plan for the harbor market opens with three long stalls", "/ws/log.md"),
+		rankedFile(0.88, "s2", "a completely different passage about winter travel by rail", "/ws/log.md"),
+		rankedFile(0.86, "s3", "yet another unrelated musing on kitchen repairs and paint", "/ws/log.md"),
+		rankedFile(0.84, "d1", "an independent document about the garden fence project", "/ws/other.md"),
+	];
+	const ex = explainSelection(list, 10, 0.5, 5, 0.8, undefined, 2);
+	assert.deepEqual(
+		ex.map((e) => e.cut),
+		[null, null, "file-cap", null],
+	);
+});
+
+test("explainSelection — perFileCap 0 (and results without a file path) never cap", () => {
+	const list = [
+		rankedFile(0.9, "s1", "the plan for the harbor market opens with three long stalls", "/ws/log.md"),
+		rankedFile(0.88, "s2", "a completely different passage about winter travel by rail", "/ws/log.md"),
+		rankedFile(0.86, "s3", "yet another unrelated musing on kitchen repairs and paint", "/ws/log.md"),
+		rankedFile(0.84, "n1", "no file path on this one so the cap cannot apply", null),
+	];
+	assert.equal(explainSelection(list, 10, 0.5, 5, 0.8).filter((e) => e.selected).length, 4);
+	const capped = explainSelection(list, 10, 0.5, 5, 0.8, undefined, 2);
+	assert.equal(capped.filter((e) => e.selected).length, 3, "cap binds only the pathed file");
+	assert.equal(capped[3].selected, true, "pathless result unaffected");
+});
+
+test("explainSelection — a near-duplicate cut does not charge the file slot (only selected results consume)", () => {
+	const same = "Heath finally confronts Junii about the Omuerta binding and what it cost Tevre";
+	const list = [
+		rankedFile(0.9, "s1", same, "/ws/log.md"),
+		rankedFile(0.88, "s2", same, "/ws/log.md"), // near-duplicate of s1
+		rankedFile(0.86, "s3", "a completely different passage about winter travel by rail", "/ws/log.md"),
+		rankedFile(0.84, "s4", "yet another unrelated musing on kitchen repairs and paint", "/ws/log.md"),
+	];
+	const ex = explainSelection(list, 10, 0.5, 5, 0.8, undefined, 2);
+	assert.deepEqual(
+		ex.map((e) => e.cut),
+		[null, "near-duplicate", null, "file-cap"],
+		"the dup was never charged, so s3 fits under the cap and s4 is the overflow",
+	);
+});
+
+test("classify — speaker-role metadata marks a conversation row even without openclaw_source (backfilled rows)", () => {
+	// Live 2026-08-18: attribution-backfilled hot rows carry openclaw_speaker_*
+	// but no openclaw_source, and have content-derived titles + UUID ids —
+	// the shape heuristic read them as 'other', dodging the chatter penalty.
+	const backfilled = mk({
+		resourceId: "a6f8d42b-ea6b-45bd-9c0d-1e2f3a4b5c6d",
+		title: "[Agent]: Goodnight.",
+		metaSource: null,
+		metaSpeakerRole: "assistant",
+	});
+	assert.equal(classifyResult(backfilled, []), "chatter");
 });

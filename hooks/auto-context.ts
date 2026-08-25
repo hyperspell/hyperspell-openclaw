@@ -294,6 +294,7 @@ export function buildAutoContextHandler(
           ranking.chatterQuota,
           ranking.dedupThreshold,
           ranking.elbow,
+          ranking.perFileCap,
         )
         logScoreSamples(prompt, currentSessionId, "single", explained, cfg.relevanceThreshold)
         const selected = explained.filter((e) => e.selected).map((e) => e.result)

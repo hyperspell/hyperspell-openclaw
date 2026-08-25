@@ -1,6 +1,8 @@
 import type { EmotionalStateLatest, HyperspellClient } from "../client.ts";
 import type { HyperspellConfig } from "../config.ts";
 import { channelIdFromCtx } from "../lib/exclude-channels.ts";
+import { senderIdFromCtx } from "../lib/speaker-tracker.ts";
+import { EMOTIONAL_STATE_SOURCE } from "../lib/filters.ts";
 import { resolveCurrentSessionId } from "../lib/session.ts";
 import { isMultiSpeaker } from "../lib/speaker-tracker.ts";
 import { log } from "../logger.ts";
@@ -405,15 +407,10 @@ export function buildEmotionalStateStoreHandler(
 			return;
 		}
 
-		const transcript = messagesToTranscript(messages);
-		if (transcript.length < MIN_CONVERSATION_LENGTH) {
-			log.debug(
-				`emotional-state: skipping — conversation too short (${transcript.length} chars)`,
-			);
-			return;
-		}
-
-		// Debounce: at most one snapshot per STORE_DEBOUNCE_MS of active talk.
+		// Debounce BEFORE building the transcript: at most one snapshot per
+		// STORE_DEBOUNCE_MS of active talk, and a debounced turn must not pay
+		// the transcript build + sanitize cost just to discard the result
+		// (messagesToTranscript runs the full sanitizer over every message).
 		const relId = cfg.relationshipId ?? "";
 		const since = Date.now() - (lastStoreAt.get(relId) ?? 0);
 		if (since < STORE_DEBOUNCE_MS) {
@@ -423,15 +420,46 @@ export function buildEmotionalStateStoreHandler(
 			return;
 		}
 
+		const transcript = messagesToTranscript(messages);
+		if (transcript.length < MIN_CONVERSATION_LENGTH) {
+			log.debug(
+				`emotional-state: skipping — conversation too short (${transcript.length} chars)`,
+			);
+			return;
+		}
+
 		try {
 			// Tag the register with the medium it was extracted from (voice vs Discord vs
 			// DM), mirroring hot-buffer's openclaw_channel_id tag. Capture-only: analysis/
 			// debugging metadata, deliberately NOT surfaced in the injected prose (#74).
 			const channelId = channelIdFromCtx(ctx as Record<string, unknown>);
+			// Sender-gate design instrumentation (PR 2 item 1, 2026-08-24): the
+			// register is stamped with a STATIC relationshipId, so ANY
+			// conversational-trigger session writes to it — a peer-agent code
+			// review corrupted the arc with registers about the reviewer within
+			// an hour of talking. The correct gate needs to know what identity
+			// signals each surface actually carries; log ids only (no content)
+			// at diag level so real traffic answers that before a gate is built
+			// on assumption. Remove once the gate ships.
+			log.diag(
+				`emotional-state: storing register (trigger=${ctx?.trigger ?? "none"}, sender=${senderIdFromCtx(ctx as Record<string, unknown>) ?? "none"}, channel=${channelId ?? "none"}, sessionKey=${String((ctx as Record<string, unknown> | undefined)?.sessionKey ?? "none").slice(0, 60)})`,
+			);
 			const result = await client.storeEmotionalState(transcript, {
 				relationshipId: cfg.relationshipId,
 				metadata: {
+					// Legacy key, kept for the mood-skew audit's bucketing of
+					// existing rows — but bare `source` is read by NOTHING on the
+					// retrieval path (the C1 key-name trap, Fable review
+					// 2026-08-24): it matches neither excludeFilterFor
+					// (openclaw_source) nor classifyResult (metaSource). Harmless
+					// today only because /emotional-state is a separate store the
+					// memories index never surfaces (census: zero rows).
 					source: "openclaw_agent_end",
+					// Pipeline tag on the standard key, so IF the backend ever
+					// indexes this store, ranking classifies the rows as process
+					// instead of promoting agent register prose to curated.
+					openclaw_source: EMOTIONAL_STATE_SOURCE,
+					openclaw_writer: "agent",
 					...(channelId ? { channelId } : {}),
 				},
 			});

@@ -1,4 +1,5 @@
 import type { SearchResult } from "../client.ts";
+import { AGENT_END_SOURCE, EMOTIONAL_STATE_SOURCE, HOT_BUFFER_SOURCE } from "./filters.ts";
 
 /**
  * Composite retrieval ranking — score memories by more than raw semantic
@@ -50,6 +51,19 @@ export type RankingWeights = {
 	 * duplicate of an already-SELECTED result (its slot passes to different
 	 * content). 0 disables the check. */
 	dedupThreshold: number;
+	/** Case-insensitive substrings matched against a synced result's file path
+	 * (metadata.file_path). Matches classify as `process` — the agent's own
+	 * operational output (thought logs, caches, heartbeat notes). Process
+	 * results score NEUTRAL: no curationBoost, full-speed recency decay. Without
+	 * this the title+non-UUID heuristic promotes agent process logs as curated
+	 * user truth (the classifier author-blindness in the 2026-08-18 scale
+	 * report), so agent noise outranks quiet user memory. */
+	processPaths: string[];
+	/** Max SELECTED results per synced source file (metadata.file_path). A
+	 * sectionized file surfaces as N sibling candidates at near-identical
+	 * scores; near-duplicate dedup catches identical text but not distinct
+	 * sections of one document, which otherwise monopolize the pool. 0 disables. */
+	perFileCap: number;
 	/** Elbow cutoff: stop injecting early at a natural score cliff instead of
 	 * always filling maxResults. Strictly conservative — only ever cuts
 	 * earlier, never later; off by default until live scans pick parameters. */
@@ -88,6 +102,8 @@ export const DEFAULT_RANKING: RankingWeights = {
 	recencyCuratedFactor: 0.5,
 	sourceWeights: {},
 	dedupThreshold: 0.8,
+	processPaths: [],
+	perFileCap: 2,
 	elbow: DEFAULT_ELBOW,
 };
 
@@ -133,7 +149,7 @@ export function kindTally(results: RankedResult[]): Record<string, number> {
 	);
 }
 
-export type ResultKind = "story" | "curated" | "chatter" | "other";
+export type ResultKind = "story" | "curated" | "chatter" | "process" | "other";
 
 export type RankedResult = SearchResult & {
 	_kind: ResultKind;
@@ -152,18 +168,61 @@ export function baseScore(r: SearchResult): number {
 
 /**
  * Classify a result by what KIND of memory it is — using only fields the search
- * already returns (title shape + resource id), so no extra round-trip:
+ * already returns. Evidence order is load-bearing: origin tags (what pipeline
+ * WROTE the row) outrank story terms (what the text MENTIONS), which outrank
+ * title shape. Kinds:
  *  - story:   matches a configured story term (manuscript / its notes & threads)
- *  - chatter: untitled or "Unnamed Conversation" AND keyed by a bare session
- *             UUID — i.e. a hot-buffer conversation fragment (the dreamy echoes)
+ *  - chatter: a conversation echo — tagged hot-buffer/agent-end origin, or
+ *             untitled/"Unnamed Conversation" AND keyed by a bare session UUID
+ *  - process: agent-authored output scored neutral, never promoted — an
+ *             agent-written remember note (metaWriter "agent"), an
+ *             emotional-state register row, or a synced file the operator
+ *             marked as process via ranking.processPaths
  *  - curated: has a real, human title and is not a raw session row — a journal,
  *             a writing note, a synced memory section (deliberately kept)
  */
 export function classifyResult(
 	r: SearchResult,
 	storyTerms: string[],
+	processPaths: string[] = [],
 ): ResultKind {
 	const title = (r.title ?? "").trim();
+	// Origin evidence FIRST — before story terms, before everything. A
+	// conversation echo that MENTIONS the story is a conversation about the
+	// story, not the story: checked story-first, a hot-buffer row quoting a
+	// story term collected storyBoost + curationBoost + half-speed decay and
+	// bypassed the chatter quota entirely (found live 2026-08-24, minutes
+	// after the speaker-role fix deployed — the echoes wore the agent's own
+	// instrument codenames from storyTerms). Same failure class as the title
+	// heuristic below: a weaker signal answering before the stronger one.
+	// Origin tags beat topic; topic beats title shape.
+	//
+	// Speaker-role tags count as conversation-origin too: only hot-buffer
+	// writes and the attribution backfill stamp them, and backfilled rows
+	// carry NO openclaw_source (verified live 2026-08-18).
+	if (
+		r.metaSource === HOT_BUFFER_SOURCE ||
+		r.metaSource === AGENT_END_SOURCE ||
+		r.metaSpeakerRole !== null
+	) {
+		return "chatter";
+	}
+	// Emotional-state snapshots are agent-generated register prose — origin
+	// evidence again, so also ahead of story. They live in a separate backend
+	// store today (census 2026-08-24: zero rows in the memories corpus), so
+	// this branch is future-proofing: if the backend ever indexes that store,
+	// the rows classify as process — never curated, never story.
+	if (r.metaSource === EMOTIONAL_STATE_SOURCE) return "process";
+	// processPaths is origin evidence too — the operator explicitly marked the
+	// file as agent process output — so it must beat story terms like every
+	// other origin signal (Entelligence MAJOR on #127: checked after story, a
+	// process file mentioning a story term collected the story and curation
+	// boosts the README promises it can never have; agent thought-logs discuss
+	// the story constantly, so this was the same laundering path again).
+	if (processPaths.length > 0 && r.metaFilePath) {
+		const filePath = r.metaFilePath.toLowerCase();
+		if (processPaths.some((p) => filePath.includes(p))) return "process";
+	}
 	if (storyTerms.length > 0) {
 		// \n-joined (not space-joined) so a multi-word phrase term can never
 		// spuriously match across the seam of two unrelated highlights (terms are
@@ -171,6 +230,18 @@ export function classifyResult(
 		const hay = `${title}\n${r.highlights.map((h) => h.text).join("\n")}`.toLowerCase();
 		if (storyMatchers(storyTerms).some((re) => re.test(hay))) return "story";
 	}
+	// Agent-AUTHORED writes (the remember tool, vs the user's /remember
+	// command) score neutral: the curation boost answers "is this trustworthy
+	// about the user," and the agent is the interested party — a self-serving
+	// note must not outrank quiet user truth (the author-blind classifier,
+	// 2026-08-18 scale report §ranking; amendment: route to the existing
+	// process kind rather than adding a self-declared discriminator, so the
+	// agent never holds the knob on its own rank). metaWriter is null on
+	// unstamped legacy rows and MUST fail open to the heuristics below —
+	// never punish missing data. Checked after the chatter rules (origin
+	// evidence is stronger) and before the title heuristics (which is what
+	// mis-promoted these rows to curated).
+	if (r.metaWriter === "agent") return "process";
 	const untitled = title === "" || /^unnamed conversation$/i.test(title);
 	if (untitled && UUID_RE.test(r.resourceId)) return "chatter";
 	if (title !== "" && !UUID_RE.test(r.resourceId)) return "curated";
@@ -220,7 +291,7 @@ export function scoreResult(
 	w: RankingWeights,
 	now: number = Date.now(),
 ): { kind: ResultKind; base: number; composite: number } {
-	const kind = classifyResult(r, w.storyTerms);
+	const kind = classifyResult(r, w.storyTerms, w.processPaths);
 	const base = baseScore(r);
 	// The weight multiplies BASE only — kind boosts/penalties stay in the same
 	// additive currency regardless of source, so tuning sourceWeights can never
@@ -231,6 +302,9 @@ export function scoreResult(
 		composite += w.storyBoost + w.curationBoost; // the story is kept memory too
 	else if (kind === "curated") composite += w.curationBoost;
 	else if (kind === "chatter") composite -= w.chatterPenalty;
+	// `process` is deliberately neutral (no boost, no penalty, full-speed decay
+	// below): the goal is to stop PROMOTING agent process output, not to bury
+	// it. A penalty knob waits for live tuning evidence (roadmap Phase 5).
 	composite -= recencyPenalty(r.createdAt, kind, w, now);
 	return { kind, base, composite };
 }
@@ -313,6 +387,7 @@ export type SelectionCut =
 	| "max-results"
 	| "elbow"
 	| "near-duplicate"
+	| "file-cap"
 	| "chatter-quota";
 
 /** Selected entries carry `cut: null`; cut entries carry the binding reason.
@@ -339,14 +414,16 @@ export function explainSelection(
 	chatterQuota: number,
 	dedupThreshold = 0,
 	elbow?: ElbowOptions,
+	perFileCap = 0,
 ): SelectionExplained[] {
 	const out: SelectionExplained[] = [];
 	// Dedup state is exactly "what was accepted": only SELECTED results record
-	// keys (and only they consume quota), so a skipped candidate — whatever cut
-	// it — can never shadow later different-kind content sharing its text, and
-	// a diversity-skipped chatter echo never burns a quota slot (proposal 09's
-	// double-count invariant).
+	// keys (and only they consume quota or per-file slots), so a skipped
+	// candidate — whatever cut it — can never shadow later different-kind
+	// content sharing its text, and a diversity-skipped chatter echo never
+	// burns a quota slot (proposal 09's double-count invariant).
 	const keys: string[] = [];
+	const perFile = new Map<string, number>();
 	let chatter = 0;
 	let kept = 0;
 	// Elbow bookkeeping: gaps between consecutive ACCEPTED results only —
@@ -386,11 +463,23 @@ export function explainSelection(
 			out.push({ result: r, selected: false, cut: "near-duplicate" });
 			continue;
 		}
+		// Per-file diversity: a sectionized file's sibling sections pass the
+		// near-duplicate check (different text, same document) and would fill
+		// the pool at near-identical scores. Checked before chatter-quota for
+		// the same reason dedup is — a capped section injects nothing, so the
+		// quota was not the binding constraint and must not be charged.
+		const file = perFileCap > 0 ? r.metaFilePath : null;
+		if (file && (perFile.get(file) ?? 0) >= perFileCap) {
+			out.push({ result: r, selected: false, cut: "file-cap" });
+			continue;
+		}
 		if (r._kind === "chatter" && chatter >= chatterQuota) {
 			out.push({ result: r, selected: false, cut: "chatter-quota" });
 			continue;
 		}
+		// Accepted — only now charge the quota and per-file slot.
 		if (r._kind === "chatter") chatter++;
+		if (file) perFile.set(file, (perFile.get(file) ?? 0) + 1);
 		if (kept > 0) gapSum += lastAccepted - r._composite;
 		lastAccepted = r._composite;
 		kept++;
@@ -419,8 +508,9 @@ export function selectRanked(
 	chatterQuota: number,
 	dedupThreshold = 0,
 	elbow?: ElbowOptions,
+	perFileCap = 0,
 ): RankedResult[] {
-	return explainSelection(ranked, maxResults, threshold, chatterQuota, dedupThreshold, elbow)
+	return explainSelection(ranked, maxResults, threshold, chatterQuota, dedupThreshold, elbow, perFileCap)
 		.filter((e) => e.selected)
 		.map((e) => e.result);
 }

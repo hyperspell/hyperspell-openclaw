@@ -387,6 +387,19 @@ function parseRanking(raw: unknown): RankingWeights {
 			1,
 			Math.max(0, num(r.dedupThreshold, DEFAULT_RANKING.dedupThreshold)),
 		),
+		// Lowercased at parse time — classifyResult matches them against a
+		// lowercased file path, so the comparison stays case-insensitive with
+		// zero per-result work.
+		processPaths: Array.isArray(r.processPaths)
+			? [
+					...new Set(
+						(r.processPaths as unknown[])
+							.map((t) => String(t).trim().toLowerCase())
+							.filter((t) => t.length > 0),
+					),
+				]
+			: DEFAULT_RANKING.processPaths,
+		perFileCap: Math.max(0, num(r.perFileCap, DEFAULT_RANKING.perFileCap)),
 		elbow: parseElbow(r.elbow),
 	};
 }

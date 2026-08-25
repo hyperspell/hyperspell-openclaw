@@ -65,7 +65,11 @@ test("buildMoodWeatherContext — wraps note + carries the contract", () => {
 	assert.ok(block.includes("<hyperspell-mood-weather>"));
 	assert.ok(block.includes("</hyperspell-mood-weather>"));
 	assert.ok(block.includes(MOOD_TABLE[0].note));
-	assert.ok(block.includes("Do not announce"));
+	// Discretion clause removed 2026-08-24 (her decision): weather is inhabited,
+	// not performed — and not a secret. Assert the replacement, and assert the
+	// old concealment directive stays gone.
+	assert.ok(block.includes("not a secret"));
+	assert.ok(!block.includes("Do not announce"));
 	assert.ok(block.includes("not remembered"));
 });
 

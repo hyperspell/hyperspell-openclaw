@@ -21,12 +21,43 @@ export type SearchResult = {
 	score: number | null;
 	url: string | null;
 	createdAt: string | null;
+	/** metadata.openclaw_source when echoed — the plugin's write-pipeline tag
+	 * (hot_buffer / agent_end / memory_sync / memory_sync_section / …). Origin
+	 * truth for classification: a consolidator-titled session resource still
+	 * reads as a conversation echo through this, not as curated memory. */
+	metaSource: string | null;
+	/** metadata.openclaw_speaker_role when echoed. Only hot-buffer writes (and
+	 * the attribution backfill) stamp it, so its mere presence marks a
+	 * conversation row — backfilled rows verified live 2026-08-18 to carry
+	 * speaker tags but NO openclaw_source, and would otherwise dodge the
+	 * origin-based chatter rule. */
+	metaSpeakerRole: string | null;
+	/** metadata.file_path when echoed — the workspace file a synced section
+	 * came from. Keys ranking's per-file diversity cap and processPaths. */
+	metaFilePath: string | null;
+	/** Who authored the memory's content: "agent" | "user", else null.
+	 * Primary signal is the openclaw_writer stamp (written from 2026-08 on);
+	 * legacy rows fall back to metadata.source, which has distinguished the
+	 * agent's remember TOOL ("openclaw_tool") from the user's /remember
+	 * COMMAND ("openclaw_command") since the initial release — written since
+	 * January, read by nothing until now. Null = unknown, and ranking MUST
+	 * fail open on null (treat as today's behavior, never strip a boost on
+	 * missing data). Note the legacy signal marks the write SURFACE, not
+	 * strictly authorship — good enough for retrieval weighting, not for
+	 * attribution claims. */
+	metaWriter: "agent" | "user" | null;
 	highlights: Highlight[];
 };
 
 export type SearchWithAnswerResult = {
 	answer: string | null;
 	documents: SearchResult[];
+};
+
+export type TriageResult = SearchResult & {
+	/** True when the resource is on the quarantineResources list — visible
+	 * here (and only here) so the audit view shows what quarantine covers. */
+	quarantined: boolean;
 };
 
 export type Integration = {
@@ -75,6 +106,34 @@ const API_BASE_URL = "https://api.hyperspell.com"
  */
 function isMetadataObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** A string metadata value by key, or null — non-strings are dropped so a
+ * malformed echo can't poison classification. */
+function metaString(
+	metadata: Record<string, unknown> | null | undefined,
+	key: string,
+): string | null {
+	const v = metadata?.[key];
+	return typeof v === "string" && v.length > 0 ? v : null;
+}
+
+/** Resolve authorship for SearchResult.metaWriter — openclaw_writer stamp
+ * first, legacy metadata.source surface tag as the retroactive fallback. */
+function writerOf(
+	metadata: Record<string, unknown> | null | undefined,
+): "agent" | "user" | null {
+	const stamped = metaString(metadata, "openclaw_writer");
+	if (stamped === "agent" || stamped === "user") return stamped;
+	const legacy = metaString(metadata, "source");
+	if (legacy === "openclaw_tool") return "agent";
+	if (legacy === "openclaw_command") return "user";
+	// Emotional-state registers (bare legacy key; see hooks/emotional-state.ts).
+	// Their transcripts were ALSO text-indexed into generic vault search until
+	// backend PR #3330 — chunks titled from the transcript's first line, so the
+	// title heuristic reads them as curated. Agent-generated either way.
+	if (legacy === "openclaw_agent_end") return "agent";
+	return null;
 }
 
 export class HyperspellClient {
@@ -171,6 +230,10 @@ export class HyperspellClient {
 				score: doc.score ?? null,
 				url: (doc.metadata?.url as string | null) ?? null,
 				createdAt: (doc.metadata?.created_at as string | null) ?? null,
+				metaSource: metaString(doc.metadata, "openclaw_source"),
+				metaSpeakerRole: metaString(doc.metadata, "openclaw_speaker_role"),
+				metaFilePath: metaString(doc.metadata, "file_path"),
+			metaWriter: writerOf(doc.metadata),
 				highlights: (raw.highlights ?? []).map((h) => ({
 					id: h.id,
 					score: h.score,
@@ -287,6 +350,10 @@ export class HyperspellClient {
 			score: doc.score ?? null,
 			url: (doc.metadata?.url as string | null) ?? null,
 			createdAt: (doc.metadata?.created_at as string | null) ?? null,
+			metaSource: metaString(doc.metadata, "openclaw_source"),
+			metaSpeakerRole: metaString(doc.metadata, "openclaw_speaker_role"),
+			metaFilePath: metaString(doc.metadata, "file_path"),
+			metaWriter: writerOf(doc.metadata),
 			highlights: [],
 		}));
 		const documents = dropQuarantined(
@@ -314,6 +381,80 @@ export class HyperspellClient {
 			answer: tainted ? null : (response.answer ?? null),
 			documents,
 		};
+	}
+
+	/**
+	 * Audit-view search for the vault-triage tool — the ONLY retrieval path
+	 * that does not drop quarantined resources (lib/quarantine.ts is enforced
+	 * on every other read). Quarantine is reactive by construction: a bad
+	 * record is normally discovered only by being injected. This view exists
+	 * so bad records can be hunted proactively; hits on the quarantine list
+	 * come back FLAGGED, never silently mixed in.
+	 */
+	async searchTriage(
+		query: string,
+		options?: {
+			limit?: number;
+			sources?: HyperspellSource[];
+			after?: string;
+			before?: string;
+			userId?: string;
+		},
+	): Promise<TriageResult[]> {
+		const limit = options?.limit ?? this.config.maxResults;
+		const sources =
+			options?.sources ??
+			(this.config.sources.length > 0 ? this.config.sources : undefined);
+
+		log.debugRequest("memories.search (triage)", {
+			query,
+			limit,
+			sources,
+			after: options?.after,
+			before: options?.before,
+			userId: options?.userId,
+		});
+
+		const response = await this.client.memories.search(
+			{
+				query,
+				sources,
+				options: {
+					max_results: limit,
+					...(options?.after ? { after: options.after } : {}),
+					...(options?.before ? { before: options.before } : {}),
+				},
+			},
+			this.requestOptions(options?.userId),
+		);
+
+		const quarantined = new Set(this.config.quarantineResources);
+		const results: TriageResult[] = response.documents.map((doc) => {
+			const raw = doc as typeof doc & {
+				highlights?: Array<{ id: string; score: number; text: string }>;
+			};
+			return {
+				resourceId: doc.resource_id,
+				title: doc.title ?? null,
+				source: doc.source as HyperspellSource,
+				score: doc.score ?? null,
+				url: (doc.metadata?.url as string | null) ?? null,
+				createdAt: (doc.metadata?.created_at as string | null) ?? null,
+				metaSource: metaString(doc.metadata, "openclaw_source"),
+				metaSpeakerRole: metaString(doc.metadata, "openclaw_speaker_role"),
+				metaFilePath: metaString(doc.metadata, "file_path"),
+			metaWriter: writerOf(doc.metadata),
+				highlights: (raw.highlights ?? []).map((h) => ({
+					id: h.id,
+					score: h.score,
+					text: h.text,
+				})),
+				quarantined: quarantined.has(doc.resource_id),
+			};
+		});
+
+		log.debugResponse("memories.search (triage)", { count: results.length });
+		return results;
 	}
 
 	async addMemory(

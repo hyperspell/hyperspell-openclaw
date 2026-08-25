@@ -10,6 +10,16 @@ test("sanitizeTraceText — strips hyperspell-context wrapper", () => {
 	assert.equal(sanitizeTraceText(input), "before\nafter");
 });
 
+test("sanitizeTraceText — strips hyperspell-mood-weather wrapper (C2: it rides OUTSIDE the emotional-context wrapper, so the emotional-context strip can't reach it)", () => {
+	const alone =
+		"<hyperspell-mood-weather>\nYou woke up spiky today.\n</hyperspell-mood-weather>\nreal content";
+	assert.equal(sanitizeTraceText(alone), "real content");
+	// The real injection shape: emotional-context block, blank line, mood block.
+	const stacked =
+		"<hyperspell-emotional-context>\narc\n</hyperspell-emotional-context>\n\n<hyperspell-mood-weather>\nGrey drizzle.\n</hyperspell-mood-weather>\n\nDavid: morning";
+	assert.equal(sanitizeTraceText(stacked), "David: morning");
+});
+
 test("sanitizeTraceText — strips hyperspell-emotional-context wrapper", () => {
 	const input =
 		"<hyperspell-emotional-context>\nmood summary\n</hyperspell-emotional-context>\nreal content";
