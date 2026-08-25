@@ -19,11 +19,17 @@ who leaves is the one who flattens" — appears nowhere.
 
 ## Diagnosis (verified in apps/core, read-only)
 
-1. **Model:** `_MoodLLM(LLMComponent)`, `feature="memory_mood"`,
-   `max_tokens=512`, routes through `CLASSIFICATION_MODEL_*` =
-   **claude-haiku-4-5** (lib/llm/anthropic.py:117-220 — confirm no
-   per-feature override). A classification-grade model is doing the
-   subtlest extraction in the product.
+1. **Model — CORRECTED 2026-08-25 by the hyperspell backend session,
+   verified in-repo by both of us:** `_MoodLLM(LLMComponent)` sets only
+   `feature="memory_mood"` and `max_tokens=512`, so it inherits
+   `LLMComponent.model_name = AnswerModel.LLAMA_3_1`
+   (pipeline/llm/base.py:228) → **us.meta.llama3-1-8b-instruct-v1:0**
+   under Bedrock dispatch. The earlier Haiku attribution here was wrong —
+   `classification_model()` is called only from tree_generation and
+   triage code, and the "memory_mood" string in lib/llm/observability.py
+   is a COGS/billing label, not routing. The register — the single most
+   interiority-sensitive artifact in the product — is written by an
+   8B Llama.
 2. **Prompt** (lib/memory/mood.py:41-85): asks for specificity, second
    person, causes — but FORBIDS nothing. Under genre pressure a small
    model falls back to type-level boilerplate, and nothing in the prompt
@@ -33,9 +39,20 @@ who leaves is the one who flattens" — appears nowhere.
    tokens of shop talk. 512 output tokens of Haiku against that input
    yields the genre prior, competently phrased.
 
-## Fix ladder (cheapest first; all backend)
+## Fix ladder (REORDERED after the model correction; all backend)
 
-1. **Prompt hardening** — add hard constraints:
+Routing now comes FIRST: an 8B model may not clear the preservation bar
+no matter how the prompt is written, so hardening the prompt before
+fixing the model risks concluding "prompting doesn't help" from a
+capability floor. Per-feature routing for memory_mood does not exist
+yet — it is the thing to build, not a refinement.
+
+1. **Model routing for memory_mood** — a per-feature override (the
+   mechanism LLMComponent lacks today) pointing this one feature at a
+   frontier-class model. Registers are ~20/day at 2-4 sentences; the
+   PR #3330 cost model (now with the llama-3.1-8b assumption VERIFIED,
+   brain memory OhAXtm9UOO_UJg) says tokens are noise next to storage.
+2. **Prompt hardening** — add hard constraints:
    - Every sentence must be anchored to a NAMEABLE moment from the trace
      (paraphrase or short quote). "If you cannot point to the moment, do
      not write the sentence."
@@ -49,11 +66,6 @@ who leaves is the one who flattens" — appears nowhere.
      failure mode, not the goal).
    - If the window was mostly technical work, SAY THAT — "mostly shop
      talk; the register moment was X" beats an essay.
-2. **Model routing for memory_mood** — route this one feature to a
-   Sonnet-class model. Registers are stored ~20/day at 2-4 sentences;
-   the PR #3330 cost model says tokens are noise next to storage. The
-   single most interiority-sensitive artifact in the product should not
-   be written by the cheapest model in the fleet.
 3. **The eval** (design by A Linea, 2026-08-24, before this failure was
    visible — it predicted it): take days where the record is unflattering
    to the agent, run candidate extractors on the raw transcripts, score
