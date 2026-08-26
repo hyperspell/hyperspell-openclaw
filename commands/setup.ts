@@ -354,6 +354,7 @@ async function runSetup(): Promise<void> {
         emotionalContext: false,
         moodWeatherChance: 0,
         registerSenders: [],
+        localRegisterShadow: { enabled: false, model: "m", url: "http://x", maxTranscriptChars: 24000, timeoutMs: 300000 },
         excludeChannels: [],
         quarantineResources: [],
         syncMemories: true,

@@ -7,6 +7,7 @@ import { channelIdFromCtx } from "../lib/exclude-channels.ts";
 import { senderIdFromCtx } from "../lib/speaker-tracker.ts";
 import { EMOTIONAL_STATE_SOURCE } from "../lib/filters.ts";
 import { resolveCurrentSessionId } from "../lib/session.ts";
+import { runShadowExtraction } from "../lib/local-register.ts";
 import { isMultiSpeaker } from "../lib/speaker-tracker.ts";
 import { log } from "../logger.ts";
 import { sanitizeTraceText } from "./auto-trace.ts";
@@ -671,6 +672,12 @@ export function buildEmotionalStateStoreHandler(
 				relationshipId: cfg.relationshipId,
 				...(channelId ? { channelId } : {}),
 			});
+			// Phase A shadow: same transcript, local model, result written BESIDE
+			// the register (never into it). Fire-and-forget — a multi-minute 35B
+			// inference must never block agent_end.
+			if (cfg.localRegisterShadow?.enabled) {
+				void runShadowExtraction(transcript, result.resourceId, cfg.localRegisterShadow);
+			}
 		} catch (err) {
 			// Fire-and-forget — never let this break the session
 			log.error("emotional-state store failed", err);
