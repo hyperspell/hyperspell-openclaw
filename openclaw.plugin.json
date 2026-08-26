@@ -116,42 +116,14 @@
 			"help": "Optional dreaming config consumed by memory-core when this plugin owns the memory slot. Lets memory-core's dreaming engine consolidate local session transcripts into workspace/MEMORY.md on cron."
 		},
 		"registerSenders": {
-			"type": "array",
-			"items": {
-				"type": "string"
-			},
 			"label": "Register senders allowlist",
 			"help": "Sender ids whose conversations may WRITE the emotional register. Empty: any resolvable sender. Turns with no sender metadata never store either way.",
 			"advanced": true
 		},
 		"localRegisterShadow": {
-			"type": "object",
-			"additionalProperties": false,
 			"label": "Local register shadow (Phase A)",
-			"help": "Run a LOCAL ollama model over the same transcript the backend register store receives; result is written beside the register (workspace shadow ledger), never into it. Generates the preservation-eval corpus. Heavy: one local inference per debounced store.",
-			"advanced": true,
-			"properties": {
-				"enabled": {
-					"type": "boolean",
-					"default": false
-				},
-				"model": {
-					"type": "string",
-					"default": "qwen3.6:35b-mlx"
-				},
-				"url": {
-					"type": "string",
-					"default": "http://localhost:11434"
-				},
-				"maxTranscriptChars": {
-					"type": "number",
-					"default": 24000
-				},
-				"timeoutMs": {
-					"type": "number",
-					"default": 300000
-				}
-			}
+			"help": "Run a LOCAL ollama model over the same transcript the backend register store receives; result written beside the register, never into it. Heavy: one local inference per debounced store.",
+			"advanced": true
 		}
 	},
 	"configSchema": {
@@ -485,6 +457,33 @@
 			},
 			"dreaming": {
 				"type": "object"
+			},
+			"registerSenders": {
+				"type": "array",
+				"items": {
+					"type": "string"
+				}
+			},
+			"localRegisterShadow": {
+				"type": "object",
+				"additionalProperties": false,
+				"properties": {
+					"enabled": {
+						"type": "boolean"
+					},
+					"model": {
+						"type": "string"
+					},
+					"url": {
+						"type": "string"
+					},
+					"maxTranscriptChars": {
+						"type": "number"
+					},
+					"timeoutMs": {
+						"type": "number"
+					}
+				}
 			}
 		},
 		"required": []
