@@ -353,13 +353,18 @@ test("auto-context coverage — zero-result search writes an 'empty' event", asy
     makeCfg({ coverageLog: true }),
     { stateRoot },
   )
-  const out = await handler({ prompt: COVERAGE_PROMPT }, {})
-  assert.equal(out, undefined, "still injects nothing")
+  const out = (await handler({ prompt: COVERAGE_PROMPT }, {})) as
+    | { prependContext: string }
+    | undefined
+  assert.equal(
+    out?.prependContext,
+    "<hyperspell-context>\nrecall: 0 candidates · best none · threshold 0.60 · nothing shown\n</hyperspell-context>",
+  )
 
   const entries = readCoverage(stateRoot)
   assert.equal(entries.length, 1)
   const entry = entries[0]
-  assert.equal(entry.v, 1)
+  assert.equal(entry.v, 2)
   assert.equal(entry.outcome, "empty")
   assert.equal(entry.fetched, 0)
   assert.equal(entry.candidates, 0)
@@ -384,15 +389,70 @@ test("auto-context coverage — candidates below threshold write a 'below_thresh
     makeCfg({ coverageLog: true }),
     { stateRoot },
   )
-  const out = await handler({ prompt: COVERAGE_PROMPT }, {})
-  assert.equal(out, undefined)
+  const out = (await handler({ prompt: COVERAGE_PROMPT }, {})) as
+    | { prependContext: string }
+    | undefined
+  assert.ok(
+    out?.prependContext.includes(
+      "recall: 1 candidates · best 0.40 · threshold 0.60 · nothing shown",
+    ),
+  )
 
   const [entry] = readCoverage(stateRoot)
   assert.equal(entry.outcome, "below_threshold")
   assert.equal(entry.fetched, 1)
   assert.equal(entry.candidates, 1)
-  assert.equal(entry.topScore, 0.2)
+  assert.equal(entry.topScore, 0.4)
+  assert.equal(entry.rawTopScore, 0.2)
   assert.equal(entry.threshold, 0.6)
+  fs.rmSync(stateRoot, { recursive: true, force: true })
+})
+
+test("auto-context coverage — FOK uses the gated composite, not the raw server score", async () => {
+  const stateRoot = mkStateRoot()
+  const oldChatter = searchResult({
+    resourceId: CHATTER_UUID(9),
+    score: 0.841,
+    createdAt: "2000-01-01T00:00:00Z",
+    highlights: [{ id: "h1", text: "old conversation echo", score: 0.841 }],
+  })
+  const handler = buildAutoContextHandler(
+    makeSearchClient([oldChatter]),
+    makeCfg({ coverageLog: true }),
+    { stateRoot },
+  )
+  const out = (await handler({ prompt: COVERAGE_PROMPT }, {})) as
+    | { prependContext: string }
+    | undefined
+
+  assert.ok(out?.prependContext.includes("best 0.54 · threshold 0.60 · nothing shown"))
+  const [entry] = readCoverage(stateRoot)
+  assert.equal(entry.outcome, "below_threshold")
+  assert.equal(entry.rawTopScore, 0.841)
+  assert.ok(Math.abs(entry.topScore - 0.541) < 0.001)
+  fs.rmSync(stateRoot, { recursive: true, force: true })
+})
+
+test("auto-context coverage — a non-threshold cut is labeled 'filtered'", async () => {
+  const stateRoot = mkStateRoot()
+  const chatter = searchResult({
+    resourceId: CHATTER_UUID(8),
+    score: 0.9,
+    highlights: [{ id: "h1", text: "quota-cut echo", score: 0.9 }],
+  })
+  const handler = buildAutoContextHandler(
+    makeSearchClient([chatter]),
+    makeCfg({
+      coverageLog: true,
+      ranking: { ...DEFAULT_RANKING, chatterQuota: 0 },
+    }),
+    { stateRoot },
+  )
+  await handler({ prompt: COVERAGE_PROMPT }, {})
+
+  const [entry] = readCoverage(stateRoot)
+  assert.equal(entry.outcome, "filtered")
+  assert.ok(entry.topScore >= entry.threshold)
   fs.rmSync(stateRoot, { recursive: true, force: true })
 })
 
@@ -409,7 +469,7 @@ test("auto-context coverage — OFF by default: no file even on a zero-result tu
   fs.rmSync(stateRoot, { recursive: true, force: true })
 })
 
-test("auto-context coverage — an injecting turn writes no event", async () => {
+test("auto-context coverage — an injecting turn writes hit telemetry", async () => {
   const stateRoot = mkStateRoot()
   const handler = buildAutoContextHandler(
     makeSearchClient(fixturePool()),
@@ -420,7 +480,19 @@ test("auto-context coverage — an injecting turn writes no event", async () => 
     | { prependContext: string }
     | undefined
   assert.ok(out?.prependContext, "fixture pool injects")
-  assert.ok(!fs.existsSync(path.join(stateRoot, COVERAGE_LOG_NAME)))
+  assert.ok(
+    out.prependContext.includes(
+      "recall: 5 candidates · best 0.90 · threshold 0.60 · 3 shown",
+    ),
+  )
+  const [entry] = readCoverage(stateRoot)
+  assert.equal(entry.outcome, "injected")
+  assert.equal(entry.shown, 3)
+  assert.ok(entry.shownChars > 0)
+  assert.deepEqual(
+    entry.selected.map((r: { resourceId: string }) => r.resourceId),
+    ["mem-notes", CHATTER_UUID(1), CHATTER_UUID(2)],
+  )
   fs.rmSync(stateRoot, { recursive: true, force: true })
 })
 
@@ -446,8 +518,13 @@ test("auto-context coverage — unwritable stateRoot degrades safely (turn still
     makeCfg({ coverageLog: true }),
     { stateRoot: notADir },
   )
-  const out = await handler({ prompt: COVERAGE_PROMPT }, {})
-  assert.equal(out, undefined, "coverage write failure never throws into the turn")
+  const out = (await handler({ prompt: COVERAGE_PROMPT }, {})) as
+    | { prependContext: string }
+    | undefined
+  assert.ok(
+    out?.prependContext.includes("recall: 0 candidates"),
+    "coverage write failure never suppresses the runtime signal",
+  )
   fs.rmSync(stateRoot, { recursive: true, force: true })
 })
 
@@ -494,7 +571,13 @@ test("auto-context coverage — multi-user: failed lane recorded as error, not a
   assert.equal(entry.userId, "u-dave")
   assert.deepEqual(entry.lanes, [
     { lane: "personal", status: "error" },
-    { lane: "shared", status: "ok", candidates: 0, topScore: null },
+    {
+      lane: "shared",
+      status: "ok",
+      candidates: 0,
+      topScore: null,
+      rawTopScore: null,
+    },
   ])
   fs.rmSync(stateRoot, { recursive: true, force: true })
 })
@@ -527,16 +610,37 @@ test("auto-context coverage — multi-user: below_threshold when a fulfilled lan
     makeCfg({ coverageLog: true, multiUser: MULTI_USER }),
     { stateRoot },
   )
-  await handler({ prompt: COVERAGE_PROMPT }, { senderId: "dave" })
+  const out = (await handler(
+    { prompt: COVERAGE_PROMPT },
+    { senderId: "dave" },
+  )) as { prependContext: string } | undefined
+  assert.ok(
+    out?.prependContext.includes(
+      "recall: 1 candidates · best 0.40 · threshold 0.60 · nothing shown",
+    ),
+  )
 
   const [entry] = readCoverage(stateRoot)
   assert.equal(entry.outcome, "below_threshold")
   assert.equal(entry.fetched, 1)
   assert.equal(entry.candidates, 1)
-  assert.equal(entry.topScore, 0.2)
+  assert.equal(entry.topScore, 0.4)
+  assert.equal(entry.rawTopScore, 0.2)
   assert.deepEqual(entry.lanes, [
-    { lane: "personal", status: "ok", candidates: 1, topScore: 0.2 },
-    { lane: "shared", status: "ok", candidates: 0, topScore: null },
+    {
+      lane: "personal",
+      status: "ok",
+      candidates: 1,
+      topScore: 0.4,
+      rawTopScore: 0.2,
+    },
+    {
+      lane: "shared",
+      status: "ok",
+      candidates: 0,
+      topScore: null,
+      rawTopScore: null,
+    },
   ])
   fs.rmSync(stateRoot, { recursive: true, force: true })
 })
@@ -613,7 +717,11 @@ test("repeat suppression — a memory injected once is not re-injected later in 
   assert.ok(first?.prependContext.includes("mem-repeat"), "first turn injects")
 
   const second = await handler({ prompt: PROMPT }, ctx)
-  assert.equal(second, undefined, "same memory must not be re-injected in the same session")
+  assert.ok(
+    second?.prependContext?.includes("nothing shown"),
+    "same memory is not re-injected, but the retrieval shape remains visible",
+  )
+  assert.ok(!second?.prependContext?.includes("mem-repeat"))
 
   // A DIFFERENT session is unaffected by session 1's suppression.
   const other = (await handler(
@@ -645,7 +753,11 @@ test("repeat suppression — a remember write from THIS session is excluded from
   recordSessionWrite("rw-session-1", "mem-just-written")
 
   const same = await handler({ prompt: PROMPT }, { sessionId: "rw-session-1" })
-  assert.equal(same, undefined, "own just-written note must not echo back this session")
+  assert.ok(
+    same?.prependContext?.includes("nothing shown"),
+    "own just-written note does not echo, but the retrieval shape remains visible",
+  )
+  assert.ok(!same?.prependContext?.includes("mem-just-written"))
 
   const other = (await handler({ prompt: PROMPT }, { sessionId: "rw-session-2" })) as
     | { prependContext: string }

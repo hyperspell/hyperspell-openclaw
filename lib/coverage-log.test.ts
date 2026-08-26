@@ -21,8 +21,11 @@ function event(over?: Partial<CoverageEvent>): CoverageEvent {
     candidates: 0,
     droppedCurrentSession: 0,
     topScore: null,
+    rawTopScore: null,
     threshold: 0.6,
     ranking: true,
+    shown: 0,
+    shownChars: 0,
     sessionId: "sess-8f2c",
     ...over,
   }
@@ -42,7 +45,7 @@ test("coverage-log — appends one schema-stamped JSONL line per event", () => {
     .split("\n")
   assert.equal(lines.length, 2)
   const [first, second] = lines.map((l) => JSON.parse(l))
-  assert.equal(first.v, 1)
+  assert.equal(first.v, 2)
   assert.ok(!Number.isNaN(Date.parse(first.ts)))
   assert.equal(first.outcome, "empty")
   assert.equal(first.topScore, null)

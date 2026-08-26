@@ -15,17 +15,27 @@ export interface CoverageLane {
   status: "ok" | "error"
   candidates?: number
   topScore?: number | null
+  rawTopScore?: number | null
 }
 
 export interface CoverageEvent {
-  outcome: "empty" | "below_threshold"
+  outcome: "empty" | "below_threshold" | "filtered" | "injected"
   prompt: string
   fetched: number
   candidates: number
   droppedCurrentSession: number
   topScore: number | null
+  rawTopScore: number | null
   threshold: number
   ranking: boolean
+  shown: number
+  shownChars: number
+  selected?: Array<{
+    resourceId: string
+    kind?: string
+    writer?: string | null
+    injectedChars?: number
+  }>
   sessionId?: string
   userId?: string
   lanes?: CoverageLane[]
@@ -46,7 +56,7 @@ export function recordCoverageEvent(event: CoverageEvent, stateRoot?: string): v
     const p = path.join(dir, COVERAGE_LOG_NAME)
     rotateIfOversized(p)
     const line = JSON.stringify({
-      v: 1,
+      v: 2,
       ts: new Date().toISOString(),
       ...event,
       prompt: event.prompt.slice(0, MAX_PROMPT_CHARS),

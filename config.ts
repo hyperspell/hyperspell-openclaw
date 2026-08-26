@@ -232,9 +232,9 @@ export type HyperspellConfig = {
 	relevanceThreshold: number;
 	ranking: RankingWeights;
 	/**
-	 * Zero-result coverage log (proposal 15): when auto-context injects no
-	 * memory sections, append one JSONL event (prompt prefix, candidate counts,
-	 * top score) to `<workspaceDir>/.hyperspell-coverage.jsonl`. Local-only —
+	 * Retrieval telemetry log (proposal 15): after every successful auto-context
+	 * search, append raw/gated scores, selection outcome, and shown descriptors
+	 * to `<workspaceDir>/.hyperspell-coverage.jsonl`. Local-only —
 	 * never sent to the backend. Default OFF: the events carry prompt text,
 	 * and sensitive plaintext must not reach disk without explicit opt-in
 	 * (same stance as the HYPERSPELL_SCORE_LOG instrumentation).
