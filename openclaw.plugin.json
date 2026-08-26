@@ -1,7 +1,7 @@
 {
 	"id": "openclaw-hyperspell",
 	"name": "Hyperspell",
-	"description": "Context and memory for your AI agents — search across Notion, Slack, Google Drive, and more",
+	"description": "Context and memory for your AI agents \u2014 search across Notion, Slack, Google Drive, and more",
 	"version": "0.23.0",
 	"kind": "memory",
 	"contracts": {
@@ -45,7 +45,7 @@
 		},
 		"emotionalContext": {
 			"label": "Emotional Context",
-			"help": "Maintain emotional continuity across sessions — remembers not just what happened, but how it felt",
+			"help": "Maintain emotional continuity across sessions \u2014 remembers not just what happened, but how it felt",
 			"advanced": true
 		},
 		"excludeChannels": {
@@ -60,7 +60,7 @@
 		},
 		"startupOrientation": {
 			"label": "Startup Orientation",
-			"help": "Inject recent-interactions and unfinished-loops blocks once per session at startup. Costs two extra calls + ~500–800 tokens of injection per session; off by default.",
+			"help": "Inject recent-interactions and unfinished-loops blocks once per session at startup. Costs two extra calls + ~500\u2013800 tokens of injection per session; off by default.",
 			"advanced": true
 		},
 		"relationshipId": {
@@ -114,6 +114,44 @@
 		"dreaming": {
 			"label": "Dreaming",
 			"help": "Optional dreaming config consumed by memory-core when this plugin owns the memory slot. Lets memory-core's dreaming engine consolidate local session transcripts into workspace/MEMORY.md on cron."
+		},
+		"registerSenders": {
+			"type": "array",
+			"items": {
+				"type": "string"
+			},
+			"label": "Register senders allowlist",
+			"help": "Sender ids whose conversations may WRITE the emotional register. Empty: any resolvable sender. Turns with no sender metadata never store either way.",
+			"advanced": true
+		},
+		"localRegisterShadow": {
+			"type": "object",
+			"additionalProperties": false,
+			"label": "Local register shadow (Phase A)",
+			"help": "Run a LOCAL ollama model over the same transcript the backend register store receives; result is written beside the register (workspace shadow ledger), never into it. Generates the preservation-eval corpus. Heavy: one local inference per debounced store.",
+			"advanced": true,
+			"properties": {
+				"enabled": {
+					"type": "boolean",
+					"default": false
+				},
+				"model": {
+					"type": "string",
+					"default": "qwen3.6:35b-mlx"
+				},
+				"url": {
+					"type": "string",
+					"default": "http://localhost:11434"
+				},
+				"maxTranscriptChars": {
+					"type": "number",
+					"default": 24000
+				},
+				"timeoutMs": {
+					"type": "number",
+					"default": 300000
+				}
+			}
 		}
 	},
 	"configSchema": {
@@ -132,24 +170,40 @@
 			"autoTrace": {
 				"type": "object",
 				"properties": {
-					"enabled": { "type": "boolean" },
+					"enabled": {
+						"type": "boolean"
+					},
 					"extract": {
 						"type": "array",
 						"items": {
 							"type": "string",
-							"enum": ["procedure", "memory", "mood"]
+							"enum": [
+								"procedure",
+								"memory",
+								"mood"
+							]
 						}
 					},
-					"metadata": { "type": "object" }
+					"metadata": {
+						"type": "object"
+					}
 				}
 			},
 			"hotBuffer": {
 				"type": "object",
 				"properties": {
-					"enabled": { "type": "boolean" },
-					"source": { "type": "string" },
-					"writeUser": { "type": "boolean" },
-					"writeAssistant": { "type": "boolean" }
+					"enabled": {
+						"type": "boolean"
+					},
+					"source": {
+						"type": "string"
+					},
+					"writeUser": {
+						"type": "boolean"
+					},
+					"writeAssistant": {
+						"type": "boolean"
+					}
 				}
 			},
 			"emotionalContext": {
@@ -162,11 +216,15 @@
 			},
 			"excludeChannels": {
 				"type": "array",
-				"items": { "type": "string" }
+				"items": {
+					"type": "string"
+				}
 			},
 			"quarantineResources": {
 				"type": "array",
-				"items": { "type": "string" }
+				"items": {
+					"type": "string"
+				}
 			},
 			"relationshipId": {
 				"type": "string"
@@ -174,11 +232,27 @@
 			"startupOrientation": {
 				"type": "object",
 				"properties": {
-					"enabled": { "type": "boolean" },
-					"recentDays": { "type": "number", "minimum": 1, "maximum": 90 },
-					"recentLimit": { "type": "number", "minimum": 1, "maximum": 20 },
-					"loopsLimit": { "type": "number", "minimum": 1, "maximum": 20 },
-					"loopsQuery": { "type": "string" }
+					"enabled": {
+						"type": "boolean"
+					},
+					"recentDays": {
+						"type": "number",
+						"minimum": 1,
+						"maximum": 90
+					},
+					"recentLimit": {
+						"type": "number",
+						"minimum": 1,
+						"maximum": 20
+					},
+					"loopsLimit": {
+						"type": "number",
+						"minimum": 1,
+						"maximum": 20
+					},
+					"loopsQuery": {
+						"type": "string"
+					}
 				}
 			},
 			"sources": {
@@ -192,23 +266,68 @@
 			"ranking": {
 				"type": "object",
 				"additionalProperties": false,
-				"description": "Composite retrieval ranking — rank memories by more than raw relevance so kept memory (notes, journals, the active story) surfaces above auto-saved conversation fragments.",
+				"description": "Composite retrieval ranking \u2014 rank memories by more than raw relevance so kept memory (notes, journals, the active story) surfaces above auto-saved conversation fragments.",
 				"properties": {
-					"enabled": { "type": "boolean" },
-					"curationBoost": { "type": "number", "minimum": 0, "maximum": 1 },
-					"chatterPenalty": { "type": "number", "minimum": 0, "maximum": 1 },
-					"storyBoost": { "type": "number", "minimum": 0, "maximum": 1 },
-					"storyTerms": { "type": "array", "items": { "type": "string" } },
-					"candidateMultiplier": { "type": "number", "minimum": 1, "maximum": 10 },
-					"chatterQuota": { "type": "number", "minimum": 0, "maximum": 20 },
-					"recencyHalfLifeDays": { "type": "number", "minimum": 0, "maximum": 3650 },
-					"recencyMaxPenalty": { "type": "number", "minimum": 0, "maximum": 1 },
-					"recencyCuratedFactor": { "type": "number", "minimum": 0, "maximum": 1 },
-					"dedupThreshold": { "type": "number", "minimum": 0, "maximum": 1 },
+					"enabled": {
+						"type": "boolean"
+					},
+					"curationBoost": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1
+					},
+					"chatterPenalty": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1
+					},
+					"storyBoost": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1
+					},
+					"storyTerms": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"candidateMultiplier": {
+						"type": "number",
+						"minimum": 1,
+						"maximum": 10
+					},
+					"chatterQuota": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 20
+					},
+					"recencyHalfLifeDays": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 3650
+					},
+					"recencyMaxPenalty": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1
+					},
+					"recencyCuratedFactor": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1
+					},
+					"dedupThreshold": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1
+					},
 					"processPaths": {
 						"type": "array",
-						"items": { "type": "string" },
-						"description": "Case-insensitive path substrings marking synced files as agent process output (thought logs, caches, heartbeat notes). Matches classify as 'process' and score neutral — no curation boost, full-speed recency decay — instead of being promoted as curated user truth."
+						"items": {
+							"type": "string"
+						},
+						"description": "Case-insensitive path substrings marking synced files as agent process output (thought logs, caches, heartbeat notes). Matches classify as 'process' and score neutral \u2014 no curation boost, full-speed recency decay \u2014 instead of being promoted as curated user truth."
 					},
 					"perFileCap": {
 						"type": "number",
@@ -221,15 +340,33 @@
 						"additionalProperties": false,
 						"description": "Stop injecting early at a natural score cliff instead of always filling maxResults. Conservative: only ever cuts earlier, never later; falls back to plain maxResults/threshold when no clear cliff exists. minGap is calibrated to the current composite scale (boosts of 0.15-0.2).",
 						"properties": {
-							"enabled": { "type": "boolean" },
-							"minResults": { "type": "number", "minimum": 2, "maximum": 20 },
-							"gapRatio": { "type": "number", "minimum": 1, "maximum": 10 },
-							"minGap": { "type": "number", "minimum": 0, "maximum": 1 }
+							"enabled": {
+								"type": "boolean"
+							},
+							"minResults": {
+								"type": "number",
+								"minimum": 2,
+								"maximum": 20
+							},
+							"gapRatio": {
+								"type": "number",
+								"minimum": 1,
+								"maximum": 10
+							},
+							"minGap": {
+								"type": "number",
+								"minimum": 0,
+								"maximum": 1
+							}
 						}
 					},
 					"sourceWeights": {
 						"type": "object",
-						"additionalProperties": { "type": "number", "exclusiveMinimum": 0, "maximum": 5 },
+						"additionalProperties": {
+							"type": "number",
+							"exclusiveMinimum": 0,
+							"maximum": 5
+						},
 						"description": "Per-source multiplier on base relevance before ranking boosts/penalties (e.g. {\"notion\": 1.15, \"slack\": 0.85}). Sources not listed default to 1.0. To exclude a source entirely use the top-level sources filter, not a weight."
 					}
 				}
@@ -242,18 +379,24 @@
 			},
 			"syncMemories": {
 				"oneOf": [
-					{ "type": "boolean" },
+					{
+						"type": "boolean"
+					},
 					{
 						"type": "object",
 						"properties": {
-							"enabled": { "type": "boolean" },
+							"enabled": {
+								"type": "boolean"
+							},
 							"sectionize": {
 								"type": "boolean",
 								"description": "Split files by ## headings into separate memories for better retrieval granularity (default: true)"
 							},
 							"watchPaths": {
 								"type": "array",
-								"items": { "type": "string" },
+								"items": {
+									"type": "string"
+								},
 								"description": "Additional paths to watch beyond memory/ (relative to workspace or absolute)"
 							},
 							"debounceMs": {
@@ -269,41 +412,71 @@
 			"knowledgeGraph": {
 				"type": "object",
 				"properties": {
-					"enabled": { "type": "boolean" },
+					"enabled": {
+						"type": "boolean"
+					},
 					"scanIntervalMinutes": {
 						"type": "number",
 						"minimum": 5,
 						"maximum": 1440
 					},
-					"batchSize": { "type": "number", "minimum": 5, "maximum": 100 }
+					"batchSize": {
+						"type": "number",
+						"minimum": 5,
+						"maximum": 100
+					}
 				}
 			},
 			"multiUser": {
 				"type": "object",
 				"additionalProperties": true,
 				"properties": {
-					"senderMap": { "type": "object" },
-					"sharedUserId": { "type": "string" },
-					"includeSharedInSearch": { "type": "boolean" },
+					"senderMap": {
+						"type": "object"
+					},
+					"sharedUserId": {
+						"type": "string"
+					},
+					"includeSharedInSearch": {
+						"type": "boolean"
+					},
 					"scoping": {
 						"type": "object",
 						"additionalProperties": true,
 						"properties": {
-							"enabled": { "type": "boolean" },
-							"defaultScope": { "type": "string" },
+							"enabled": {
+								"type": "boolean"
+							},
+							"defaultScope": {
+								"type": "string"
+							},
 							"scopes": {
 								"type": "array",
-								"items": { "type": "string" }
+								"items": {
+									"type": "string"
+								}
 							},
-							"roles": { "type": "object" },
-							"users": { "type": "object" },
-							"collections": { "type": "object" },
+							"roles": {
+								"type": "object"
+							},
+							"users": {
+								"type": "object"
+							},
+							"collections": {
+								"type": "object"
+							},
 							"voiceId": {
 								"type": "object",
 								"properties": {
-									"enabled": { "type": "boolean" },
-									"adapter": { "type": "string" },
-									"confidenceThreshold": { "type": "number" }
+									"enabled": {
+										"type": "boolean"
+									},
+									"adapter": {
+										"type": "string"
+									},
+									"confidenceThreshold": {
+										"type": "number"
+									}
 								}
 							}
 						}
