@@ -208,6 +208,22 @@ export type HyperspellConfig = {
 	 * speaks. Reads (arc injection/tool) are unaffected.
 	 */
 	registerSenders: string[];
+	/**
+	 * Phase A of the local-tier design (2026-08-26): run the operator's LOCAL
+	 * model over the same transcript the backend register store receives, and
+	 * write the result BESIDE the register (workspace shadow ledger) — never
+	 * into it. Generates the preservation-eval corpus (backend-vs-local pairs
+	 * per store window). The backend flow is untouched; the FLIP to local
+	 * extraction is Phase B, behind the eval and the consent gate. Default
+	 * off: it runs a multi-minute 35B inference per debounced store.
+	 */
+	localRegisterShadow: {
+		enabled: boolean;
+		model: string;
+		url: string;
+		maxTranscriptChars: number;
+		timeoutMs: number;
+	};
 	startupOrientation: StartupOrientationConfig;
 	syncMemories: boolean;
 	syncMemoriesConfig: SyncMemoriesConfig;
@@ -241,6 +257,7 @@ const ALLOWED_KEYS = [
 	"quarantineResources",
 	"relationshipId",
 	"registerSenders",
+	"localRegisterShadow",
 	"startupOrientation",
 	"syncMemories",
 	"sources",
@@ -748,6 +765,16 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 					.filter((r) => r.length > 0)
 			: [],
 		relationshipId: cfg.relationshipId as string | undefined,
+		localRegisterShadow: (() => {
+			const r = (cfg.localRegisterShadow ?? {}) as Record<string, unknown>;
+			return {
+				enabled: r.enabled === true,
+				model: typeof r.model === "string" && r.model.trim() ? r.model.trim() : "qwen3.6:35b-mlx",
+				url: typeof r.url === "string" && r.url.trim() ? r.url.trim() : "http://localhost:11434",
+				maxTranscriptChars: typeof r.maxTranscriptChars === "number" && r.maxTranscriptChars > 0 ? r.maxTranscriptChars : 24000,
+				timeoutMs: typeof r.timeoutMs === "number" && r.timeoutMs > 0 ? r.timeoutMs : 300000,
+			};
+		})(),
 		registerSenders: Array.isArray(cfg.registerSenders)
 			? (cfg.registerSenders as unknown[])
 					.map((v) => String(v).trim())

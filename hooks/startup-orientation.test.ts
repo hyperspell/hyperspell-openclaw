@@ -65,6 +65,7 @@ function makeCfg(overrides?: Partial<HyperspellConfig>): HyperspellConfig {
 		emotionalContext: false,
 		moodWeatherChance: 0,
 		registerSenders: [],
+		localRegisterShadow: { enabled: false, model: "m", url: "http://x", maxTranscriptChars: 24000, timeoutMs: 300000 },
 		excludeChannels: [],
 		quarantineResources: [],
 		startupOrientation: {
