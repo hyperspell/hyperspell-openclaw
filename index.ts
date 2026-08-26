@@ -342,6 +342,10 @@ export default {
 		}
 
 		// Register memory network tools
+		if (cfg.localRegisterShadow.enabled)
+			costLines.push(
+				`localRegisterShadow: one LOCAL ${cfg.localRegisterShadow.model} inference (minutes of GPU/ANE) per debounced register store — transcript never leaves the machine`,
+			);
 		if (cfg.knowledgeGraph.enabled) {
 			registerNetworkTools(api, client, cfg);
 		} else {
@@ -400,6 +404,10 @@ export default {
 			costLines.push("startupOrientation: 2 backend fetches per session start");
 		if (cfg.syncMemories)
 			costLines.push("syncMemories: 1 write per changed memory section");
+		if (cfg.localRegisterShadow.enabled)
+			costLines.push(
+				`localRegisterShadow: one LOCAL ${cfg.localRegisterShadow.model} inference (minutes of GPU/ANE) per debounced register store — transcript never leaves the machine`,
+			);
 		if (cfg.knowledgeGraph.enabled)
 			costLines.push(
 				`knowledgeGraph: entity-extraction scan every ${cfg.knowledgeGraph.scanIntervalMinutes} min`,
