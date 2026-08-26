@@ -342,10 +342,6 @@ export default {
 		}
 
 		// Register memory network tools
-		if (cfg.localRegisterShadow.enabled)
-			costLines.push(
-				`localRegisterShadow: one LOCAL ${cfg.localRegisterShadow.model} inference (minutes of GPU/ANE) per debounced register store — transcript never leaves the machine`,
-			);
 		if (cfg.knowledgeGraph.enabled) {
 			registerNetworkTools(api, client, cfg);
 		} else {
