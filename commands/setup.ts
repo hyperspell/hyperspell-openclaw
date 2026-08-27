@@ -344,6 +344,7 @@ async function runSetup(): Promise<void> {
         apiKey,
         userId,
         autoContext: true,
+        recallSignal: false,
         autoTrace: { enabled: false, extract: ["procedure"] },
         hotBuffer: {
           enabled: false,

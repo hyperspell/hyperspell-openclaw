@@ -91,6 +91,11 @@
 			"help": "Append a local-only JSONL event when auto-context finds no relevant memories (zero results or all below threshold), so capture gaps can be told apart from ranking misses. Events include prompt text (truncated), so this is off by default. Never sent to Hyperspell.",
 			"advanced": true
 		},
+		"recallSignal": {
+			"label": "Recall Signal",
+			"help": "Inject one line of retrieval shape (candidate count, best gated score, threshold, shown count) into context on every auto-context turn, including empty ones — a feeling-of-knowing signal so the agent can tell 'nothing stored' from 'retrieval just missed' and choose to search deliberately. Shape only; never the near-miss content. Off by default.",
+			"advanced": true
+		},
 		"debug": {
 			"label": "Debug Logging",
 			"help": "Enable verbose debug logs for API calls and responses",
@@ -344,6 +349,9 @@
 				}
 			},
 			"coverageLog": {
+				"type": "boolean"
+			},
+			"recallSignal": {
 				"type": "boolean"
 			},
 			"debug": {

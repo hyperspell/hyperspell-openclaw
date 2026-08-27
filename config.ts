@@ -232,14 +232,27 @@ export type HyperspellConfig = {
 	relevanceThreshold: number;
 	ranking: RankingWeights;
 	/**
-	 * Zero-result coverage log (proposal 15): when auto-context injects no
-	 * memory sections, append one JSONL event (prompt prefix, candidate counts,
-	 * top score) to `<workspaceDir>/.hyperspell-coverage.jsonl`. Local-only —
+	 * Retrieval telemetry log (proposal 15): after every successful auto-context
+	 * search, append raw/gated scores, selection outcome, and shown descriptors
+	 * to `<workspaceDir>/.hyperspell-coverage.jsonl`. Local-only —
 	 * never sent to the backend. Default OFF: the events carry prompt text,
 	 * and sensitive plaintext must not reach disk without explicit opt-in
 	 * (same stance as the HYPERSPELL_SCORE_LOG instrumentation).
 	 */
 	coverageLog: boolean;
+	/**
+	 * Metamemory recall signal (proposal 19): inject one line of retrieval
+	 * SHAPE (candidate count, gated top score, threshold, shown count) into
+	 * context on every auto-context turn — including turns that inject
+	 * nothing — so the agent can tell "nothing is stored" (0 candidates)
+	 * from "retrieval nearly hit" (best just under the gate) instead of
+	 * reading both as silence. Shape only, never the near-miss documents.
+	 * Scores are the GATED (composite) values — the quantity the threshold
+	 * actually compares — or raw relevance when ranking is off. Default OFF
+	 * (repo convention + Proposal 18: a per-turn injection into a running
+	 * agent's context is a governed surface — enable per install by consent).
+	 */
+	recallSignal: boolean;
 	debug: boolean;
 	knowledgeGraph: KnowledgeGraphConfig;
 	multiUser?: MultiUserConfig;
@@ -265,6 +278,7 @@ const ALLOWED_KEYS = [
 	"relevanceThreshold",
 	"ranking",
 	"coverageLog",
+	"recallSignal",
 	"debug",
 	"knowledgeGraph",
 	"multiUser",
@@ -808,6 +822,9 @@ export function parseConfig(raw: unknown): HyperspellConfig {
 		// coverage events carry prompt text, so nothing is written to disk
 		// unless the operator explicitly opts in.
 		coverageLog: (cfg.coverageLog as boolean) ?? false,
+		// Default OFF (proposal 19 §6a): an every-turn context injection is a
+		// governed surface — no install's behavior changes on ship.
+		recallSignal: (cfg.recallSignal as boolean) ?? false,
 		debug: (cfg.debug as boolean) ?? false,
 		knowledgeGraph: {
 			enabled: (kgRaw.enabled as boolean) ?? false,

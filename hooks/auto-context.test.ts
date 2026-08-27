@@ -5,7 +5,7 @@ import path from "node:path"
 import { test } from "node:test"
 import type { HyperspellClient, SearchResult } from "../client.ts"
 import type { HyperspellConfig } from "../config.ts"
-import { COVERAGE_LOG_NAME } from "../lib/coverage-log.ts"
+import { COVERAGE_LOG_NAME, flushCoverageLog } from "../lib/coverage-log.ts"
 import { DEFAULT_RANKING, type RankedResult } from "../lib/ranking.ts"
 import { initLogger } from "../logger.ts"
 import {
@@ -98,6 +98,7 @@ function makeCfg(overrides?: Partial<HyperspellConfig>): HyperspellConfig {
     relevanceThreshold: 0.6,
     ranking: DEFAULT_RANKING,
     coverageLog: false,
+    recallSignal: false,
     debug: false,
     knowledgeGraph: { enabled: false, scanIntervalMinutes: 60, batchSize: 20 },
     ...overrides,
@@ -350,16 +351,22 @@ test("auto-context coverage — zero-result search writes an 'empty' event", asy
   const stateRoot = mkStateRoot()
   const handler = buildAutoContextHandler(
     makeSearchClient([]),
-    makeCfg({ coverageLog: true }),
+    makeCfg({ coverageLog: true, recallSignal: true }),
     { stateRoot },
   )
-  const out = await handler({ prompt: COVERAGE_PROMPT }, {})
-  assert.equal(out, undefined, "still injects nothing")
+  const out = (await handler({ prompt: COVERAGE_PROMPT }, {})) as
+    | { prependContext: string }
+    | undefined
+  assert.equal(
+    out?.prependContext,
+    "<hyperspell-context>\nrecall: 0 candidates · best none · threshold 0.60 · nothing shown\n</hyperspell-context>",
+  )
 
+  await flushCoverageLog()
   const entries = readCoverage(stateRoot)
   assert.equal(entries.length, 1)
   const entry = entries[0]
-  assert.equal(entry.v, 1)
+  assert.equal(entry.v, 2)
   assert.equal(entry.outcome, "empty")
   assert.equal(entry.fetched, 0)
   assert.equal(entry.candidates, 0)
@@ -381,18 +388,76 @@ test("auto-context coverage — candidates below threshold write a 'below_thresh
   })
   const handler = buildAutoContextHandler(
     makeSearchClient([low]),
-    makeCfg({ coverageLog: true }),
+    makeCfg({ coverageLog: true, recallSignal: true }),
     { stateRoot },
   )
-  const out = await handler({ prompt: COVERAGE_PROMPT }, {})
-  assert.equal(out, undefined)
+  const out = (await handler({ prompt: COVERAGE_PROMPT }, {})) as
+    | { prependContext: string }
+    | undefined
+  assert.ok(
+    out?.prependContext.includes(
+      "recall: 1 candidates · best 0.40 · threshold 0.60 · nothing shown",
+    ),
+  )
 
+  await flushCoverageLog()
   const [entry] = readCoverage(stateRoot)
   assert.equal(entry.outcome, "below_threshold")
   assert.equal(entry.fetched, 1)
   assert.equal(entry.candidates, 1)
-  assert.equal(entry.topScore, 0.2)
+  assert.equal(entry.topScore, 0.4)
+  assert.equal(entry.rawTopScore, 0.2)
   assert.equal(entry.threshold, 0.6)
+  fs.rmSync(stateRoot, { recursive: true, force: true })
+})
+
+test("auto-context coverage — FOK uses the gated composite, not the raw server score", async () => {
+  const stateRoot = mkStateRoot()
+  const oldChatter = searchResult({
+    resourceId: CHATTER_UUID(9),
+    score: 0.841,
+    createdAt: "2000-01-01T00:00:00Z",
+    highlights: [{ id: "h1", text: "old conversation echo", score: 0.841 }],
+  })
+  const handler = buildAutoContextHandler(
+    makeSearchClient([oldChatter]),
+    makeCfg({ coverageLog: true, recallSignal: true }),
+    { stateRoot },
+  )
+  const out = (await handler({ prompt: COVERAGE_PROMPT }, {})) as
+    | { prependContext: string }
+    | undefined
+
+  assert.ok(out?.prependContext.includes("best 0.54 · threshold 0.60 · nothing shown"))
+  await flushCoverageLog()
+  const [entry] = readCoverage(stateRoot)
+  assert.equal(entry.outcome, "below_threshold")
+  assert.equal(entry.rawTopScore, 0.841)
+  assert.ok(Math.abs(entry.topScore - 0.541) < 0.001)
+  fs.rmSync(stateRoot, { recursive: true, force: true })
+})
+
+test("auto-context coverage — a non-threshold cut is labeled 'filtered'", async () => {
+  const stateRoot = mkStateRoot()
+  const chatter = searchResult({
+    resourceId: CHATTER_UUID(8),
+    score: 0.9,
+    highlights: [{ id: "h1", text: "quota-cut echo", score: 0.9 }],
+  })
+  const handler = buildAutoContextHandler(
+    makeSearchClient([chatter]),
+    makeCfg({
+      coverageLog: true,
+      ranking: { ...DEFAULT_RANKING, chatterQuota: 0 },
+    }),
+    { stateRoot },
+  )
+  await handler({ prompt: COVERAGE_PROMPT }, {})
+
+  await flushCoverageLog()
+  const [entry] = readCoverage(stateRoot)
+  assert.equal(entry.outcome, "filtered")
+  assert.ok(entry.topScore >= entry.threshold)
   fs.rmSync(stateRoot, { recursive: true, force: true })
 })
 
@@ -402,6 +467,7 @@ test("auto-context coverage — OFF by default: no file even on a zero-result tu
     stateRoot,
   })
   await handler({ prompt: COVERAGE_PROMPT }, {})
+  await flushCoverageLog()
   assert.ok(
     !fs.existsSync(path.join(stateRoot, COVERAGE_LOG_NAME)),
     "coverageLog defaults false — prompts never reach disk without opt-in",
@@ -409,18 +475,40 @@ test("auto-context coverage — OFF by default: no file even on a zero-result tu
   fs.rmSync(stateRoot, { recursive: true, force: true })
 })
 
-test("auto-context coverage — an injecting turn writes no event", async () => {
+test("auto-context coverage — an injecting turn writes hit telemetry", async () => {
   const stateRoot = mkStateRoot()
   const handler = buildAutoContextHandler(
     makeSearchClient(fixturePool()),
-    makeCfg({ coverageLog: true }),
+    makeCfg({ coverageLog: true, recallSignal: true }),
     { stateRoot },
   )
   const out = (await handler({ prompt: COVERAGE_PROMPT }, {})) as
     | { prependContext: string }
     | undefined
   assert.ok(out?.prependContext, "fixture pool injects")
-  assert.ok(!fs.existsSync(path.join(stateRoot, COVERAGE_LOG_NAME)))
+  assert.ok(
+    out.prependContext.includes(
+      "recall: 5 candidates · best 0.90 · threshold 0.60 · 3 shown",
+    ),
+  )
+  await flushCoverageLog()
+  const [entry] = readCoverage(stateRoot)
+  assert.equal(entry.outcome, "injected")
+  assert.equal(entry.shown, 3)
+  assert.ok(entry.shownChars > 0)
+  // The authorship ratio divides per-item sums, so per-item chars must be
+  // exactly additive: the block is the sections joined by "\n\n" (#133
+  // review finding 1 — a field that looks additive but isn't is worse than
+  // no field).
+  const charSum = entry.selected.reduce(
+    (acc: number, r: { injectedChars: number }) => acc + r.injectedChars,
+    0,
+  )
+  assert.equal(charSum, entry.shownChars - 2 * (entry.shown - 1))
+  assert.deepEqual(
+    entry.selected.map((r: { resourceId: string }) => r.resourceId),
+    ["mem-notes", CHATTER_UUID(1), CHATTER_UUID(2)],
+  )
   fs.rmSync(stateRoot, { recursive: true, force: true })
 })
 
@@ -433,6 +521,7 @@ test("auto-context coverage — a FAILED search writes no event (availability is
   )
   const out = await handler({ prompt: COVERAGE_PROMPT }, {})
   assert.equal(out, undefined, "existing behavior: silent on failure")
+  await flushCoverageLog()
   assert.ok(!fs.existsSync(path.join(stateRoot, COVERAGE_LOG_NAME)))
   fs.rmSync(stateRoot, { recursive: true, force: true })
 })
@@ -443,11 +532,16 @@ test("auto-context coverage — unwritable stateRoot degrades safely (turn still
   fs.writeFileSync(notADir, "plain file")
   const handler = buildAutoContextHandler(
     makeSearchClient([]),
-    makeCfg({ coverageLog: true }),
+    makeCfg({ coverageLog: true, recallSignal: true }),
     { stateRoot: notADir },
   )
-  const out = await handler({ prompt: COVERAGE_PROMPT }, {})
-  assert.equal(out, undefined, "coverage write failure never throws into the turn")
+  const out = (await handler({ prompt: COVERAGE_PROMPT }, {})) as
+    | { prependContext: string }
+    | undefined
+  assert.ok(
+    out?.prependContext.includes("recall: 0 candidates"),
+    "coverage write failure never suppresses the runtime signal",
+  )
   fs.rmSync(stateRoot, { recursive: true, force: true })
 })
 
@@ -487,6 +581,7 @@ test("auto-context coverage — multi-user: failed lane recorded as error, not a
     "identity preamble still injected (identity, not memory)",
   )
 
+  await flushCoverageLog()
   const entries = readCoverage(stateRoot)
   assert.equal(entries.length, 1, "one event per turn, not per lane")
   const entry = entries[0]
@@ -494,7 +589,13 @@ test("auto-context coverage — multi-user: failed lane recorded as error, not a
   assert.equal(entry.userId, "u-dave")
   assert.deepEqual(entry.lanes, [
     { lane: "personal", status: "error" },
-    { lane: "shared", status: "ok", candidates: 0, topScore: null },
+    {
+      lane: "shared",
+      status: "ok",
+      candidates: 0,
+      topScore: null,
+      rawTopScore: null,
+    },
   ])
   fs.rmSync(stateRoot, { recursive: true, force: true })
 })
@@ -507,6 +608,7 @@ test("auto-context coverage — multi-user: every lane failing writes no event",
     { stateRoot },
   )
   await handler({ prompt: COVERAGE_PROMPT }, { senderId: "dave" })
+  await flushCoverageLog()
   assert.ok(
     !fs.existsSync(path.join(stateRoot, COVERAGE_LOG_NAME)),
     "all-lanes-failed is an availability event (#39), never coverage",
@@ -524,20 +626,106 @@ test("auto-context coverage — multi-user: below_threshold when a fulfilled lan
   })
   const handler = buildAutoContextHandler(
     makeLaneClient([low], []),
-    makeCfg({ coverageLog: true, multiUser: MULTI_USER }),
+    makeCfg({ coverageLog: true, recallSignal: true, multiUser: MULTI_USER }),
     { stateRoot },
   )
-  await handler({ prompt: COVERAGE_PROMPT }, { senderId: "dave" })
+  const out = (await handler(
+    { prompt: COVERAGE_PROMPT },
+    { senderId: "dave" },
+  )) as { prependContext: string } | undefined
+  assert.ok(
+    out?.prependContext.includes(
+      "recall: 1 candidates · best 0.40 · threshold 0.60 · nothing shown",
+    ),
+  )
 
+  await flushCoverageLog()
   const [entry] = readCoverage(stateRoot)
   assert.equal(entry.outcome, "below_threshold")
   assert.equal(entry.fetched, 1)
   assert.equal(entry.candidates, 1)
-  assert.equal(entry.topScore, 0.2)
+  assert.equal(entry.topScore, 0.4)
+  assert.equal(entry.rawTopScore, 0.2)
   assert.deepEqual(entry.lanes, [
-    { lane: "personal", status: "ok", candidates: 1, topScore: 0.2 },
-    { lane: "shared", status: "ok", candidates: 0, topScore: null },
+    {
+      lane: "personal",
+      status: "ok",
+      candidates: 1,
+      topScore: 0.4,
+      rawTopScore: 0.2,
+    },
+    {
+      lane: "shared",
+      status: "ok",
+      candidates: 0,
+      topScore: null,
+      rawTopScore: null,
+    },
   ])
+  fs.rmSync(stateRoot, { recursive: true, force: true })
+})
+
+// ---- recallSignal gate (proposal 19 §6a): the line is opt-in ----
+
+test("recall signal — OFF by default: an empty turn injects nothing", async () => {
+  const stateRoot = mkStateRoot()
+  const handler = buildAutoContextHandler(makeSearchClient([]), makeCfg(), {
+    stateRoot,
+  })
+  const out = await handler({ prompt: COVERAGE_PROMPT }, {})
+  assert.equal(out, undefined, "gate off restores the no-injection empty turn")
+  fs.rmSync(stateRoot, { recursive: true, force: true })
+})
+
+test("recall signal — OFF by default: an injecting turn carries no recall line", async () => {
+  const stateRoot = mkStateRoot()
+  const handler = buildAutoContextHandler(
+    makeSearchClient(fixturePool()),
+    makeCfg(),
+    { stateRoot },
+  )
+  const out = (await handler({ prompt: COVERAGE_PROMPT }, {})) as
+    | { prependContext: string }
+    | undefined
+  const injected = out?.prependContext ?? ""
+  assert.ok(injected.includes("<hyperspell-context>"))
+  assert.ok(!injected.includes("recall:"))
+  fs.rmSync(stateRoot, { recursive: true, force: true })
+})
+
+test("recall signal — multi-user with ranking OFF: best falls back to raw and a highlight-starved miss is 'filtered'", async () => {
+  const stateRoot = mkStateRoot()
+  // Clears the raw score gate, but no highlight does — formats to nothing.
+  const quiet = searchResult({
+    resourceId: "mem-quiet",
+    title: "Quiet Doc",
+    score: 0.9,
+    highlights: [{ id: "h1", text: "low highlight", score: 0.2 }],
+  })
+  const handler = buildAutoContextHandler(
+    makeLaneClient([quiet], []),
+    makeCfg({
+      coverageLog: true,
+      recallSignal: true,
+      multiUser: MULTI_USER,
+      ranking: { ...DEFAULT_RANKING, enabled: false },
+    }),
+    { stateRoot },
+  )
+  const out = (await handler(
+    { prompt: COVERAGE_PROMPT },
+    { senderId: "dave" },
+  )) as { prependContext: string } | undefined
+  assert.ok(
+    out?.prependContext.includes(
+      "recall: 1 candidates · best 0.90 · threshold 0.60 · nothing shown",
+    ),
+    `raw fallback when ranking is off: ${out?.prependContext}`,
+  )
+  await flushCoverageLog()
+  const [entry] = readCoverage(stateRoot)
+  assert.equal(entry.outcome, "filtered")
+  assert.equal(entry.rawTopScore, 0.9)
   fs.rmSync(stateRoot, { recursive: true, force: true })
 })
 
@@ -606,14 +794,18 @@ test("repeat suppression — a memory injected once is not re-injected later in 
     }),
   ]
   const client = { search: async () => pool } as unknown as HyperspellClient
-  const handler = buildAutoContextHandler(client, makeCfg())
+  const handler = buildAutoContextHandler(client, makeCfg({ recallSignal: true }))
   const ctx = { sessionKey: "agent:main:discord:channel:rs-1", sessionId: "rs-session-1" }
 
   const first = (await handler({ prompt: PROMPT }, ctx)) as { prependContext: string } | undefined
   assert.ok(first?.prependContext.includes("mem-repeat"), "first turn injects")
 
   const second = await handler({ prompt: PROMPT }, ctx)
-  assert.equal(second, undefined, "same memory must not be re-injected in the same session")
+  assert.ok(
+    second?.prependContext?.includes("nothing shown"),
+    "same memory is not re-injected, but the retrieval shape remains visible",
+  )
+  assert.ok(!second?.prependContext?.includes("mem-repeat"))
 
   // A DIFFERENT session is unaffected by session 1's suppression.
   const other = (await handler(
@@ -641,11 +833,15 @@ test("repeat suppression — a remember write from THIS session is excluded from
     }),
   ]
   const client = { search: async () => pool } as unknown as HyperspellClient
-  const handler = buildAutoContextHandler(client, makeCfg())
+  const handler = buildAutoContextHandler(client, makeCfg({ recallSignal: true }))
   recordSessionWrite("rw-session-1", "mem-just-written")
 
   const same = await handler({ prompt: PROMPT }, { sessionId: "rw-session-1" })
-  assert.equal(same, undefined, "own just-written note must not echo back this session")
+  assert.ok(
+    same?.prependContext?.includes("nothing shown"),
+    "own just-written note does not echo, but the retrieval shape remains visible",
+  )
+  assert.ok(!same?.prependContext?.includes("mem-just-written"))
 
   const other = (await handler({ prompt: PROMPT }, { sessionId: "rw-session-2" })) as
     | { prependContext: string }
