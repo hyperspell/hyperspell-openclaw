@@ -496,6 +496,15 @@ test("auto-context coverage — an injecting turn writes hit telemetry", async (
   assert.equal(entry.outcome, "injected")
   assert.equal(entry.shown, 3)
   assert.ok(entry.shownChars > 0)
+  // The authorship ratio divides per-item sums, so per-item chars must be
+  // exactly additive: the block is the sections joined by "\n\n" (#133
+  // review finding 1 — a field that looks additive but isn't is worse than
+  // no field).
+  const charSum = entry.selected.reduce(
+    (acc: number, r: { injectedChars: number }) => acc + r.injectedChars,
+    0,
+  )
+  assert.equal(charSum, entry.shownChars - 2 * (entry.shown - 1))
   assert.deepEqual(
     entry.selected.map((r: { resourceId: string }) => r.resourceId),
     ["mem-notes", CHATTER_UUID(1), CHATTER_UUID(2)],

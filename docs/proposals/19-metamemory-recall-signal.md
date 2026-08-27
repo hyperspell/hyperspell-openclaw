@@ -114,13 +114,20 @@ a) **Opt-in gate.** Repo convention is hard ("default OFF so shipping never
    (`flushCoverageLog()` for tests/shutdown).**
 b) Tests for the gate (default-off restores pre-change returns; existing
    recall assertions move behind `recallSignal: true`), and a
-   cost-disclosure line in setup when enabled.
+   cost-disclosure line in setup when enabled. **Done — b716884.**
 c) Deploy + end-to-end verification on Alinea's install (deploy loop owned
    by one session at a time; dist-swap must now ship
    `openclaw.plugin.json` alongside `dist/`).
 d) Calibration check against ground truth: `hyperspell_vault_list` +
    sampled queries — does a high near-miss line actually predict that a
    deliberate search finds something?
+e) **Percentile framing** (her review on #133, finding 4): `best 0.54` has
+   no stable units — a composite of a cross-encoder score plus additive
+   constants. Follow up by rendering the line's best as a corpus percentile
+   ("best 0.54 (61st pct)") from a rolling window of v2 events once a week
+   of hit telemetry exists. Until then the number is honest but not
+   interpretable, and the illusion-of-knowing risk (§8) stays open — the
+   agent reviewing the PR named this the calibration gap that remains.
 
 ## 7. Structural note — two rankers in series (deferred, needs its own proposal)
 

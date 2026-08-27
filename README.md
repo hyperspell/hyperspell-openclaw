@@ -433,6 +433,8 @@ No ranking tweak can surface a memory that was never captured — and by default
 
 Schema v2 separates `rawTopScore` (the server/cross-encoder score) from `topScore` (the client composite actually compared with `threshold`). Never compare `rawTopScore` with the threshold: client boosts, penalties, source weights, and recency adjustment change the gated value.
 
+The authorship ratio the hit telemetry exists for should be computed from per-item sums — `sum(injectedChars where writer = agent) / sum(injectedChars)` — which are exact. In single-user events `sum(selected[].injectedChars)` equals `shownChars` minus the join separators (`2·(shown−1)`); in multi-user events `shownChars` additionally counts lane wrappers and the identity preamble, so only the per-item sums are additive there.
+
 Failed searches never produce events — backend-unavailable is not "no memories." In multi-user mode there is one event per turn with per-lane detail, and a lane whose search failed is recorded as `status: "error"`, never as zero candidates.
 
 **Local-only guarantee:** the log is written only to the workspace directory and is never sent to Hyperspell or anywhere remote. Because each event carries the triggering prompt (truncated to 500 chars), the feature is **off by default** — prompt text reaches disk only if you explicitly opt in. The file is capped at 5 MB with one `.old` rotation generation (~10 MB total), so content ages out instead of accumulating.

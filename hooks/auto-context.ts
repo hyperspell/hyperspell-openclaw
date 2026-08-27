@@ -248,8 +248,12 @@ export function dropCurrentSession(
   return kept
 }
 
-/** Highest raw relevance among candidates — `topScore 0.54` vs `threshold 0.6`
- * is a ranking near-miss; `0.12` means the vault has nothing close (capture). */
+/** Highest RAW (pre-adjustment server) relevance across the POST-DROP
+ * candidate pool — the `rawTopScore` telemetry source. When ranking is on this
+ * is NOT comparable with `relevanceThreshold`: the gate runs on the client
+ * composite (see `gatedTopScore`), and comparing raw against the threshold is
+ * the exact miscalibration #133 removed. With ranking off, raw IS what the
+ * gate compares, so it doubles as the gated value. */
 function topScoreOf(results: SearchResult[]): number | null {
   return results.length ? Math.max(...results.map((r) => r.score ?? 0)) : null
 }
@@ -451,45 +455,54 @@ export function buildAutoContextHandler(
           )
         }
 
-        // Only what formatting actually injects: selection can admit a result
-        // on base score whose highlights then all fall under the floor —
-        // formatSelected renders no section for it, so it must not count as
-        // shown, be repeat-suppressed, or appear in hit telemetry (#133 review).
-        selectedTelemetry = selected
-          .map((r) => ({
-            resourceId: r.resourceId,
-            kind: r._kind,
-            writer: r.metaWriter,
-            injectedChars: formatSelected([r], cfg.relevanceThreshold)?.length ?? 0,
-          }))
-          .filter((t) => t.injectedChars > 0)
+        // ONE render per selected result, reused for both the injected block
+        // and telemetry (#133 review, findings 1+2): selection can admit a
+        // result on base score whose highlights then all fall under the floor
+        // — it renders no section, so it must not count as shown, be
+        // repeat-suppressed, or appear in hit telemetry. Deriving the block
+        // from the same sections makes the accounting exact by construction:
+        // sum(selected[].injectedChars) = shownChars − 2·(shown−1), the join
+        // separators — and costs no formatting work when telemetry is off
+        // (the batch call this replaces did the same per-result renders).
+        const rendered = selected.flatMap((r) => {
+          const section = formatSelected([r], cfg.relevanceThreshold)
+          return section ? [{ r, section }] : []
+        })
+        selectedTelemetry = rendered.map(({ r, section }) => ({
+          resourceId: r.resourceId,
+          kind: r._kind,
+          writer: r.metaWriter,
+          injectedChars: section.length,
+        }))
         injectedIds = selectedTelemetry.map((t) => t.resourceId)
-        formatted = formatSelected(selected, cfg.relevanceThreshold)
+        formatted = rendered.length
+          ? rendered.map((x) => x.section).join("\n\n")
+          : null
         if (formatted) {
           log.diag(
             `auto-context: injecting (ranked) ${JSON.stringify(kindTally(selected))} from ${results.length} candidates (chatter cap ${ranking.chatterQuota}, composite ${selected.at(-1)?._composite.toFixed(2)}–${selected[0]?._composite.toFixed(2)})`,
           )
         }
       } else {
-        formatted = formatHighlightBullets(results, cfg.maxResults, cfg.relevanceThreshold)
-        if (formatted) {
-          // Same only-what-landed rule as the ranked path: a doc that clears
-          // the score gate but has no above-threshold highlight renders no
-          // section and stays out of ids/telemetry (#133 review).
-          selectedTelemetry = results
-            .slice(0, cfg.maxResults)
-            .filter((r) => (r.score ?? 0) >= cfg.relevanceThreshold)
-            .map((r) => ({
-              resourceId: r.resourceId,
-              kind: classifyResult(r, ranking.storyTerms, ranking.processPaths),
-              writer: r.metaWriter,
-              injectedChars:
-                formatHighlightBullets([r], 1, cfg.relevanceThreshold)?.length ?? 0,
-            }))
-            .filter((t) => t.injectedChars > 0)
-          injectedIds = selectedTelemetry.map((t) => t.resourceId)
-          log.debug(`auto-context: injecting ${results.length} memories`)
-        }
+        // Same one-render rule as the ranked path (#133 review).
+        const rendered = results
+          .slice(0, cfg.maxResults)
+          .filter((r) => (r.score ?? 0) >= cfg.relevanceThreshold)
+          .flatMap((r) => {
+            const section = formatHighlightBullets([r], 1, cfg.relevanceThreshold)
+            return section ? [{ r, section }] : []
+          })
+        selectedTelemetry = rendered.map(({ r, section }) => ({
+          resourceId: r.resourceId,
+          kind: classifyResult(r, ranking.storyTerms, ranking.processPaths),
+          writer: r.metaWriter,
+          injectedChars: section.length,
+        }))
+        injectedIds = selectedTelemetry.map((t) => t.resourceId)
+        formatted = rendered.length
+          ? rendered.map((x) => x.section).join("\n\n")
+          : null
+        if (formatted) log.debug(`auto-context: injecting ${results.length} memories`)
       }
 
       const recallSignal = formatRecallSignal(
@@ -723,28 +736,25 @@ async function multiUserSearch(
       const rawTop = topScoreOf(laneResults)
       if (scope === "personal") personalGatedTop = rawTop
       else sharedGatedTop = rawTop
-      const formatted = formatHighlightBullets(
-        laneResults,
-        laneLimit,
-        cfg.relevanceThreshold,
+      // Same one-render rule as single-user (#133 review).
+      const rendered = laneResults
+        .slice(0, laneLimit)
+        .filter((r) => (r.score ?? 0) >= cfg.relevanceThreshold)
+        .flatMap((r) => {
+          const section = formatHighlightBullets([r], 1, cfg.relevanceThreshold)
+          return section ? [{ r, section }] : []
+        })
+      if (rendered.length === 0) return null
+      laneInjectedIds.push(...rendered.map((x) => x.r.resourceId))
+      selectedTelemetry.push(
+        ...rendered.map(({ r, section }) => ({
+          resourceId: r.resourceId,
+          kind: classifyResult(r, ranking.storyTerms, ranking.processPaths),
+          writer: r.metaWriter,
+          injectedChars: section.length,
+        })),
       )
-      if (formatted) {
-        // Same only-what-landed rule as single-user (#133 review).
-        const laneTelemetry = laneResults
-          .slice(0, laneLimit)
-          .filter((r) => (r.score ?? 0) >= cfg.relevanceThreshold)
-          .map((r) => ({
-            resourceId: r.resourceId,
-            kind: classifyResult(r, ranking.storyTerms, ranking.processPaths),
-            writer: r.metaWriter,
-            injectedChars:
-              formatHighlightBullets([r], 1, cfg.relevanceThreshold)?.length ?? 0,
-          }))
-          .filter((t) => t.injectedChars > 0)
-        laneInjectedIds.push(...laneTelemetry.map((t) => t.resourceId))
-        selectedTelemetry.push(...laneTelemetry)
-      }
-      return formatted
+      return rendered.map((x) => x.section).join("\n\n")
     }
     const ranked = rerank(laneResults, ranking)
     const gatedTop = ranked.length
@@ -766,21 +776,22 @@ async function multiUserSearch(
     log.diag(
       `auto-context[${scope}]: ranked ${JSON.stringify(kindTally(ranked))} → selected ${JSON.stringify(kindTally(selected))} (chatter cap ${ranking.chatterQuota})`,
     )
-    const formatted = formatSelected(selected, cfg.relevanceThreshold)
-    if (formatted) {
-      // Same only-what-landed rule as single-user (#133 review).
-      const laneTelemetry = selected
-        .map((r) => ({
-          resourceId: r.resourceId,
-          kind: r._kind,
-          writer: r.metaWriter,
-          injectedChars: formatSelected([r], cfg.relevanceThreshold)?.length ?? 0,
-        }))
-        .filter((t) => t.injectedChars > 0)
-      laneInjectedIds.push(...laneTelemetry.map((t) => t.resourceId))
-      selectedTelemetry.push(...laneTelemetry)
-    }
-    return formatted
+    // Same one-render rule as single-user (#133 review).
+    const rendered = selected.flatMap((r) => {
+      const section = formatSelected([r], cfg.relevanceThreshold)
+      return section ? [{ r, section }] : []
+    })
+    if (rendered.length === 0) return null
+    laneInjectedIds.push(...rendered.map((x) => x.r.resourceId))
+    selectedTelemetry.push(
+      ...rendered.map(({ r, section }) => ({
+        resourceId: r.resourceId,
+        kind: r._kind,
+        writer: r.metaWriter,
+        injectedChars: section.length,
+      })),
+    )
+    return rendered.map((x) => x.section).join("\n\n")
   }
 
   // User identity preamble
