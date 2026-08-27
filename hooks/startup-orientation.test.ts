@@ -58,6 +58,7 @@ function makeCfg(overrides?: Partial<HyperspellConfig>): HyperspellConfig {
 	return {
 		apiKey: "k",
 		autoContext: false,
+		recallSignal: false,
 		// Recent-interactions are agent_end traces, fetched only when auto-trace
 		// is on — so the recent-path tests below run with it enabled.
 		autoTrace: { enabled: true, extract: ["procedure"] },

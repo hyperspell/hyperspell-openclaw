@@ -41,6 +41,12 @@ export interface CoverageEvent {
   lanes?: CoverageLane[]
 }
 
+// Writes are serialized onto this queue so events land in call order and a
+// slow filesystem never blocks the turn (v2 fires on EVERY coverage-logged
+// turn, hits included — the sync-write shortcut stopped being cheap enough,
+// PR #133 review). The catch keeps the chain alive after a failed write.
+let pending: Promise<void> = Promise.resolve()
+
 /**
  * Append one coverage event to the LOCAL-ONLY coverage log
  * (`<workspaceDir>/.hyperspell-coverage.jsonl`). Never sent to the backend —
@@ -48,31 +54,44 @@ export interface CoverageEvent {
  * Prompt text is sensitive plaintext, so writes happen only behind the
  * explicit `coverageLog: true` opt-in (checked at call sites, default OFF).
  * Best-effort by contract: any failure is swallowed (debug-logged) — a
- * coverage write must never throw into, block, or delay the turn.
+ * coverage write must never throw into, block, or delay the turn. The event
+ * is stamped and serialized at call time (it describes THIS turn); only the
+ * filesystem work is deferred to the queue.
  */
 export function recordCoverageEvent(event: CoverageEvent, stateRoot?: string): void {
-  try {
-    const dir = stateRoot ?? getWorkspaceDir()
-    const p = path.join(dir, COVERAGE_LOG_NAME)
-    rotateIfOversized(p)
-    const line = JSON.stringify({
-      v: 2,
-      ts: new Date().toISOString(),
-      ...event,
-      prompt: event.prompt.slice(0, MAX_PROMPT_CHARS),
+  const line = JSON.stringify({
+    v: 2,
+    ts: new Date().toISOString(),
+    ...event,
+    prompt: event.prompt.slice(0, MAX_PROMPT_CHARS),
+  })
+  pending = pending
+    .then(() => appendLine(line, stateRoot))
+    .catch((err) => {
+      log.debug(`coverage-log: append failed — ${String(err)}`)
     })
-    fs.appendFileSync(p, `${line}\n`)
-  } catch (err) {
-    log.debug(`coverage-log: append failed — ${String(err)}`)
-  }
+}
+
+/** Await every coverage write queued so far — tests and shutdown paths.
+ * Never rejects: write failures are already swallowed inside the queue. */
+export function flushCoverageLog(): Promise<void> {
+  return pending
+}
+
+async function appendLine(line: string, stateRoot?: string): Promise<void> {
+  const dir = stateRoot ?? getWorkspaceDir()
+  const p = path.join(dir, COVERAGE_LOG_NAME)
+  await rotateIfOversized(p)
+  await fs.promises.appendFile(p, `${line}\n`)
 }
 
 /** One-generation rotation: current file > cap → rename to .old (replacing the
  * previous .old), start fresh. Total footprint bounded at ~2× MAX_LOG_BYTES. */
-function rotateIfOversized(p: string): void {
+async function rotateIfOversized(p: string): Promise<void> {
   try {
-    if (fs.statSync(p).size > MAX_LOG_BYTES) fs.renameSync(p, `${p}.old`)
+    const st = await fs.promises.stat(p)
+    if (st.size > MAX_LOG_BYTES) await fs.promises.rename(p, `${p}.old`)
   } catch {
-    /* missing file or rename race — appendFileSync creates/handles it */
+    /* missing file or rename race — appendFile creates/handles it */
   }
 }

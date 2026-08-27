@@ -408,6 +408,10 @@ export default {
 			costLines.push(
 				`knowledgeGraph: entity-extraction scan every ${cfg.knowledgeGraph.scanIntervalMinutes} min`,
 			);
+		if (cfg.recallSignal)
+			costLines.push(
+				"recallSignal: 1-line retrieval-shape injection EVERY turn (no extra backend call)",
+			);
 		if (costLines.length > 0)
 			log.info(
 				`enabled features and what they spend:\n  - ${costLines.join("\n  - ")}`,

@@ -153,6 +153,7 @@ files back to Hyperspell.
 | `knowledgeGraph.scanIntervalMinutes` | number | `60` | Extraction cadence the setup wizard bakes into the cron job it creates. The cron job is the runtime source of truth — to change cadence after setup, edit the cron job (and keep this field in sync). |
 | `knowledgeGraph.batchSize` | number | `20` | Memories per extraction scan batch |
 | `coverageLog` | boolean | `false` | **Opt-in.** Append local-only retrieval telemetry after every successful auto-context search, including raw/gated scores and injected-result descriptors. Events include prompt text — see [Coverage log](#coverage-log). |
+| `recallSignal` | boolean | `false` | **Opt-in.** Inject a one-line retrieval-shape signal (candidate count, best gated score, threshold, shown count) into context on every auto-context turn, including empty ones — see [Coverage log](#coverage-log). Shape only; never the near-miss content. |
 | `debug` | boolean | `false` | Enable diagnostic logging. One-line diagnostics (auto-context ranked/cut/injection summaries, orientation and emotional-context injection counts) are emitted at **info** level, so they appear in `gateway.log` at default host log levels — no host `logging.level` change needed. Verbose output (per-request/response dumps, per-candidate score lines) stays at debug level. |
 | `dreaming.enabled` | boolean | `false` | Allow `memory-core` to sidecar-load so Dreaming can consolidate local session transcripts into `workspace/MEMORY.md`. See [Running alongside Dreaming](#running-alongside-dreaming). |
 
@@ -438,13 +439,13 @@ Failed searches never produce events — backend-unavailable is not "no memories
 
 Review with `jq`, e.g.: `jq -r '[.ts, .outcome, .rawTopScore, .topScore, .shown, .prompt] | @tsv' ~/.openclaw/workspace/.hyperspell-coverage.jsonl` — after a week or two of labeling (capture gap / ranking near-miss / correct absence), the tallies say whether the next investment belongs in capture or ranking. Delete the file when done.
 
-The same retrieval shape is also injected into the agent's context on every successful auto-context search, including searches that surface no memory:
+With `recallSignal: true` (independent of `coverageLog`, also off by default), the same retrieval shape is injected into the agent's context on every successful auto-context search, including searches that surface no memory:
 
 ```text
 recall: 24 candidates · best 0.49 · threshold 0.60 · nothing shown
 ```
 
-The displayed `best` is the gated composite score, not the raw server score. This is metadata, not evidence that a matching memory exists. It gives the agent a feeling-of-knowing signal for deciding whether to run a deliberate search instead of treating an empty passive result as proof of absence. Failed searches do not emit the signal because their retrieval shape is unknown.
+The displayed `best` is the gated composite score, not the raw server score. This is metadata, not evidence that a matching memory exists. It gives the agent a feeling-of-knowing signal for deciding whether to run a deliberate search instead of treating an empty passive result as proof of absence. Failed searches do not emit the signal because their retrieval shape is unknown. Off by default: an every-turn injection changes what every session sees, so it lands on an install only by explicit opt-in (and, where the agent is a party to her own configuration, with her sign-off).
 
 ### `excludeChannels` is forward-only
 

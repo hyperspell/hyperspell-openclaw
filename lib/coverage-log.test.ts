@@ -6,6 +6,7 @@ import { test } from "node:test"
 import {
   COVERAGE_LOG_NAME,
   type CoverageEvent,
+  flushCoverageLog,
   recordCoverageEvent,
 } from "./coverage-log.ts"
 
@@ -31,13 +32,14 @@ function event(over?: Partial<CoverageEvent>): CoverageEvent {
   }
 }
 
-test("coverage-log — appends one schema-stamped JSONL line per event", () => {
+test("coverage-log — appends one schema-stamped JSONL line per event", async () => {
   const stateRoot = mkStateRoot()
   recordCoverageEvent(event(), stateRoot)
   recordCoverageEvent(
     event({ outcome: "below_threshold", candidates: 4, topScore: 0.54 }),
     stateRoot,
   )
+  await flushCoverageLog()
 
   const lines = fs
     .readFileSync(path.join(stateRoot, COVERAGE_LOG_NAME), "utf-8")
@@ -54,10 +56,11 @@ test("coverage-log — appends one schema-stamped JSONL line per event", () => {
   fs.rmSync(stateRoot, { recursive: true, force: true })
 })
 
-test("coverage-log — prompt truncated to 500 chars", () => {
+test("coverage-log — prompt truncated to 500 chars", async () => {
   const stateRoot = mkStateRoot()
   const long = "x".repeat(600)
   recordCoverageEvent(event({ prompt: long }), stateRoot)
+  await flushCoverageLog()
 
   const entry = JSON.parse(
     fs.readFileSync(path.join(stateRoot, COVERAGE_LOG_NAME), "utf-8").trim(),
@@ -67,13 +70,14 @@ test("coverage-log — prompt truncated to 500 chars", () => {
   fs.rmSync(stateRoot, { recursive: true, force: true })
 })
 
-test("coverage-log — oversized file rotates to .old and the live file starts fresh", () => {
+test("coverage-log — oversized file rotates to .old and the live file starts fresh", async () => {
   const stateRoot = mkStateRoot()
   const p = path.join(stateRoot, COVERAGE_LOG_NAME)
   // Pre-seed just over the 5 MB cap so the next append rotates first.
   fs.writeFileSync(p, "x".repeat(5 * 1024 * 1024 + 1))
 
   recordCoverageEvent(event(), stateRoot)
+  await flushCoverageLog()
 
   assert.ok(fs.existsSync(`${p}.old`), "previous generation kept as .old")
   const lines = fs.readFileSync(p, "utf-8").trim().split("\n")
@@ -82,11 +86,13 @@ test("coverage-log — oversized file rotates to .old and the live file starts f
   fs.rmSync(stateRoot, { recursive: true, force: true })
 })
 
-test("coverage-log — a failed append is swallowed, never thrown", () => {
+test("coverage-log — a failed append is swallowed, never thrown", async () => {
   const stateRoot = mkStateRoot()
   // A regular FILE as stateRoot makes path.join produce an unwritable path.
   const notADir = path.join(stateRoot, "not-a-dir")
   fs.writeFileSync(notADir, "plain file")
   assert.doesNotThrow(() => recordCoverageEvent(event(), notADir))
+  // The queued write fails inside the chain; flush must resolve, not reject.
+  await flushCoverageLog()
   fs.rmSync(stateRoot, { recursive: true, force: true })
 })

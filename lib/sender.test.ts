@@ -15,6 +15,7 @@ function cfg(overrides: Partial<HyperspellConfig["multiUser"]> = {}): Hyperspell
   return {
     apiKey: "test",
     autoContext: false,
+    recallSignal: false,
     autoTrace: { enabled: false, extract: ["procedure"] },
     hotBuffer: { enabled: false, source: "vault", writeUser: true, writeAssistant: true },
     emotionalContext: false,
@@ -264,6 +265,7 @@ function singleUserCfg(userId = "alinea"): HyperspellConfig {
   return {
     apiKey: "test",
     autoContext: false,
+    recallSignal: false,
     autoTrace: { enabled: false, extract: ["procedure"] },
     hotBuffer: { enabled: false, source: "vault", writeUser: true, writeAssistant: true },
     emotionalContext: false,

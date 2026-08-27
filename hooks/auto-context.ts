@@ -213,8 +213,9 @@ function formatRecallSignal(
   return `recall: ${candidates} candidates · best ${best} · threshold ${threshold.toFixed(2)} · ${display}`
 }
 
-function wrapContext(memorySection: string, recallSignal: string): string {
-  return `<hyperspell-context>\n${INTRO}\n\n${recallSignal}\n\n${AUTHORITY_GUARD}\n\n${memorySection}\n\n${DISCLAIMER}\n\n${SEARCH_REMINDER}\n</hyperspell-context>`
+function wrapContext(memorySection: string, recallSignal?: string): string {
+  const recallBlock = recallSignal ? `${recallSignal}\n\n` : ""
+  return `<hyperspell-context>\n${INTRO}\n\n${recallBlock}${AUTHORITY_GUARD}\n\n${memorySection}\n\n${DISCLAIMER}\n\n${SEARCH_REMINDER}\n</hyperspell-context>`
 }
 
 function wrapRecallOnly(recallSignal: string): string {
@@ -450,13 +451,19 @@ export function buildAutoContextHandler(
           )
         }
 
-        injectedIds = selected.map((r) => r.resourceId)
-        selectedTelemetry = selected.map((r) => ({
-          resourceId: r.resourceId,
-          kind: r._kind,
-          writer: r.metaWriter,
-          injectedChars: formatSelected([r], cfg.relevanceThreshold)?.length ?? 0,
-        }))
+        // Only what formatting actually injects: selection can admit a result
+        // on base score whose highlights then all fall under the floor —
+        // formatSelected renders no section for it, so it must not count as
+        // shown, be repeat-suppressed, or appear in hit telemetry (#133 review).
+        selectedTelemetry = selected
+          .map((r) => ({
+            resourceId: r.resourceId,
+            kind: r._kind,
+            writer: r.metaWriter,
+            injectedChars: formatSelected([r], cfg.relevanceThreshold)?.length ?? 0,
+          }))
+          .filter((t) => t.injectedChars > 0)
+        injectedIds = selectedTelemetry.map((t) => t.resourceId)
         formatted = formatSelected(selected, cfg.relevanceThreshold)
         if (formatted) {
           log.diag(
@@ -466,10 +473,9 @@ export function buildAutoContextHandler(
       } else {
         formatted = formatHighlightBullets(results, cfg.maxResults, cfg.relevanceThreshold)
         if (formatted) {
-          injectedIds = results
-            .slice(0, cfg.maxResults)
-            .filter((r) => (r.score ?? 0) >= cfg.relevanceThreshold)
-            .map((r) => r.resourceId)
+          // Same only-what-landed rule as the ranked path: a doc that clears
+          // the score gate but has no above-threshold highlight renders no
+          // section and stays out of ids/telemetry (#133 review).
           selectedTelemetry = results
             .slice(0, cfg.maxResults)
             .filter((r) => (r.score ?? 0) >= cfg.relevanceThreshold)
@@ -480,6 +486,8 @@ export function buildAutoContextHandler(
               injectedChars:
                 formatHighlightBullets([r], 1, cfg.relevanceThreshold)?.length ?? 0,
             }))
+            .filter((t) => t.injectedChars > 0)
+          injectedIds = selectedTelemetry.map((t) => t.resourceId)
           log.debug(`auto-context: injecting ${results.length} memories`)
         }
       }
@@ -523,20 +531,13 @@ export function buildAutoContextHandler(
             opts?.stateRoot,
           )
         }
-        return { prependContext: wrapRecallOnly(recallSignal) }
+        return cfg.recallSignal
+          ? { prependContext: wrapRecallOnly(recallSignal) }
+          : undefined
       }
       // Remember what landed so later turns spend their budget on NEW memory.
-      // Ranked path records the exact selected ids; the legacy unranked path
-      // approximates with the formatted window (first maxResults above bar).
-      recordInjected(
-        currentSessionId,
-        (injectedIds ?? []).length > 0
-          ? (injectedIds as string[])
-          : results
-              .slice(0, cfg.maxResults)
-              .filter((r) => (r.score ?? 0) >= cfg.relevanceThreshold)
-              .map((r) => r.resourceId),
-      )
+      // Both paths now record exactly the ids whose sections rendered.
+      recordInjected(currentSessionId, injectedIds ?? [])
       if (cfg.coverageLog) {
         recordCoverageEvent(
           {
@@ -557,7 +558,12 @@ export function buildAutoContextHandler(
           opts?.stateRoot,
         )
       }
-      return { prependContext: wrapContext(formatted, recallSignal) }
+      return {
+        prependContext: wrapContext(
+          formatted,
+          cfg.recallSignal ? recallSignal : undefined,
+        ),
+      }
     } catch (err) {
       // A transient backend throttle (429 / Retry-After) must not be swallowed
       // as a generic failure — log it at warn, distinguished from real errors,
@@ -710,25 +716,33 @@ async function multiUserSearch(
     scope: "personal" | "shared",
   ): string | null => {
     if (!ranking.enabled) {
+      // With ranking off the gate runs on raw relevance, so the lane's gated
+      // top IS the raw top — mirror the single-user fallback or the recall
+      // line reads "best none" despite candidates and misses get mislabeled
+      // below_threshold when they were filtered.
+      const rawTop = topScoreOf(laneResults)
+      if (scope === "personal") personalGatedTop = rawTop
+      else sharedGatedTop = rawTop
       const formatted = formatHighlightBullets(
         laneResults,
         laneLimit,
         cfg.relevanceThreshold,
       )
       if (formatted) {
-        const selected = laneResults
+        // Same only-what-landed rule as single-user (#133 review).
+        const laneTelemetry = laneResults
           .slice(0, laneLimit)
           .filter((r) => (r.score ?? 0) >= cfg.relevanceThreshold)
-        laneInjectedIds.push(...selected.map((r) => r.resourceId))
-        selectedTelemetry.push(
-          ...selected.map((r) => ({
+          .map((r) => ({
             resourceId: r.resourceId,
             kind: classifyResult(r, ranking.storyTerms, ranking.processPaths),
             writer: r.metaWriter,
             injectedChars:
               formatHighlightBullets([r], 1, cfg.relevanceThreshold)?.length ?? 0,
-          })),
-        )
+          }))
+          .filter((t) => t.injectedChars > 0)
+        laneInjectedIds.push(...laneTelemetry.map((t) => t.resourceId))
+        selectedTelemetry.push(...laneTelemetry)
       }
       return formatted
     }
@@ -754,15 +768,17 @@ async function multiUserSearch(
     )
     const formatted = formatSelected(selected, cfg.relevanceThreshold)
     if (formatted) {
-      laneInjectedIds.push(...selected.map((r) => r.resourceId))
-      selectedTelemetry.push(
-        ...selected.map((r) => ({
+      // Same only-what-landed rule as single-user (#133 review).
+      const laneTelemetry = selected
+        .map((r) => ({
           resourceId: r.resourceId,
           kind: r._kind,
           writer: r.metaWriter,
           injectedChars: formatSelected([r], cfg.relevanceThreshold)?.length ?? 0,
-        })),
-      )
+        }))
+        .filter((t) => t.injectedChars > 0)
+      laneInjectedIds.push(...laneTelemetry.map((t) => t.resourceId))
+      selectedTelemetry.push(...laneTelemetry)
     }
     return formatted
   }
@@ -806,14 +822,15 @@ async function multiUserSearch(
     (score): score is number => score !== null,
   )
   const gatedTopScore = gatedScores.length ? Math.max(...gatedScores) : null
-  const recallSignal = anyLaneSucceeded
-    ? formatRecallSignal(
-        candidates,
-        gatedTopScore,
-        cfg.relevanceThreshold,
-        haveMemorySections ? laneInjectedIds.length : 0,
-      )
-    : undefined
+  const recallSignal =
+    cfg.recallSignal && anyLaneSucceeded
+      ? formatRecallSignal(
+          candidates,
+          gatedTopScore,
+          cfg.relevanceThreshold,
+          haveMemorySections ? laneInjectedIds.length : 0,
+        )
+      : undefined
 
   if (!haveMemorySections) {
     log.debug("auto-context: no relevant memories found")
@@ -944,6 +961,6 @@ async function multiUserSearch(
   }
 
   return {
-    prependContext: `<hyperspell-context>\n${sections.join("\n\n")}\n\n${recallSignal}\n\n${AUTHORITY_GUARD}\n\n${DISCLAIMER}\n</hyperspell-context>`,
+    prependContext: `<hyperspell-context>\n${sections.join("\n\n")}${recallSignal ? `\n\n${recallSignal}` : ""}\n\n${AUTHORITY_GUARD}\n\n${DISCLAIMER}\n</hyperspell-context>`,
   }
 }

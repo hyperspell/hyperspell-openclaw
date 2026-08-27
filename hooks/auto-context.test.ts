@@ -5,7 +5,7 @@ import path from "node:path"
 import { test } from "node:test"
 import type { HyperspellClient, SearchResult } from "../client.ts"
 import type { HyperspellConfig } from "../config.ts"
-import { COVERAGE_LOG_NAME } from "../lib/coverage-log.ts"
+import { COVERAGE_LOG_NAME, flushCoverageLog } from "../lib/coverage-log.ts"
 import { DEFAULT_RANKING, type RankedResult } from "../lib/ranking.ts"
 import { initLogger } from "../logger.ts"
 import {
@@ -98,6 +98,7 @@ function makeCfg(overrides?: Partial<HyperspellConfig>): HyperspellConfig {
     relevanceThreshold: 0.6,
     ranking: DEFAULT_RANKING,
     coverageLog: false,
+    recallSignal: false,
     debug: false,
     knowledgeGraph: { enabled: false, scanIntervalMinutes: 60, batchSize: 20 },
     ...overrides,
@@ -350,7 +351,7 @@ test("auto-context coverage — zero-result search writes an 'empty' event", asy
   const stateRoot = mkStateRoot()
   const handler = buildAutoContextHandler(
     makeSearchClient([]),
-    makeCfg({ coverageLog: true }),
+    makeCfg({ coverageLog: true, recallSignal: true }),
     { stateRoot },
   )
   const out = (await handler({ prompt: COVERAGE_PROMPT }, {})) as
@@ -361,6 +362,7 @@ test("auto-context coverage — zero-result search writes an 'empty' event", asy
     "<hyperspell-context>\nrecall: 0 candidates · best none · threshold 0.60 · nothing shown\n</hyperspell-context>",
   )
 
+  await flushCoverageLog()
   const entries = readCoverage(stateRoot)
   assert.equal(entries.length, 1)
   const entry = entries[0]
@@ -386,7 +388,7 @@ test("auto-context coverage — candidates below threshold write a 'below_thresh
   })
   const handler = buildAutoContextHandler(
     makeSearchClient([low]),
-    makeCfg({ coverageLog: true }),
+    makeCfg({ coverageLog: true, recallSignal: true }),
     { stateRoot },
   )
   const out = (await handler({ prompt: COVERAGE_PROMPT }, {})) as
@@ -398,6 +400,7 @@ test("auto-context coverage — candidates below threshold write a 'below_thresh
     ),
   )
 
+  await flushCoverageLog()
   const [entry] = readCoverage(stateRoot)
   assert.equal(entry.outcome, "below_threshold")
   assert.equal(entry.fetched, 1)
@@ -418,7 +421,7 @@ test("auto-context coverage — FOK uses the gated composite, not the raw server
   })
   const handler = buildAutoContextHandler(
     makeSearchClient([oldChatter]),
-    makeCfg({ coverageLog: true }),
+    makeCfg({ coverageLog: true, recallSignal: true }),
     { stateRoot },
   )
   const out = (await handler({ prompt: COVERAGE_PROMPT }, {})) as
@@ -426,6 +429,7 @@ test("auto-context coverage — FOK uses the gated composite, not the raw server
     | undefined
 
   assert.ok(out?.prependContext.includes("best 0.54 · threshold 0.60 · nothing shown"))
+  await flushCoverageLog()
   const [entry] = readCoverage(stateRoot)
   assert.equal(entry.outcome, "below_threshold")
   assert.equal(entry.rawTopScore, 0.841)
@@ -450,6 +454,7 @@ test("auto-context coverage — a non-threshold cut is labeled 'filtered'", asyn
   )
   await handler({ prompt: COVERAGE_PROMPT }, {})
 
+  await flushCoverageLog()
   const [entry] = readCoverage(stateRoot)
   assert.equal(entry.outcome, "filtered")
   assert.ok(entry.topScore >= entry.threshold)
@@ -462,6 +467,7 @@ test("auto-context coverage — OFF by default: no file even on a zero-result tu
     stateRoot,
   })
   await handler({ prompt: COVERAGE_PROMPT }, {})
+  await flushCoverageLog()
   assert.ok(
     !fs.existsSync(path.join(stateRoot, COVERAGE_LOG_NAME)),
     "coverageLog defaults false — prompts never reach disk without opt-in",
@@ -473,7 +479,7 @@ test("auto-context coverage — an injecting turn writes hit telemetry", async (
   const stateRoot = mkStateRoot()
   const handler = buildAutoContextHandler(
     makeSearchClient(fixturePool()),
-    makeCfg({ coverageLog: true }),
+    makeCfg({ coverageLog: true, recallSignal: true }),
     { stateRoot },
   )
   const out = (await handler({ prompt: COVERAGE_PROMPT }, {})) as
@@ -485,6 +491,7 @@ test("auto-context coverage — an injecting turn writes hit telemetry", async (
       "recall: 5 candidates · best 0.90 · threshold 0.60 · 3 shown",
     ),
   )
+  await flushCoverageLog()
   const [entry] = readCoverage(stateRoot)
   assert.equal(entry.outcome, "injected")
   assert.equal(entry.shown, 3)
@@ -505,6 +512,7 @@ test("auto-context coverage — a FAILED search writes no event (availability is
   )
   const out = await handler({ prompt: COVERAGE_PROMPT }, {})
   assert.equal(out, undefined, "existing behavior: silent on failure")
+  await flushCoverageLog()
   assert.ok(!fs.existsSync(path.join(stateRoot, COVERAGE_LOG_NAME)))
   fs.rmSync(stateRoot, { recursive: true, force: true })
 })
@@ -515,7 +523,7 @@ test("auto-context coverage — unwritable stateRoot degrades safely (turn still
   fs.writeFileSync(notADir, "plain file")
   const handler = buildAutoContextHandler(
     makeSearchClient([]),
-    makeCfg({ coverageLog: true }),
+    makeCfg({ coverageLog: true, recallSignal: true }),
     { stateRoot: notADir },
   )
   const out = (await handler({ prompt: COVERAGE_PROMPT }, {})) as
@@ -564,6 +572,7 @@ test("auto-context coverage — multi-user: failed lane recorded as error, not a
     "identity preamble still injected (identity, not memory)",
   )
 
+  await flushCoverageLog()
   const entries = readCoverage(stateRoot)
   assert.equal(entries.length, 1, "one event per turn, not per lane")
   const entry = entries[0]
@@ -590,6 +599,7 @@ test("auto-context coverage — multi-user: every lane failing writes no event",
     { stateRoot },
   )
   await handler({ prompt: COVERAGE_PROMPT }, { senderId: "dave" })
+  await flushCoverageLog()
   assert.ok(
     !fs.existsSync(path.join(stateRoot, COVERAGE_LOG_NAME)),
     "all-lanes-failed is an availability event (#39), never coverage",
@@ -607,7 +617,7 @@ test("auto-context coverage — multi-user: below_threshold when a fulfilled lan
   })
   const handler = buildAutoContextHandler(
     makeLaneClient([low], []),
-    makeCfg({ coverageLog: true, multiUser: MULTI_USER }),
+    makeCfg({ coverageLog: true, recallSignal: true, multiUser: MULTI_USER }),
     { stateRoot },
   )
   const out = (await handler(
@@ -620,6 +630,7 @@ test("auto-context coverage — multi-user: below_threshold when a fulfilled lan
     ),
   )
 
+  await flushCoverageLog()
   const [entry] = readCoverage(stateRoot)
   assert.equal(entry.outcome, "below_threshold")
   assert.equal(entry.fetched, 1)
@@ -642,6 +653,70 @@ test("auto-context coverage — multi-user: below_threshold when a fulfilled lan
       rawTopScore: null,
     },
   ])
+  fs.rmSync(stateRoot, { recursive: true, force: true })
+})
+
+// ---- recallSignal gate (proposal 19 §6a): the line is opt-in ----
+
+test("recall signal — OFF by default: an empty turn injects nothing", async () => {
+  const stateRoot = mkStateRoot()
+  const handler = buildAutoContextHandler(makeSearchClient([]), makeCfg(), {
+    stateRoot,
+  })
+  const out = await handler({ prompt: COVERAGE_PROMPT }, {})
+  assert.equal(out, undefined, "gate off restores the no-injection empty turn")
+  fs.rmSync(stateRoot, { recursive: true, force: true })
+})
+
+test("recall signal — OFF by default: an injecting turn carries no recall line", async () => {
+  const stateRoot = mkStateRoot()
+  const handler = buildAutoContextHandler(
+    makeSearchClient(fixturePool()),
+    makeCfg(),
+    { stateRoot },
+  )
+  const out = (await handler({ prompt: COVERAGE_PROMPT }, {})) as
+    | { prependContext: string }
+    | undefined
+  const injected = out?.prependContext ?? ""
+  assert.ok(injected.includes("<hyperspell-context>"))
+  assert.ok(!injected.includes("recall:"))
+  fs.rmSync(stateRoot, { recursive: true, force: true })
+})
+
+test("recall signal — multi-user with ranking OFF: best falls back to raw and a highlight-starved miss is 'filtered'", async () => {
+  const stateRoot = mkStateRoot()
+  // Clears the raw score gate, but no highlight does — formats to nothing.
+  const quiet = searchResult({
+    resourceId: "mem-quiet",
+    title: "Quiet Doc",
+    score: 0.9,
+    highlights: [{ id: "h1", text: "low highlight", score: 0.2 }],
+  })
+  const handler = buildAutoContextHandler(
+    makeLaneClient([quiet], []),
+    makeCfg({
+      coverageLog: true,
+      recallSignal: true,
+      multiUser: MULTI_USER,
+      ranking: { ...DEFAULT_RANKING, enabled: false },
+    }),
+    { stateRoot },
+  )
+  const out = (await handler(
+    { prompt: COVERAGE_PROMPT },
+    { senderId: "dave" },
+  )) as { prependContext: string } | undefined
+  assert.ok(
+    out?.prependContext.includes(
+      "recall: 1 candidates · best 0.90 · threshold 0.60 · nothing shown",
+    ),
+    `raw fallback when ranking is off: ${out?.prependContext}`,
+  )
+  await flushCoverageLog()
+  const [entry] = readCoverage(stateRoot)
+  assert.equal(entry.outcome, "filtered")
+  assert.equal(entry.rawTopScore, 0.9)
   fs.rmSync(stateRoot, { recursive: true, force: true })
 })
 
@@ -710,7 +785,7 @@ test("repeat suppression — a memory injected once is not re-injected later in 
     }),
   ]
   const client = { search: async () => pool } as unknown as HyperspellClient
-  const handler = buildAutoContextHandler(client, makeCfg())
+  const handler = buildAutoContextHandler(client, makeCfg({ recallSignal: true }))
   const ctx = { sessionKey: "agent:main:discord:channel:rs-1", sessionId: "rs-session-1" }
 
   const first = (await handler({ prompt: PROMPT }, ctx)) as { prependContext: string } | undefined
@@ -749,7 +824,7 @@ test("repeat suppression — a remember write from THIS session is excluded from
     }),
   ]
   const client = { search: async () => pool } as unknown as HyperspellClient
-  const handler = buildAutoContextHandler(client, makeCfg())
+  const handler = buildAutoContextHandler(client, makeCfg({ recallSignal: true }))
   recordSessionWrite("rw-session-1", "mem-just-written")
 
   const same = await handler({ prompt: PROMPT }, { sessionId: "rw-session-1" })
