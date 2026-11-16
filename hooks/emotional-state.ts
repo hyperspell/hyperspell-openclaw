@@ -214,18 +214,47 @@ function contentToText(content: unknown): string {
  */
 const CONVERSATIONAL_ROLES = new Set(["user", "assistant"]);
 
+/**
+ * Server-side limit on POST /emotional-state `conversation` (422 above it);
+ * the same 512k as hot-buffer's MAX_CONTENT_CHARS. The backend counts code
+ * points, so a UTF-16 length at or under the limit always passes.
+ */
+export const MAX_TRANSCRIPT_CHARS = 512_000;
+
+/**
+ * Builds the transcript from the newest turn backwards and stops at the
+ * server limit, so a long-lived session sends its most recent whole turns
+ * instead of a body the backend rejects. Without the cap every store fails
+ * once the session outgrows the limit, and the register freezes until the
+ * next compaction.
+ */
 export function messagesToTranscript(messages: unknown[]): string {
 	const lines: string[] = [];
-	for (const m of messages as Message[]) {
+	let chars = 0;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i] as Message;
 		if (!m.role || !m.content) continue;
 		if (!CONVERSATIONAL_ROLES.has(m.role)) continue;
 		const raw = contentToText(m.content);
 		if (!raw) continue;
 		const cleaned = sanitizeTraceText(raw);
 		if (cleaned.length === 0) continue;
-		lines.push(`${m.role}: ${cleaned}`);
+		const line = `${m.role}: ${cleaned}`;
+		const joined = chars + line.length + (lines.length > 0 ? 1 : 0);
+		if (joined > MAX_TRANSCRIPT_CHARS) {
+			// The newest turn alone is over the limit: keep its tail rather than
+			// send nothing. Never start on the second half of a surrogate pair.
+			if (lines.length === 0) {
+				const tail = line.slice(-MAX_TRANSCRIPT_CHARS);
+				const splitPair = tail.charCodeAt(0) >= 0xdc00 && tail.charCodeAt(0) <= 0xdfff;
+				lines.push(splitPair ? tail.slice(1) : tail);
+			}
+			break;
+		}
+		lines.push(line);
+		chars = joined;
 	}
-	return lines.join("\n");
+	return lines.reverse().join("\n");
 }
 
 /**

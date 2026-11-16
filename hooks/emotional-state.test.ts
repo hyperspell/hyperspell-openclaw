@@ -11,6 +11,7 @@ import {
 	buildEmotionalStateStoreHandler,
 	looksLikeRawTranscript,
 	messagesToTranscript,
+	MAX_TRANSCRIPT_CHARS,
 	MOOD_WEATHER_COOLDOWN_MS,
 
 	selectUsableRegisters,
@@ -18,6 +19,12 @@ import {
 	appendRegisterLedger,
 	REGISTER_LEDGER_NAME,} from "./emotional-state.ts";
 import { MOOD_TABLE } from "./mood-weather.ts";
+
+// The store handler appends to the register ledger in the workspace that
+// getWorkspaceDir() resolves at call time. Point it at a throwaway state dir
+// so a test run never writes rows into a real agent's ledger.
+process.env.OPENCLAW_STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "hs-emotional-state-test-"));
+delete process.env.OPENCLAW_CONFIG_PATH;
 
 type State = {
 	resourceId: string;
@@ -354,6 +361,44 @@ test("emotional-state store — stores for a real user conversation", async () =
 	await handler({ success: true, messages: richMessages }, { trigger: "user", senderId: "sender-david" });
 	assert.equal(stores.length, 1);
 	assert.equal(stores[0].opts.relationshipId, "rel-user-store");
+});
+
+test("messagesToTranscript — over the server limit keeps the newest whole turns, in order", () => {
+	const turn = (i: number) => ({ role: i % 2 ? "assistant" : "user", content: `turn ${i} ${"x".repeat(99_000)}` });
+	const messages = Array.from({ length: 8 }, (_, i) => turn(i));
+	const transcript = messagesToTranscript(messages);
+	assert.ok(transcript.length <= MAX_TRANSCRIPT_CHARS, `capped (${transcript.length})`);
+	const kept = transcript.split("\n").map((l) => l.slice(0, l.indexOf(" x")));
+	assert.deepEqual(kept, ["assistant: turn 3", "user: turn 4", "assistant: turn 5", "user: turn 6", "assistant: turn 7"]);
+});
+
+test("messagesToTranscript — exactly at the limit is sent whole; a single oversize turn keeps its tail", () => {
+	const exact = messagesToTranscript([{ role: "user", content: "a".repeat(MAX_TRANSCRIPT_CHARS - "user: ".length) }]);
+	assert.equal(exact.length, MAX_TRANSCRIPT_CHARS);
+	assert.ok(exact.startsWith("user: "));
+
+	// An emoji is two UTF-16 units; the cut lands inside the first pair here.
+	const oversize = messagesToTranscript([{ role: "user", content: `${"😀".repeat(300_000)}the end` }]);
+	assert.ok(oversize.length <= MAX_TRANSCRIPT_CHARS);
+	assert.ok(oversize.endsWith("the end"));
+	assert.equal(oversize.codePointAt(0), 0x1f600, "does not start on half a surrogate pair");
+});
+
+test("emotional-state store — a session past the server limit still stores, with the capped tail", async () => {
+	const { client, stores } = makeStoreClient();
+	const handler = buildEmotionalStateStoreHandler(
+		client as unknown as Parameters<typeof buildEmotionalStateStoreHandler>[0],
+		storeCfg("rel-oversize"),
+	);
+	const long = Array.from({ length: 12 }, (_, i) => ({
+		role: i % 2 ? "assistant" : "user",
+		content: `message ${i} ${"y".repeat(60_000)}`,
+	}));
+	await handler({ success: true, messages: [...long, ...richMessages] }, { trigger: "user", senderId: "sender-david" });
+	assert.equal(stores.length, 1);
+	assert.ok(stores[0].transcript.length <= MAX_TRANSCRIPT_CHARS);
+	assert.ok(stores[0].transcript.endsWith(richMessages[2].content), "the newest turn is kept");
+	assert.ok(!stores[0].transcript.includes("message 0 "), "the oldest turn is dropped");
 });
 
 test("emotional-state store — cron-originated session that becomes a real conversation stores on the human turn (issue #70)", async () => {
