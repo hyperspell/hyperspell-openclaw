@@ -8,6 +8,35 @@ type Logger = {
 let _logger: Logger = console
 let _debug = false
 
+/** Bound on the folded detail: a 422 body can echo the whole rejected input. */
+const MAX_DETAIL_CHARS = 500
+
+function detailText(arg: unknown): string {
+  if (arg instanceof Error) return arg.message
+  if (typeof arg === "string") return arg
+  try {
+    return JSON.stringify(arg) ?? String(arg)
+  } catch {
+    return String(arg)
+  }
+}
+
+/**
+ * The host's plugin logger takes the message string only (openclaw
+ * `PluginLogger`: `(message: string) => void`) and discards further arguments,
+ * so a caught error passed after the message never reaches gateway.log and the
+ * line says only that something failed. Fold the details into the line itself.
+ */
+function withDetails(message: string, args: unknown[]): string {
+  if (args.length === 0) return `hyperspell: ${message}`
+  const detail = args.map(detailText).join(" ")
+  const bounded =
+    detail.length > MAX_DETAIL_CHARS
+      ? `${detail.slice(0, MAX_DETAIL_CHARS)}… (${detail.length} chars)`
+      : detail
+  return `hyperspell: ${message}: ${bounded}`
+}
+
 export function initLogger(logger: Logger, debug: boolean): void {
   _logger = logger
   _debug = debug
@@ -15,17 +44,17 @@ export function initLogger(logger: Logger, debug: boolean): void {
 
 export const log = {
   info: (message: string, ...args: unknown[]) => {
-    _logger.info(`hyperspell: ${message}`, ...args)
+    _logger.info(withDetails(message, args))
   },
   warn: (message: string, ...args: unknown[]) => {
-    _logger.warn(`hyperspell: ${message}`, ...args)
+    _logger.warn(withDetails(message, args))
   },
   error: (message: string, ...args: unknown[]) => {
-    _logger.error(`hyperspell: ${message}`, ...args)
+    _logger.error(withDetails(message, args))
   },
   debug: (message: string, ...args: unknown[]) => {
     if (_debug) {
-      _logger.debug(`hyperspell: ${message}`, ...args)
+      _logger.debug(withDetails(message, args))
     }
   },
   /**
@@ -41,7 +70,7 @@ export const log = {
    */
   diag: (message: string, ...args: unknown[]) => {
     if (_debug) {
-      _logger.info(`hyperspell: ${message}`, ...args)
+      _logger.info(withDetails(message, args))
     }
   },
   debugRequest: (method: string, params: unknown) => {
